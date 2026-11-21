@@ -1,0 +1,6 @@
+CREATE TABLE IF NOT EXISTS border_posts (id TEXT PRIMARY KEY, name TEXT NOT NULL, profile TEXT NOT NULL, active INTEGER NOT NULL DEFAULT 1);
+INSERT OR IGNORE INTO border_posts(id,name,profile) VALUES ('post1','المنفذ الحدودي الأول','حركة أشخاص مرتفعة وبضائع محدودة'),('post2','المنفذ الحدودي الثاني','حركة أشخاص مرتفعة وبضائع محدودة'),('post3','المنفذ التجاري الثالث','حركة بضائع مرتفعة وأشخاص أقل');
+CREATE TABLE IF NOT EXISTS border_movements (id TEXT PRIMARY KEY,post_id TEXT NOT NULL REFERENCES border_posts(id),document_id TEXT NOT NULL REFERENCES documents(id),direction TEXT NOT NULL CHECK(direction IN ('entry','exit')),purpose TEXT NOT NULL,actor_id TEXT NOT NULL REFERENCES users(id),created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP);
+CREATE INDEX IF NOT EXISTS idx_border_movements_doc ON border_movements(document_id,created_at);
+CREATE INDEX IF NOT EXISTS idx_border_movements_post ON border_movements(post_id,created_at);
+CREATE TABLE IF NOT EXISTS customs_declarations (id TEXT PRIMARY KEY,post_id TEXT NOT NULL REFERENCES border_posts(id),movement_id TEXT REFERENCES border_movements(id),description TEXT NOT NULL,quantity INTEGER NOT NULL CHECK(quantity>0),status TEXT NOT NULL DEFAULT 'submitted' CHECK(status IN ('submitted','inspecting','cleared','held')),actor_id TEXT NOT NULL REFERENCES users(id),created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP);
