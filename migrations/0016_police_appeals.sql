@@ -1,0 +1,6 @@
+-- Phase 16: police reports and first-instance appeals; no real-world authority.
+CREATE TABLE police_reports(id TEXT PRIMARY KEY,reference TEXT NOT NULL UNIQUE,reporter_id TEXT NOT NULL REFERENCES users(id),kind TEXT NOT NULL CHECK(kind IN ('security','traffic','fraud','other')),title TEXT NOT NULL,details TEXT NOT NULL,status TEXT NOT NULL DEFAULT 'filed' CHECK(status IN ('filed','review','investigating','referred','closed')),created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP);
+CREATE INDEX idx_police_reporter ON police_reports(reporter_id,created_at);
+CREATE TABLE police_report_events(id TEXT PRIMARY KEY,report_id TEXT NOT NULL REFERENCES police_reports(id),actor_id TEXT NOT NULL REFERENCES users(id),status TEXT NOT NULL,note TEXT NOT NULL,created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP);
+CREATE TABLE court_appeals(id TEXT PRIMARY KEY,case_id TEXT NOT NULL REFERENCES court_cases(id),appellant_id TEXT NOT NULL REFERENCES users(id),reason TEXT NOT NULL,status TEXT NOT NULL DEFAULT 'submitted' CHECK(status IN ('submitted','accepted','rejected','decided')),decision_note TEXT,reviewed_by TEXT REFERENCES users(id),reviewed_at TEXT,created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,UNIQUE(case_id,appellant_id));
+CREATE INDEX idx_court_appeals_case ON court_appeals(case_id,created_at);
