@@ -1105,5 +1105,44 @@ if(path.startsWith('/api/admin/jobs')){
   await audit(db,user.id,'job_application_status','job_application',b.id,{from:row.status,to:b.status});return json({ok:true});
  }
 }
+// Absher Al-Saliyah: fictional national-services portal; no real-world registration or permits.
+if(method==='GET'&&path==='/api/absher/overview'){
+ const [assets,requests]=await Promise.all([
+ db.prepare('SELECT id,kind,name,identifier,notes,status,created_at FROM absher_assets WHERE user_id=? ORDER BY created_at DESC').bind(user.id).all(),
+ db.prepare('SELECT id,service,details,status,created_at FROM absher_requests WHERE user_id=? ORDER BY created_at DESC').bind(user.id).all()
+ ]);
+ return json({assets:assets.results,requests:requests.results});
+}
+if(method==='POST'&&path==='/api/absher/asset'){
+ const b=await input(req);
+ if(!b||!['vehicle','weapon'].includes(b.kind)||!validText(b.name,2,100)||!validText(b.identifier,3,50)||typeof b.notes!=='string'||b.notes.length>500)return json({error:'بيانات التسجيل غير صالحة'},400);
+ const id=random();try{await db.prepare('INSERT INTO absher_assets(id,user_id,kind,name,identifier,notes) VALUES(?,?,?,?,?,?)').bind(id,user.id,b.kind,b.name.trim(),b.identifier.trim().toUpperCase(),b.notes.trim()).run()}catch{return json({error:'المعرّف مسجل مسبقًا أو غير صالح'},409)}
+ await audit(db,user.id,'absher_asset_requested','absher_asset',id,{kind:b.kind});return json({id,status:'pending'},201);
+}
+if(method==='POST'&&path==='/api/absher/request'){
+ const b=await input(req);
+ const allowed=['identity','passport','residency','vehicle_registration','vehicle_transfer','driving_license','weapon_registration','weapon_renewal','travel_permission','civil_record','other'];
+ if(!b||!allowed.includes(b.service)||!validText(b.details,5,1000))return json({error:'اختر الخدمة واكتب تفاصيل الطلب'},400);
+ const id=random();await db.prepare('INSERT INTO absher_requests(id,user_id,service,details) VALUES(?,?,?,?)').bind(id,user.id,b.service,b.details.trim()).run();
+ await audit(db,user.id,'absher_service_requested','absher_request',id,{service:b.service});return json({id,status:'pending'},201);
+}
+if(method==='GET'&&path==='/api/absher/admin'){
+ if(user.role!=='king'&&user.role!=='employee')return json({error:'غير مخول'},403);
+ const [assets,requests]=await Promise.all([
+ db.prepare("SELECT a.id,a.kind,a.name,a.identifier,a.status,u.username FROM absher_assets a JOIN users u ON u.id=a.user_id WHERE a.status='pending' ORDER BY a.created_at DESC LIMIT 100").all(),
+ db.prepare("SELECT a.id,a.service,a.details,a.status,u.username FROM absher_requests a JOIN users u ON u.id=a.user_id WHERE a.status='pending' ORDER BY a.created_at DESC LIMIT 100").all()
+ ]);return json({assets:assets.results,requests:requests.results});
+}
+if(method==='POST'&&path==='/api/absher/decision'){
+ if(user.role!=='king'&&user.role!=='employee')return json({error:'غير مخول'},403);
+ const b=await input(req);
+ if(!b||!['asset','request'].includes(b.kind)||!['approved','rejected'].includes(b.decision)||!validText(b.id,10,80))return json({error:'قرار غير صالح'},400);
+ const table=b.kind==='asset'?'absher_assets':'absher_requests';
+ const row=await db.prepare('SELECT user_id FROM '+table+" WHERE id=? AND status='pending'").bind(b.id).first();if(!row)return json({error:'الطلب غير موجود أو سبق البت فيه'},409);
+ const result=await db.prepare('UPDATE '+table+" SET status=?,reviewed_at=CURRENT_TIMESTAMP WHERE id=? AND status='pending'").bind(b.decision,b.id).run();
+ if(!result.meta.changes)return json({error:'سبق البت في الطلب'},409);
+ await db.prepare('INSERT INTO messages(id,sender_id,recipient_id,subject,body) VALUES(?,?,?,?,?)').bind(random(),user.id,row.user_id,'قرار أبشر الصالية','حالة الطلب '+b.id+' أصبحت '+b.decision).run();
+ await audit(db,user.id,'absher_decision',table,b.id,{decision:b.decision});return json({ok:true});
+}
 return json({error:'المسار غير موجود'},404);
 }catch(e){console.error(e);return json({error:'خطأ داخلي في الخادم'},500)}}};
