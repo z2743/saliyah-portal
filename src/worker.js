@@ -844,10 +844,38 @@ if(method==='POST'&&path==='/api/telecom/lines'){
  const id=random();let number=null;for(let i=0;i<8;i++){const bytes=new Uint32Array(1);crypto.getRandomValues(bytes);const candidate='05'+String(bytes[0]%100000000).padStart(8,'0');try{await db.prepare('INSERT INTO telecom_lines(id,user_id,number,carrier) VALUES(?,?,?,?)').bind(id,user.id,candidate,b.carrier).run();number=candidate;break}catch(e){if(!String(e).includes('UNIQUE'))throw e;}}
  if(!number)return json({error:'تعذر تخصيص رقم، حاول مجددًا'},503);await audit(db,user.id,'telecom_line_issue','telecom_line',id,{carrier:b.carrier});return json({id,number},201);
 }
+const TELECOM_PRICES={stc_basic:{carrier:'stc',price:3450,mb:1024,days:28},stc_50:{carrier:'stc',price:5750,mb:2048,days:28},stc_120:{carrier:'stc',price:13800,mb:46080,days:28},zain_flex69:{carrier:'zain',price:7935,mb:10240,days:28},zain_flex109:{carrier:'zain',price:12535,mb:35840,days:28}};
 if(method==='POST'&&path==='/api/telecom/plan'){
- const b=await input(req);if(!b||!validText(b.line_id,10,80)||!['basic','plus'].includes(b.plan))return json({error:'اختر الشريحة والباقة'},400);
- const line=await db.prepare("SELECT id FROM telecom_lines WHERE id=? AND user_id=? AND status='active'").bind(b.line_id,user.id).first();if(!line)return json({error:'الشريحة غير متاحة'},404);
- const mb=b.plan==='basic'?1024:5120;await db.prepare("UPDATE telecom_lines SET plan_name=?,data_mb=?,data_remaining_mb=?,expires_at=datetime('now','+30 days') WHERE id=?").bind(b.plan,mb,mb,line.id).run();await audit(db,user.id,'telecom_plan_activate','telecom_line',line.id,{plan:b.plan});return json({ok:true,data_mb:mb});
+ const b=await input(req);const plan=TELECOM_PRICES[b?.plan];
+ if(!plan||!validText(b.line_id,10,80)||!validText(b.account_id,10,80))return json({error:'اختر الباقة والحساب البنكي'},400);
+ const line=await db.prepare("SELECT id,carrier FROM telecom_lines WHERE id=? AND user_id=? AND status='active'").bind(b.line_id,user.id).first();
+ if(!line||line.carrier!==plan.carrier)return json({error:'الباقة لا تتوافق مع شريحتك'},400);
+ const account=await db.prepare("SELECT id,balance,halala FROM bank_accounts WHERE id=? AND user_id=?").bind(b.account_id,user.id).first();
+ if(!account)return json({error:'الحساب البنكي غير متاح'},403);
+ if(account.balance*100+account.halala<plan.price)return json({error:'الرصيد غير كافٍ'},409);
+ const id=random();
+ try{await db.batch([
+ db.prepare("UPDATE bank_accounts SET balance=CAST(((balance*100+halala)-?)/100 AS INTEGER),halala=((balance*100+halala)-?)%100 WHERE id=? AND user_id=? AND balance*100+halala>=?").bind(plan.price,plan.price,account.id,user.id,plan.price),
+ db.prepare("INSERT INTO telecom_purchases(id,line_id,account_id,plan,amount_halala) VALUES(?,?,?,?,?)").bind(id,line.id,account.id,b.plan,plan.price),
+ db.prepare("UPDATE telecom_lines SET plan_name=?,data_mb=?,data_remaining_mb=?,expires_at=datetime('now',?) WHERE id=?").bind(b.plan,plan.mb,plan.mb,'+'+plan.days+' days',line.id)
+ ])}catch{return json({error:'تعذر إتمام الدفع؛ راجع رصيد الحساب'},409)}
+ await audit(db,user.id,'telecom_plan_paid','telecom_line',line.id,{plan:b.plan,amount_halala:plan.price,account_id:account.id});
+ return json({ok:true,receipt_id:id,amount_halala:plan.price,data_mb:plan.mb});
+}
+if(method==='POST'&&path==='/api/telecom/browse'){
+ const b=await input(req);if(!b||!validText(b.line_id,10,80))return json({error:'اختر الشريحة'},400);
+ const line=await db.prepare("SELECT id,data_remaining_mb FROM telecom_lines WHERE id=? AND user_id=? AND status='active' AND expires_at>datetime('now')").bind(b.line_id,user.id).first();
+ if(!line||line.data_remaining_mb<1)return json({error:'لا توجد بيانات متاحة في باقتك'},409);
+ const used=1;const r=await db.prepare("UPDATE telecom_lines SET data_remaining_mb=data_remaining_mb-? WHERE id=? AND data_remaining_mb>=?").bind(used,line.id,used).run();
+ if(!r.meta.changes)return json({error:'انتهت البيانات'},409);
+ await db.prepare("INSERT INTO telecom_usage(id,line_id,kind,units) VALUES(?,?,?,?)").bind(random(),line.id,'browse_mb',used).run();
+ return json({ok:true,used_mb:used,remaining_mb:line.data_remaining_mb-used});
+}
+if(method==='GET'&&path==='/api/telecom/usage'){
+ const line=u.searchParams.get('line');const owned=await db.prepare('SELECT id FROM telecom_lines WHERE id=? AND user_id=?').bind(line||'',user.id).first();
+ if(!owned)return json({error:'الشريحة لا تخصك'},403);
+ const r=await db.prepare('SELECT kind,units,created_at FROM telecom_usage WHERE line_id=? ORDER BY created_at DESC LIMIT 50').bind(line).all();
+ return json({usage:r.results});
 }
 if(method==='GET'&&path==='/api/telecom/sms'){
  const line=u.searchParams.get('line');const owned=await db.prepare('SELECT id FROM telecom_lines WHERE id=? AND user_id=?').bind(line||'',user.id).first();if(!owned)return json({error:'الشريحة لا تخصك'},403);
