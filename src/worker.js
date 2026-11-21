@@ -3,7 +3,7 @@ const enc=new TextEncoder();
 const hex=buf=>Array.from(new Uint8Array(buf)).map(b=>b.toString(16).padStart(2,'0')).join('');
 const random=()=>crypto.randomUUID();
 const hash=async v=>hex(await crypto.subtle.digest('SHA-256',enc.encode(v)));
-async function derive(password,salt){const key=await crypto.subtle.importKey('raw',enc.encode(password),'PBKDF2',false,['deriveBits']);return hex(await crypto.subtle.deriveBits({name:'PBKDF2',salt:enc.encode(salt),iterations:100000,hash:'SHA-256'},key,256));}
+async function derive(password,salt){const key=await crypto.subtle.importKey('raw',enc.encode(password),'PBKDF2',false,['deriveBits']);return hex(await crypto.subtle.deriveBits({name:'PBKDF2',salt:enc.encode(salt),iterations:210000,hash:'SHA-256'},key,256));}
 async function input(req){try{const body=await req.json();if(!body||typeof body!=='object'||Array.isArray(body))throw 0;return body}catch{return null}}
 function validText(v,min,max){return typeof v==='string'&&v.trim().length>=min&&v.trim().length<=max}
 async function actor(req,db){const cookie=req.headers.get('cookie')||'';const token=cookie.match(/(?:^|;\s*)saliyah_session=([a-f0-9-]+)/)?.[1];if(!token)return null;const t=await hash(token);return db.prepare("SELECT u.id,u.username,u.role FROM sessions s JOIN users u ON u.id=s.user_id WHERE s.token_hash=? AND s.expires_at > datetime('now')").bind(t).first()}
