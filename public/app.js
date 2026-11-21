@@ -1,6 +1,6 @@
 const app=document.querySelector('#app');let data=null,me=null;
 const safe=s=>String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
-async function api(path,opts={}){const res=await fetch('/api'+path,{credentials:'same-origin',headers:{'content-type':'application/json'},...opts});const val=await res.json();if(!res.ok)throw Error((val.error||'تعذر تنفيذ الطلب')+(val.stage?' ('+val.stage+')':''));return val}
+async function api(path,opts={}){const res=await fetch('/api'+path,{credentials:'same-origin',headers:{'content-type':'application/json'},...opts});const val=await res.json();if(!res.ok)throw Error((val.error||'تعذر تنفيذ الطلب')+(val.stage?' ('+val.stage+(val.code?' / '+val.code:'')+')':''));return val}
 const post=(p,b)=>api(p,{method:'POST',body:JSON.stringify(b)});
 const services=[['الهوية الوطنية','إصدار وتجديد والتحقق من الهوية','🪪'],['الجوازات والتأشيرات','خدمات السفر والإقامة','▣'],['الديوان الملكي','طلبات وشكاوى ومقترحات','♜'],['البلاغات','المرور والأمن والدفاع المدني','♢'],['تسجيل المواطنين','عبر فرع الأحوال المدنية بالسجادة','♧'],['هاتفي والخدمات الرقمية','الرسائل والخدمات الرقمية','▤']];
 const govColors=['#0e4d3a','#7a3a1a','#2b5b6b'];
