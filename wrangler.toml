@@ -8,5 +8,5 @@ binding = "ASSETS"
 [[d1_databases]]
 binding = "DB"
 database_name = "saliyah-db"
-database_id = "REPLACE_WITH_YOUR_D1_DATABASE_ID"
+database_id = "28aff870-726b-4840-aa9e-a88a23c639d9"
 migrations_dir = "migrations"
