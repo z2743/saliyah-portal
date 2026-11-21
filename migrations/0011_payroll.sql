@@ -1,0 +1,6 @@
+-- Simulated payroll; all amounts are whole Saliyah Riyals.
+CREATE TABLE IF NOT EXISTS employer_budgets (employer TEXT PRIMARY KEY, sector TEXT NOT NULL CHECK(sector IN ('government','private','military')), balance INTEGER NOT NULL DEFAULT 0 CHECK(balance>=0), created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP);
+CREATE TABLE IF NOT EXISTS employment_contracts (id TEXT PRIMARY KEY, application_id TEXT NOT NULL UNIQUE REFERENCES job_applications(id), employee_id TEXT NOT NULL REFERENCES users(id), employer TEXT NOT NULL REFERENCES employer_budgets(employer), title TEXT NOT NULL, salary INTEGER NOT NULL CHECK(salary>=0), active INTEGER NOT NULL DEFAULT 1 CHECK(active IN (0,1)), created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP);
+CREATE TABLE IF NOT EXISTS payroll_payments (id TEXT PRIMARY KEY, contract_id TEXT NOT NULL REFERENCES employment_contracts(id), period TEXT NOT NULL, amount INTEGER NOT NULL CHECK(amount>=0), bank_account_id TEXT NOT NULL REFERENCES bank_accounts(id), paid_by TEXT NOT NULL REFERENCES users(id), created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP, UNIQUE(contract_id,period));
+CREATE INDEX IF NOT EXISTS idx_payroll_employee ON employment_contracts(employee_id,active);
+CREATE INDEX IF NOT EXISTS idx_payroll_period ON payroll_payments(period);
