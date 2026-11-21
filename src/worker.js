@@ -1106,6 +1106,16 @@ if(path.startsWith('/api/admin/jobs')){
  }
 }
 // Absher Al-Saliyah: fictional national-services portal; no real-world registration or permits.
+if(method==='POST'&&path==='/api/absher/access'){
+ const b=await input(req);
+ if(!b||!validText(b.line_id,10,80))return json({error:'اختر شريحة إنترنت صالية'},400);
+ const line=await db.prepare("SELECT id,data_remaining_mb FROM telecom_lines WHERE id=? AND user_id=? AND status='active' AND expires_at>datetime('now')").bind(b.line_id,user.id).first();
+ if(!line||line.data_remaining_mb<1)return json({error:'انتهت الباقة أو الشريحة غير مفعلة؛ جدّدها لاستخدام أبشر الصالية'},409);
+ const used=1;const r=await db.prepare("UPDATE telecom_lines SET data_remaining_mb=data_remaining_mb-1 WHERE id=? AND user_id=? AND data_remaining_mb>=1 AND expires_at>datetime('now')").bind(line.id,user.id).run();
+ if(!r.meta.changes)return json({error:'لا توجد بيانات كافية'},409);
+ await db.prepare("INSERT INTO telecom_usage(id,line_id,kind,units) VALUES(?,?,?,?)").bind(random(),line.id,'absher_mb',used).run();
+ return json({ok:true,used_mb:used,remaining_mb:line.data_remaining_mb-used});
+}
 if(method==='GET'&&path==='/api/absher/overview'){
  const [assets,requests]=await Promise.all([
  db.prepare('SELECT id,kind,name,identifier,notes,status,created_at FROM absher_assets WHERE user_id=? ORDER BY created_at DESC').bind(user.id).all(),
