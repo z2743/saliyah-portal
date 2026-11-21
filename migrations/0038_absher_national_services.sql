@@ -1,0 +1,4 @@
+CREATE TABLE IF NOT EXISTS absher_assets(id TEXT PRIMARY KEY,user_id TEXT NOT NULL REFERENCES users(id),kind TEXT NOT NULL CHECK(kind IN ('vehicle','weapon')),name TEXT NOT NULL,identifier TEXT NOT NULL,notes TEXT NOT NULL DEFAULT '',status TEXT NOT NULL DEFAULT 'pending' CHECK(status IN ('pending','approved','rejected')),created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,reviewed_at TEXT,UNIQUE(kind,identifier));
+CREATE TABLE IF NOT EXISTS absher_requests(id TEXT PRIMARY KEY,user_id TEXT NOT NULL REFERENCES users(id),service TEXT NOT NULL,details TEXT NOT NULL,status TEXT NOT NULL DEFAULT 'pending' CHECK(status IN ('pending','approved','rejected')),created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,reviewed_at TEXT);
+CREATE INDEX IF NOT EXISTS idx_absher_assets_user ON absher_assets(user_id);
+CREATE INDEX IF NOT EXISTS idx_absher_requests_user ON absher_requests(user_id);
