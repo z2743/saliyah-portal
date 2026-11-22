@@ -176,6 +176,15 @@ if(method==='GET'&&path==='/api/admin/readiness'){
  await check('companies','الشركات','SELECT COUNT(*) n FROM commerce_companies');
  await check('support','تذاكر خدمة المواطنين','SELECT COUNT(*) n FROM service_tickets');
  await check('audit','سجلات التدقيق','SELECT COUNT(*) n FROM audit_log');
+ const structural=async(key,label,sql,expected=1)=>{
+  try{const r=await db.prepare(sql).first();const count=Number(r?.n||0);checks.push({key,label,ok:count>=expected,value:count,expected});}
+  catch{checks.push({key,label,ok:false,error:'تعذر التحقق من بنية قاعدة البيانات'});}
+ };
+ await structural('transfer_debit_credit','مشغل تحويل الأموال','SELECT COUNT(*) n FROM sqlite_master WHERE type=\'trigger\' AND name=\'bank_transfer_apply\'');
+ await structural('transfer_guard','حماية التحويل من السحب الزائد','SELECT COUNT(*) n FROM sqlite_master WHERE type=\'trigger\' AND name=\'bank_transfer_validate\'');
+ await structural('enforcement_actions','حقل أنواع إجراءات المديونيات','SELECT COUNT(*) n FROM pragma_table_info(\'enforcement_cases\') WHERE name=\'action\'');
+ await structural('enforcement_zero_amount','دعم إيقاف الخدمات بدون مديونية',"SELECT COUNT(*) n FROM sqlite_master WHERE type='table' AND name='enforcement_cases' AND sql LIKE '%amount>=0%'");
+ await structural('enforcement_optional_document','دعم المستخدمين دون وثيقة',"SELECT COUNT(*) n FROM pragma_table_info('enforcement_cases') WHERE name='document_id' AND [notnull]=0");
  return json({checks,bindings:{database:true,assets:!!env.ASSETS,court_files:!!env.COURT_FILES},
   environment:'فحص بنيوي محدود؛ لا يثبت الأمان أو نجاح العمليات أو جاهزية الإطلاق',
   ready_for_public_launch:false});
