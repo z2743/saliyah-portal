@@ -131,7 +131,7 @@ async function runSaliyahGovernment(db){
  const adults=(await db.prepare("SELECT c.id FROM saliyah_sim_citizens c WHERE c.occupation<>'متوفى' AND NOT EXISTS(SELECT 1 FROM saliyah_sim_life_events e WHERE e.citizen_id=c.id AND e.kind='death') ORDER BY c.created_at LIMIT 100").all()).results;
  const propertyId='property-'+Math.floor(hour/6),seller=adults[hour%Math.max(1,adults.length)]?.id;
  if(seller){
-  await db.prepare("INSERT OR IGNORE INTO saliyah_sim_properties(id,owner_id,kind,location,price,status) VALUES(?,?,?,?,?,'listed')").bind(propertyId,seller,['شقة','فيلا','محل تجاري','أرض'][hour%4],hour%2?'السجادة':'المتجار',55000+(hour%9)*18000).run();
+  await db.prepare("INSERT OR IGNORE INTO saliyah_sim_properties(id,owner_id,kind,location,price,status) VALUES(?,?,?,?,?,'listed')").bind(propertyId,seller,['شقة','فيلا','محل تجاري','أرض'][hour%4],['شقة','فيلا','أرض'].includes(['شقة','فيلا','محل تجاري','أرض'][hour%4])?'عقار':'المتجار',55000+(hour%9)*18000).run();
  }
  const listed=await db.prepare("SELECT id,owner_id,price FROM saliyah_sim_properties WHERE status='listed' ORDER BY created_at LIMIT 1").first();
  if(listed&&adults.length>1){
@@ -507,12 +507,12 @@ if(method==='POST'&&path==='/api/auth/logout'){const t=(req.headers.get('cookie'
 // Ministry accounts are isolated by ministry ID. No cross-ministry service permissions.
 if(method==='GET'&&path==='/api/simulation/economy'){
  const [properties,propertyTrades,shares,shareTrades,marriages,lifeEvents]=await Promise.all([
-  db.prepare('SELECT * FROM saliyah_sim_properties ORDER BY created_at DESC LIMIT 60').all(),
-  db.prepare('SELECT * FROM saliyah_sim_property_trades ORDER BY created_at DESC LIMIT 60').all(),
-  db.prepare('SELECT * FROM saliyah_sim_shares ORDER BY units DESC LIMIT 60').all(),
-  db.prepare('SELECT * FROM saliyah_sim_share_trades ORDER BY created_at DESC LIMIT 60').all(),
-  db.prepare('SELECT * FROM saliyah_sim_marriages ORDER BY created_at DESC LIMIT 30').all(),
-  db.prepare('SELECT * FROM saliyah_sim_life_events ORDER BY created_at DESC LIMIT 30').all()
+  db.prepare("SELECT p.*,c.name owner_name FROM saliyah_sim_properties p LEFT JOIN saliyah_sim_citizens c ON c.id=p.owner_id ORDER BY p.created_at DESC LIMIT 60").all(),
+  db.prepare("SELECT t.*,p.kind property_kind,p.location property_location,s.name seller_name,b.name buyer_name FROM saliyah_sim_property_trades t LEFT JOIN saliyah_sim_properties p ON p.id=t.property_id LEFT JOIN saliyah_sim_citizens s ON s.id=t.seller_id LEFT JOIN saliyah_sim_citizens b ON b.id=t.buyer_id ORDER BY t.created_at DESC LIMIT 60").all(),
+  db.prepare("SELECT h.*,c.name company_name,o.name owner_name FROM saliyah_sim_shares h LEFT JOIN saliyah_sim_companies c ON c.id=h.company_id LEFT JOIN saliyah_sim_citizens o ON o.id=h.owner_id ORDER BY h.units DESC LIMIT 60").all(),
+  db.prepare("SELECT t.*,c.name company_name,s.name seller_name,b.name buyer_name FROM saliyah_sim_share_trades t LEFT JOIN saliyah_sim_companies c ON c.id=t.company_id LEFT JOIN saliyah_sim_citizens s ON s.id=t.seller_id LEFT JOIN saliyah_sim_citizens b ON b.id=t.buyer_id ORDER BY t.created_at DESC LIMIT 60").all(),
+  db.prepare("SELECT m.*,a.name partner_a_name,b.name partner_b_name FROM saliyah_sim_marriages m LEFT JOIN saliyah_sim_citizens a ON a.id=m.partner_a LEFT JOIN saliyah_sim_citizens b ON b.id=m.partner_b ORDER BY m.created_at DESC LIMIT 30").all(),
+  db.prepare("SELECT e.*,c.name citizen_name FROM saliyah_sim_life_events e LEFT JOIN saliyah_sim_citizens c ON c.id=e.citizen_id ORDER BY e.created_at DESC LIMIT 30").all()
  ]);
  return json({simulation:true,properties:properties.results,property_trades:propertyTrades.results,shareholdings:shares.results,share_trades:shareTrades.results,marriages:marriages.results,life_events:lifeEvents.results});
 }
