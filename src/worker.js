@@ -48,11 +48,11 @@ if(path.startsWith('/api/x/')){
   if(!own)return json({error:'أنشئ حساب إكس أولاً'},403);
   const stats=await creatorStats(own.id);
   const eligible=own.kind==='person'&&stats.followers>=10&&stats.likes>=20&&stats.reposts>=5;
-  const amount=eligible?Math.min(500,Math.floor((stats.followers_twice+stats.likes_twice*2+stats.reposts_twice*3)/2)):0;
+  const amount=eligible?Math.floor((stats.followers_twice+stats.likes_twice*2+stats.reposts_twice*3)/2):0;
   const period=Math.floor(Date.now()/259200000).toString();
   const paid=await db.prepare('SELECT id,amount,created_at FROM x_creator_payouts WHERE profile_id=? AND period=?').bind(own.id,period).first();
   const history=await db.prepare('SELECT period,amount,created_at FROM x_creator_payouts WHERE profile_id=? ORDER BY created_at DESC LIMIT 12').bind(own.id).all();
-  return json({stats,eligible,amount,period,paid:!!paid,history:history.results,requirements:{followers:10,likes:20,reposts:5},period_cap:500,period_days:3,kind:own.kind});
+  return json({stats,eligible,amount,period,paid:!!paid,history:history.results,requirements:{followers:10,likes:20,reposts:5},period_cap:null,unlimited_earnings:true,period_days:3,kind:own.kind});
  }
  if(method==='POST'&&path==='/api/x/earnings/claim'){
   if(!user)return json({error:'سجل الدخول أولاً'},401);
@@ -64,11 +64,11 @@ if(path.startsWith('/api/x/')){
   if(!account)return json({error:'الحساب البنكي لا يخصك'},403);
   const stats=await creatorStats(own.id);
   if(stats.followers<10||stats.likes<20||stats.reposts<5)return json({error:'لم تحقق شروط برنامج الشهرة بعد'},403);
-  const amount=Math.min(500,Math.floor((stats.followers_twice+stats.likes_twice*2+stats.reposts_twice*3)/2));
+  const amount=Math.floor((stats.followers_twice+stats.likes_twice*2+stats.reposts_twice*3)/2);
   const period=Math.floor(Date.now()/259200000).toString();
   const id=random();
   try{await db.prepare('INSERT INTO x_creator_payouts(id,profile_id,user_id,period,followers,likes,reposts,amount,bank_account_id) VALUES(?,?,?,?,?,?,?,?,?)').bind(id,own.id,user.id,period,stats.followers,stats.likes,stats.reposts,amount,account.id).run();}
-  catch{return json({error:'تم صرف مكافأة هذا الشهر مسبقاً أو تعذر إتمام التحويل'},409)}
+  catch{return json({error:'تم صرف مكافأة هذه الدورة مسبقاً أو تعذر إتمام التحويل'},409)}
   await audit(db,user.id,'x_creator_reward','x_creator_payout',id,{amount,period});
   return json({ok:true,amount,period});
  }
