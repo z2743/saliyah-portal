@@ -37,9 +37,23 @@ async function runSaliyahGovernment(db){
  await db.prepare("INSERT OR IGNORE INTO saliyah_sim_bank_accounts(id,owner_type,owner_id,account_number,bank_name,balance) SELECT 'sim-bank-b-'||id,'company',id,'SB-'||id,'البنك الصالي للأعمال',MAX(0,capital) FROM saliyah_sim_companies WHERE status='approved'").run();
  // Each simulated company chooses weekly (1) or fortnightly (2) payroll.
  try{await db.prepare("ALTER TABLE saliyah_sim_companies ADD COLUMN payroll_weeks INTEGER NOT NULL DEFAULT 1").run()}catch(e){if(!String(e).includes('duplicate column name'))throw e}
+ // The fictional founder acts as the company's automated director and selects its pay cycle.
+ // A choice is reconsidered once every four weeks, not every scheduled run.
+ await db.prepare("CREATE TABLE IF NOT EXISTS saliyah_sim_company_payroll_decisions(id TEXT PRIMARY KEY,company_id TEXT NOT NULL,founder_id TEXT NOT NULL,previous_weeks INTEGER NOT NULL,new_weeks INTEGER NOT NULL,reason TEXT NOT NULL,decided_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP)").run();
+ const managementPeriod=Math.floor(Date.now()/2419200000);
+ const companiesToManage=(await db.prepare("SELECT c.id,c.founder_id,c.payroll_weeks,c.capital,COUNT(j.id) staff_jobs FROM saliyah_sim_companies c LEFT JOIN saliyah_sim_jobs j ON j.company_id=c.id WHERE c.status='approved' AND c.founder_id IN (SELECT id FROM saliyah_sim_citizens) GROUP BY c.id LIMIT 100").all()).results;
+ for(const company of companiesToManage){
+  const decisionId='sim-payroll-choice-'+managementPeriod+'-'+company.id;
+  if(await db.prepare("SELECT 1 FROM saliyah_sim_company_payroll_decisions WHERE id=?").bind(decisionId).first())continue;
+  const nextWeeks=(Number(company.capital)<10000||Number(company.staff_jobs)>3)?2:1;
+  const previousWeeks=Number(company.payroll_weeks)===2?2:1;
+  await db.batch([
+   db.prepare("INSERT OR IGNORE INTO saliyah_sim_company_payroll_decisions(id,company_id,founder_id,previous_weeks,new_weeks,reason) VALUES(?,?,?,?,?,?)").bind(decisionId,company.id,company.founder_id,previousWeeks,nextWeeks,nextWeeks===2?'قرار المدير الآلي لتخفيف ضغط السيولة':'قرار المدير الآلي للصرف الأسبوعي'),
+   db.prepare("UPDATE saliyah_sim_companies SET payroll_weeks=? WHERE id=?").bind(nextWeeks,company.id)
+  ]);
+ }
  // Weekly pay cycle starts on Monday, every second Monday for fortnightly companies.
- A D1 batch is transactional: all debit/credit and journal
- // writes succeed together or are rolled back. Unique payment IDs make retries idempotent.
+ // D1 batch makes debit, credit and journal writes atomic; IDs prevent duplicates.
  const payrollWeek=(()=>{const d=new Date();const day=(d.getUTCDay()+6)%7;d.setUTCDate(d.getUTCDate()-day);return d.toISOString().slice(0,10)})();
  const payroll=(await db.prepare("SELECT j.id job_id,j.salary,j.company_id,c.payroll_weeks,a.citizen_id,co.id payer,ci.id payee,co.balance available FROM saliyah_sim_jobs j JOIN saliyah_sim_companies c ON c.id=j.company_id JOIN saliyah_sim_job_applications a ON a.job_id=j.id AND a.status='hired' JOIN saliyah_sim_bank_accounts co ON co.owner_type='company' AND co.owner_id=j.company_id JOIN saliyah_sim_bank_accounts ci ON ci.owner_type='citizen' AND ci.owner_id=a.citizen_id WHERE j.salary>0 LIMIT 30").all()).results;
  for(const job of payroll){
