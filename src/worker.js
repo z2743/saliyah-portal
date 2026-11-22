@@ -90,9 +90,8 @@ async function runSaliyahGovernment(db){
  ];
  const slotCompany=Math.floor(hour/8),venture=ventures[slotCompany%ventures.length],companyId='sim-company-'+slotCompany;
  await db.prepare("INSERT OR IGNORE INTO saliyah_sim_companies(id,founder_id,name,activity,location,description,capital,status) VALUES(?,?,?,?,?,?,?,'approved')").bind(companyId,'sim-resident-'+String(1+slotCompany%2000).padStart(4,'0'),...venture).run();
- // Royal standing authorization for simulated citizens only: process routine identity requests.
- // This never touches human accounts, real identity requests, or ministry/royal approvals.
- await db.prepare("UPDATE saliyah_sim_identities SET status='issued',issued_at=CURRENT_TIMESTAMP,expires_at=datetime('now','+14 days') WHERE id IN (SELECT id FROM saliyah_sim_identities WHERE status='requested' AND citizen_id LIKE 'sim-resident-%' ORDER BY id LIMIT 50)").run();
+ // Simulated identity issuance and renewal are already handled earlier in this cycle.
+ // Royal decisions for real citizens and major government projects remain separate.
  // Standing royal authorization: ordinary fictional businesses may operate automatically.
  await db.prepare("UPDATE saliyah_sim_companies SET status='approved',reviewed_by='royal-standing-authorization',reviewed_at=CURRENT_TIMESTAMP WHERE status='pending_human' AND capital<=100000").run();
  // Employers can automatically process fictional applicants for approved companies only.
