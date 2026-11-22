@@ -46,27 +46,35 @@ if(method==='POST'&&path==='/api/auth/logout'){const t=(req.headers.get('cookie'
 if(method==='POST'&&path==='/api/admin/ministries/provision'){
  if(!user||user.role!=='king')return json({error:'للملك فقط'},403);
  const created=[];
- for(let i=0;i<ministries.length;i++){
-  const exists=await db.prepare('SELECT 1 FROM ministry_accounts WHERE ministry_id=?').bind(i).first();
-  if(exists)continue;
-  const username='ministry_'+String(i+1).padStart(2,'0');
-  const password=crypto.randomUUID().replace(/-/g,'')+crypto.randomUUID().replace(/-/g,'').slice(0,8);
-  const id=random(),salt=random();
-  await db.batch([db.prepare("INSERT INTO users(id,username,password_hash,salt,role) VALUES(?,?,?,?,'employee')").bind(id,username,await derive(password,salt),salt),db.prepare('INSERT INTO ministry_accounts(ministry_id,user_id) VALUES(?,?)').bind(i,id)]);
-  created.push({ministry_id:i,ministry:ministries[i].name,minister:ministries[i].minister,username,password});
-  await audit(db,user.id,'provision_ministry','ministry',String(i),{username});
+ const ministers=[...new Set(ministries.map(m=>m.minister))];
+ for(let i=0;i<ministers.length;i++){
+  const owned=ministries.filter(m=>m.minister===ministers[i]);
+  const existing=await db.prepare('SELECT m.user_id,u.username FROM ministry_accounts m JOIN users u ON u.id=m.user_id WHERE m.ministry_id=?').bind(owned[0].id).first();
+  let id=existing?.user_id,username=existing?.username,password=null;
+  if(!id){username='minister_'+String(i+1).padStart(2,'0');password=crypto.randomUUID().replace(/-/g,'')+crypto.randomUUID().replace(/-/g,'').slice(0,8);id=random();const salt=random();await db.prepare("INSERT INTO users(id,username,password_hash,salt,role) VALUES(?,?,?,?,'employee')").bind(id,username,await derive(password,salt),salt).run();}
+  for(const m of owned){
+   const assigned=await db.prepare('SELECT user_id FROM ministry_accounts WHERE ministry_id=?').bind(m.id).first();
+   if(assigned&&assigned.user_id!==id)continue;
+   if(!assigned)await db.prepare('INSERT INTO ministry_accounts(ministry_id,user_id) VALUES(?,?)').bind(m.id,id).run();
+  }
+  if(password){created.push({minister:ministers[i],ministries:owned.map(m=>m.name),username,password});await audit(db,user.id,'provision_minister','user',id,{ministries:owned.map(m=>m.id)});}
  }
- return json({created,count:created.length,note:'احفظ بيانات الدخول الآن؛ لن تُعرض كلمات المرور مرة أخرى'});
+ return json({created,count:created.length,note:'حساب واحد لكل وزير وصلاحيات وزاراته فقط؛ احفظ كلمات المرور الآن'});
 }
 if(method==='GET'&&path==='/api/ministries/accounts'){
  if(!user||user.role!=='king')return json({error:'للملك فقط'},403);
- const r=await db.prepare("SELECT m.ministry_id,u.username,m.created_at FROM ministry_accounts m JOIN users u ON u.id=m.user_id ORDER BY m.ministry_id").all();
- return json({accounts:r.results.map(x=>({...x,ministry:ministries[x.ministry_id]?.name||''}))});
+ const r=await db.prepare("SELECT m.ministry_id,u.username,m.user_id,m.created_at FROM ministry_accounts m JOIN users u ON u.id=m.user_id ORDER BY m.ministry_id").all();
+ const groups=new Map();for(const x of r.results){if(!groups.has(x.user_id))groups.set(x.user_id,{username:x.username,minister:ministries[x.ministry_id]?.minister,ministries:[]});groups.get(x.user_id).ministries.push(ministries[x.ministry_id]?.name);}
+ return json({accounts:[...groups.values()]});
 }
 if(path.startsWith('/api/ministry-office/')){
  if(!user)return json({error:'يجب تسجيل الدخول'},401);
  const b=method==='POST'?await input(req):null;
- const id=user.role==='king'?Number(method==='POST'?b?.ministry_id:u.searchParams.get('ministry_id')):Number((await db.prepare('SELECT ministry_id FROM ministry_accounts WHERE user_id=?').bind(user.id).first())?.ministry_id);
+ const assigned=user.role==='king'?ministries.map(m=>m.id):(await db.prepare('SELECT ministry_id FROM ministry_accounts WHERE user_id=? ORDER BY ministry_id').bind(user.id).all()).results.map(x=>x.ministry_id);
+ const requested=method==='POST'?b?.ministry_id:u.searchParams.get('ministry_id');
+ const id=requested==null||requested===''?(assigned.length===1?assigned[0]:NaN):Number(requested);
+ if(method==='GET'&&path==='/api/ministry-office/ministries')return json({ministries:assigned.map(i=>ministries[i])});
+ if(!assigned.includes(id))return json({error:'الوزارة ليست ضمن صلاحيات حسابك'},403);
  if(!Number.isInteger(id)||id<0||id>=ministries.length)return json({error:'ليس لديك حساب وزارة أو وزارة غير صالحة'},403);
  if(method==='GET'&&path==='/api/ministry-office/profile')return json({ministry:ministries[id],scope:'إدارة طلبات الوزارة ومراسلاتها فقط؛ لا تشمل صلاحيات جهات أخرى أو القرارات السيادية'});
  if(method==='GET'&&path==='/api/ministry-office/actions'){const r=await db.prepare('SELECT id,subject,details,status,created_at FROM ministry_actions WHERE ministry_id=? ORDER BY created_at DESC LIMIT 100').bind(id).all();return json({ministry:ministries[id],actions:r.results});
