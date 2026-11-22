@@ -90,6 +90,9 @@ async function runSaliyahGovernment(db){
  ];
  const slotCompany=Math.floor(hour/8),venture=ventures[slotCompany%ventures.length],companyId='sim-company-'+slotCompany;
  await db.prepare("INSERT OR IGNORE INTO saliyah_sim_companies(id,founder_id,name,activity,location,description,capital,status) VALUES(?,?,?,?,?,?,?,'approved')").bind(companyId,'sim-resident-'+String(1+slotCompany%2000).padStart(4,'0'),...venture).run();
+ // Royal standing authorization for simulated citizens only: process routine identity requests.
+ // This never touches human accounts, real identity requests, or ministry/royal approvals.
+ await db.prepare("UPDATE saliyah_sim_identities SET status='issued',issued_at=CURRENT_TIMESTAMP,expires_at=datetime('now','+14 days') WHERE id IN (SELECT id FROM saliyah_sim_identities WHERE status='requested' AND citizen_id LIKE 'sim-resident-%' ORDER BY id LIMIT 50)").run();
  // Standing royal authorization: ordinary fictional businesses may operate automatically.
  await db.prepare("UPDATE saliyah_sim_companies SET status='approved',reviewed_by='royal-standing-authorization',reviewed_at=CURRENT_TIMESTAMP WHERE status='pending_human' AND capital<=100000").run();
  // Employers can automatically process fictional applicants for approved companies only.
@@ -553,6 +556,25 @@ if(method==='POST'&&path==='/api/admin/simulation/projects/decision'){
  if(!updated.meta.changes)return json({error:'الطلب غير موجود أو تمت مراجعته'},409);
  await audit(db,user.id,'simulation_project_decision','saliyah_project',b.id,{decision:b.decision});
  return json({ok:true,status:b.decision});
+}
+if(method==='GET'&&path==='/api/admin/simulation/citizens'){
+ if(!user||user.role!=='king')return json({error:'للملك فقط'},403);
+ const [citizens,identities,companies,jobs,applications,enrollments,marriages,children,events,posts,profiles,projects,latest]=await Promise.all([
+  db.prepare("SELECT COUNT(*) n FROM saliyah_sim_citizens").first(),
+  db.prepare("SELECT status,COUNT(*) n FROM saliyah_sim_identities GROUP BY status").all(),
+  db.prepare("SELECT id,name,activity,location,capital,status,founder_id,created_at FROM saliyah_sim_companies ORDER BY created_at DESC LIMIT 100").all(),
+  db.prepare("SELECT j.id,j.title,j.salary,j.status,c.name company FROM saliyah_sim_jobs j JOIN saliyah_sim_companies c ON c.id=j.company_id ORDER BY j.created_at DESC LIMIT 100").all(),
+  db.prepare("SELECT a.id,a.status,a.created_at,c.name citizen,j.title job FROM saliyah_sim_job_applications a JOIN saliyah_sim_citizens c ON c.id=a.citizen_id JOIN saliyah_sim_jobs j ON j.id=a.job_id ORDER BY a.created_at DESC LIMIT 100").all(),
+  db.prepare("SELECT COUNT(*) n FROM saliyah_sim_enrollments").first(),
+  db.prepare("SELECT COUNT(*) n FROM saliyah_sim_marriages").first(),
+  db.prepare("SELECT COUNT(*) n FROM saliyah_sim_children").first(),
+  db.prepare("SELECT id,citizen_id,event_type,description,created_at FROM saliyah_sim_life_events ORDER BY created_at DESC LIMIT 100").all(),
+  db.prepare("SELECT COUNT(*) n FROM x_posts").first(),
+  db.prepare("SELECT COUNT(*) n FROM x_profiles").first(),
+  db.prepare("SELECT status,COUNT(*) n FROM saliyah_projects GROUP BY status").all(),
+  db.prepare("SELECT key,value FROM saliyah_sim_settings WHERE key LIKE 'last_%' OR key LIKE 'simulation_health%' ORDER BY key").all()
+ ]);
+ return json({ok:true,citizens:citizens.n,identities:identities.results,companies:companies.results,jobs:jobs.results,applications:applications.results,enrollments:enrollments.n,marriages:marriages.n,children:children.n,events:events.results,x_posts:posts.n,x_profiles:profiles.n,projects:projects.results,diagnostics:Object.fromEntries(latest.results.map(x=>[x.key,x.value]))});
 }
 if(method==='GET'&&path==='/api/simulation/diagnostics'){if(!user||user.role!=='king')return json({error:'للملك فقط'},403);const rows=await db.prepare("SELECT key,value FROM saliyah_sim_settings WHERE key LIKE 'last_%' ORDER BY key").all();return json({ok:true,diagnostics:Object.fromEntries(rows.results.map(x=>[x.key,x.value]))})}
 if(method==='GET'&&path==='/api/simulation/status'){
