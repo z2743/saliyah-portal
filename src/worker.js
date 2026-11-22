@@ -45,7 +45,7 @@ async function runSaliyahGovernment(db){
  await db.prepare("CREATE TABLE IF NOT EXISTS saliyah_sim_education_details(institution_id TEXT PRIMARY KEY,sector TEXT NOT NULL,level TEXT NOT NULL,tuition INTEGER NOT NULL DEFAULT 0,capacity INTEGER NOT NULL DEFAULT 200,founder_id TEXT)").run();
  const educationDay=Math.floor(Date.now()/86400000);
  const educationNames=['مدرسة الرواد','مدارس الأفق','مدرسة النور','أكاديمية المستقبل','مدرسة الواحة','مدارس الإبداع','مدرسة الأمل','مدارس القمة'];
- const sector=educationDay%3===0?'private':'public',level=educationDay%4===0?'secondary':educationDay%4===1?'primary':educationDay%4===2?'middle':'all',location=educationDay%2===0?'السجادة':'المتجار';
+ const sector=educationDay%3===0?'private':'public',level=educationDay%4===0?'secondary':educationDay%4===1?'primary':educationDay%4===2?'middle':'all';
  const schoolId='sim-school-auto-'+educationDay,schoolName=educationNames[educationDay%educationNames.length]+' '+(sector==='private'?'الأهلية':'الحكومية')+' '+educationDay;
  await db.prepare("INSERT OR IGNORE INTO saliyah_sim_institutions(id,project_id,name,kind,status) VALUES(?,?,?,'school','open')").bind(schoolId,schoolId,schoolName).run();
  await db.prepare("INSERT OR IGNORE INTO saliyah_sim_education_details(institution_id,sector,level,tuition,capacity,founder_id) VALUES(?,?,?,?,?,?)").bind(schoolId,sector,level,sector==='private'?1200+(educationDay%5)*500:0,120+(educationDay%5)*80,sector==='private'?'sim-resident-'+String(1+educationDay%2000).padStart(4,'0'):'ministry-education').run();
