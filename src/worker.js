@@ -95,8 +95,11 @@ async function runSaliyahGovernment(db){
  // Employers can automatically process fictional applicants for approved companies only.
  const pendingApplications=(await db.prepare("SELECT a.id,a.citizen_id,a.job_id FROM saliyah_sim_job_applications a JOIN saliyah_sim_jobs j ON j.id=a.job_id JOIN saliyah_sim_companies c ON c.id=j.company_id WHERE a.status='applied' AND c.status='approved' ORDER BY a.created_at LIMIT 15").all()).results;
  for(const a of pendingApplications){
-  await db.prepare("UPDATE saliyah_sim_job_applications SET status='hired',decided_at=CURRENT_TIMESTAMP WHERE id=? AND status='applied'").bind(a.id).run();
-  await db.prepare("UPDATE saliyah_sim_citizens SET occupation='موظف' WHERE id=?").bind(a.citizen_id).run();
+  const occupied=await db.prepare("SELECT 1 FROM saliyah_sim_job_applications WHERE job_id=? AND status='hired' LIMIT 1").bind(a.job_id).first();
+  if(occupied)continue;
+  const hired=await db.prepare("UPDATE saliyah_sim_job_applications SET status='hired',decided_at=CURRENT_TIMESTAMP WHERE id=? AND status='applied'").bind(a.id).run();
+  if(hired.meta.changes)await db.prepare("UPDATE saliyah_sim_citizens SET occupation='موظف' WHERE id=?").bind(a.citizen_id).run();
+  await db.prepare("UPDATE saliyah_sim_jobs SET status='filled' WHERE id=? AND status='open'").bind(a.job_id).run();
  }
  // Once a human approves a fictional business, it can hire simulated workers autonomously.
  const approved=(await db.prepare("SELECT id FROM saliyah_sim_companies WHERE status='approved' ORDER BY created_at DESC LIMIT 15").all()).results;
