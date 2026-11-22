@@ -22,6 +22,36 @@ if(path.startsWith('/api/x/')){
   const own=await profileFor();
   return json({posts:rows.results,profile:own});
  }
+ if(method==='GET'&&path==='/api/x/earnings'){
+  if(!user)return json({error:'سجل الدخول أولاً'},401);
+  const own=await profileFor();
+  if(!own)return json({error:'أنشئ حساب إكس أولاً'},403);
+  const stats=await db.prepare("SELECT (SELECT COUNT(*) FROM x_follows f WHERE f.following_id=?) followers,(SELECT COUNT(*) FROM x_likes l JOIN x_posts p ON p.id=l.post_id WHERE p.profile_id=? AND l.profile_id<>?) likes,(SELECT COUNT(DISTINCT r.profile_id) FROM x_posts r JOIN x_posts p ON p.id=r.repost_of WHERE p.profile_id=? AND r.profile_id<>?) reposts").bind(own.id,own.id,own.id,own.id,own.id).first();
+  const eligible=own.kind==='person'&&stats.followers>=10&&stats.likes>=20&&stats.reposts>=5;
+  const amount=eligible?Math.min(500,stats.followers+stats.likes*2+stats.reposts*3):0;
+  const period=new Date().toISOString().slice(0,7);
+  const paid=await db.prepare('SELECT id,amount,created_at FROM x_creator_payouts WHERE profile_id=? AND period=?').bind(own.id,period).first();
+  const history=await db.prepare('SELECT period,amount,created_at FROM x_creator_payouts WHERE profile_id=? ORDER BY created_at DESC LIMIT 12').bind(own.id).all();
+  return json({stats,eligible,amount,period,paid:!!paid,history:history.results,requirements:{followers:10,likes:20,reposts:5},monthly_cap:500,kind:own.kind});
+ }
+ if(method==='POST'&&path==='/api/x/earnings/claim'){
+  if(!user)return json({error:'سجل الدخول أولاً'},401);
+  const own=await profileFor();
+  if(!own||own.kind!=='person')return json({error:'مكافآت الشهرة للحسابات الشخصية فقط'},403);
+  const b=await input(req);
+  if(!b||!validText(b.bank_account_id,10,80))return json({error:'اختر حسابك البنكي'},400);
+  const account=await db.prepare('SELECT id FROM bank_accounts WHERE id=? AND user_id=?').bind(b.bank_account_id,user.id).first();
+  if(!account)return json({error:'الحساب البنكي لا يخصك'},403);
+  const stats=await db.prepare("SELECT (SELECT COUNT(*) FROM x_follows f WHERE f.following_id=?) followers,(SELECT COUNT(*) FROM x_likes l JOIN x_posts p ON p.id=l.post_id WHERE p.profile_id=? AND l.profile_id<>?) likes,(SELECT COUNT(DISTINCT r.profile_id) FROM x_posts r JOIN x_posts p ON p.id=r.repost_of WHERE p.profile_id=? AND r.profile_id<>?) reposts").bind(own.id,own.id,own.id,own.id,own.id).first();
+  if(stats.followers<10||stats.likes<20||stats.reposts<5)return json({error:'لم تحقق شروط برنامج الشهرة بعد'},403);
+  const amount=Math.min(500,stats.followers+stats.likes*2+stats.reposts*3);
+  const period=new Date().toISOString().slice(0,7);
+  const id=random();
+  try{await db.prepare('INSERT INTO x_creator_payouts(id,profile_id,user_id,period,followers,likes,reposts,amount,bank_account_id) VALUES(?,?,?,?,?,?,?,?,?)').bind(id,own.id,user.id,period,stats.followers,stats.likes,stats.reposts,amount,account.id).run();}
+  catch{return json({error:'تم صرف مكافأة هذا الشهر مسبقاً أو تعذر إتمام التحويل'},409)}
+  await audit(db,user.id,'x_creator_reward','x_creator_payout',id,{amount,period});
+  return json({ok:true,amount,period});
+ }
  if(method==='GET'&&path==='/api/x/profile'){
   const handle=u.searchParams.get('handle')||'';
   const p=await db.prepare('SELECT id,handle,display_name,bio,kind,verified,created_at FROM x_profiles WHERE handle=?').bind(handle).first();
