@@ -26,9 +26,18 @@ if(path.startsWith('/api/x/')){
  };
 
  if(method==='GET'&&path==='/api/x/feed'){
-  const rows=await db.prepare("SELECT p.id,p.body,p.reply_to,p.repost_of,p.created_at,a.id profile_id,a.handle,a.display_name,a.kind,a.verified,(SELECT COUNT(*) FROM x_likes l WHERE l.post_id=p.id)+(SELECT COALESCE(CAST((max(0,julianday('now')-julianday(b.created_at))*max(0,julianday('now')-julianday(b.created_at))*1250)+(b.bot_likes*min(1,max(0,julianday('now')-julianday(b.created_at))/3)) AS INTEGER),0) FROM x_bot_reach b WHERE b.post_id=p.id) likes,(SELECT COUNT(*) FROM x_posts r WHERE r.reply_to=p.id) replies FROM x_posts p JOIN x_profiles a ON a.id=p.profile_id ORDER BY p.created_at DESC LIMIT 100").all();
+  const rows=await db.prepare("SELECT p.id,p.body,p.reply_to,p.repost_of,p.created_at,a.id profile_id,a.handle,a.display_name,a.kind,a.verified,(SELECT mime_type FROM x_post_media WHERE post_id=p.id) media_type,(SELECT COUNT(*) FROM x_likes l WHERE l.post_id=p.id)+(SELECT COALESCE(CAST((max(0,julianday('now')-julianday(b.created_at))*max(0,julianday('now')-julianday(b.created_at))*1250)+(b.bot_likes*min(1,max(0,julianday('now')-julianday(b.created_at))/3)) AS INTEGER),0) FROM x_bot_reach b WHERE b.post_id=p.id) likes,(SELECT COUNT(*) FROM x_posts r WHERE r.reply_to=p.id) replies FROM x_posts p JOIN x_profiles a ON a.id=p.profile_id ORDER BY p.created_at DESC LIMIT 100").all();
   const own=await profileFor();
-  return json({posts:rows.results,profile:own});
+  return json({posts:rows.results.map(p=>({...p,media_url:p.media_type?'/api/x/media/'+encodeURIComponent(p.id):null})),profile:own});
+ }
+ if(method==='GET'&&path.startsWith('/api/x/media/')){
+  const postId=decodeURIComponent(path.slice('/api/x/media/'.length));
+  if(!/^[a-f0-9-]{36}$/.test(postId))return json({error:'ملف غير موجود'},404);
+  const media=await db.prepare('SELECT mime_type,data_base64 FROM x_post_media WHERE post_id=?').bind(postId).first();
+  if(!media)return json({error:'ملف غير موجود'},404);
+  const binary=atob(media.data_base64);const bytes=new Uint8Array(binary.length);
+  for(let i=0;i<binary.length;i++)bytes[i]=binary.charCodeAt(i);
+  return new Response(bytes,{headers:{'content-type':media.mime_type,'cache-control':'public, max-age=3600','x-content-type-options':'nosniff','content-security-policy':"default-src 'none'; sandbox"}});
  }
  if(method==='GET'&&path==='/api/x/bot-comments'){
   const id=u.searchParams.get('post_id')||'';
@@ -112,10 +121,23 @@ if(path.startsWith('/api/x/')){
   if(!assigned)return json({error:'انتهت صلاحية إدارة الحساب الوزاري'},403);
  }
  if(method==='POST'&&path==='/api/x/post'){
-  const b=await input(req);if(!b||!validText(b.body,1,500))return json({error:'المنشور يجب أن يكون بين 1 و500 حرف'},400);
+  const b=await input(req);const hasMedia=!!b?.media;
+  if(!b||(String(b.body||'').trim().length===0&&!hasMedia)||String(b.body||'').length>500)return json({error:'اكتب نصاً حتى 500 حرف أو أرفق صورة/فيديو'},400);
+  let mediaType=null,mediaData=null;
+  if(hasMedia){
+   mediaType=String(b.media.type||'');mediaData=String(b.media.data||'');
+   if(!['image/jpeg','image/png','image/webp','image/gif','video/mp4','video/webm'].includes(mediaType)||!/^[A-Za-z0-9+/]+={0,2}$/.test(mediaData)||mediaData.length>1400000||mediaData.length%4!==0)return json({error:'نوع الملف غير مدعوم أو حجمه يتجاوز 1 ميجابايت (تخزين D1)'},400);
+   try{const bytes=atob(mediaData);if(bytes.length>1048576||bytes.length===0)return json({error:'الحد الأعلى للملف 1 ميجابايت'},413);
+    const sig=Array.from(bytes.slice(0,12),c=>c.charCodeAt(0));
+    const starts=(a)=>a.every((v,i)=>sig[i]===v);
+    const valid=mediaType==='image/jpeg'?starts([255,216,255]):mediaType==='image/png'?starts([137,80,78,71,13,10,26,10]):mediaType==='image/gif'?starts([71,73,70,56]):mediaType==='image/webp'?String.fromCharCode(...sig.slice(0,4))==='RIFF'&&String.fromCharCode(...sig.slice(8,12))==='WEBP':mediaType==='video/mp4'?String.fromCharCode(...sig.slice(4,8))==='ftyp':starts([26,69,223,163]);
+    if(!valid)return json({error:'محتوى الملف لا يطابق نوعه'},400);
+   }catch{return json({error:'ملف غير صالح'},400)}
+  }
   let parent=null;if(b.reply_to){parent=await db.prepare('SELECT id FROM x_posts WHERE id=?').bind(String(b.reply_to)).first();if(!parent)return json({error:'المنشور الأصلي غير موجود'},404)}
   let repost=null;if(b.repost_of){repost=await db.prepare('SELECT id FROM x_posts WHERE id=?').bind(String(b.repost_of)).first();if(!repost)return json({error:'المنشور المراد إعادة نشره غير موجود'},404)}
-  const id=random();await db.prepare('INSERT INTO x_posts(id,profile_id,body,reply_to,repost_of) VALUES(?,?,?,?,?)').bind(id,own.id,b.body.trim(),parent?.id||null,repost?.id||null).run();
+  const id=random();await db.prepare('INSERT INTO x_posts(id,profile_id,body,reply_to,repost_of) VALUES(?,?,?,?,?)').bind(id,own.id,String(b.body||'').trim(),parent?.id||null,repost?.id||null).run();
+  if(mediaType){try{await db.prepare('INSERT INTO x_post_media(post_id,mime_type,data_base64) VALUES(?,?,?)').bind(id,mediaType,mediaData).run()}catch{await db.prepare('DELETE FROM x_posts WHERE id=?').bind(id).run();return json({error:'تعذر حفظ المرفق في قاعدة البيانات'},500)}}
   return json({id,ok:true},201);
  }
  if(method==='POST'&&path==='/api/x/like'){
