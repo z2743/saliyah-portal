@@ -198,12 +198,20 @@ async function generateXBotActivity(db){
   const body=topics[(now*3+i*7)%topics.length];
   await db.prepare('INSERT OR IGNORE INTO x_posts(id,profile_id,body) VALUES(?,?,?)').bind(id,profile,body).run();
  }
- const posts=await db.prepare("SELECT id,profile_id FROM x_posts ORDER BY created_at DESC LIMIT 90").all();
- for(let i=0;i<Math.min(360,posts.results.length*4);i++){
-  const p=posts.results[(now*13+i*17)%posts.results.length];
-  const bot=botIds[(now*5+i*7)%botIds.length];
-  if(bot===p.profile_id)continue;
-  await db.prepare('INSERT OR IGNORE INTO x_likes(profile_id,post_id) VALUES(?,?)').bind(bot,p.id).run();
+ // Uneven discovery: most posts receive little engagement; a few trend temporarily.
+ // The distribution rotates over time, so fame is neither universal nor permanent.
+ const posts=(await db.prepare("SELECT id,profile_id FROM x_posts WHERE reply_to IS NULL ORDER BY created_at DESC LIMIT 180").all()).results;
+ const score=(id,salt)=>{let h=2166136261;for(const ch of String(id)+':'+salt){h=Math.imul(h^ch.charCodeAt(0),16777619)}return h>>>0};
+ for(let i=0;i<360&&posts.length;i++){
+  const candidate=posts[score(now+':'+i,'pick')%posts.length];
+  const wave=score(candidate.id,Math.floor(now/24));
+  const tier=wave%100;
+  // About 70% of posts remain quiet, 25% get moderate reach, 5% trend.
+  const chance=tier<70?4:tier<95?24:85;
+  if(score(candidate.id,now+':'+i)%100>=chance)continue;
+  const bot=botIds[score(candidate.id,now+':fan:'+i)%botIds.length];
+  if(bot===candidate.profile_id)continue;
+  await db.prepare('INSERT OR IGNORE INTO x_likes(profile_id,post_id) VALUES(?,?)').bind(bot,candidate.id).run();
  }
  // Bots reply to one another with context-aware, visibly automated discussions.
  const replies=[
