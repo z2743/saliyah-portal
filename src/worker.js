@@ -1697,6 +1697,27 @@ if(method==='GET'&&path==='/api/registry/documents'){const r=await db.prepare('S
  if(method==='POST'&&path==='/api/civil/family-cards/renew'){const b=await input(req);if(!b||!validText(b.id,10,80)||!validText(b.reason,3,300)||!validText(b.father_name,2,160)||!validText(b.mother_name,2,160)||!Array.isArray(b.children)||b.children.length>10||b.children.some(c=>!validText(c,2,160)))return json({error:'بيانات التجديد غير صالحة'},400);const old=await db.prepare("SELECT * FROM family_cards WHERE id=?").bind(b.id).first();if(!old)return json({error:'سجل الأسرة غير موجود'},404);const children=JSON.stringify(b.children.map(x=>x.trim()));if(old.children_json===children&&old.father_name===b.father_name.trim()&&old.mother_name===b.mother_name.trim()&&(old.phone||'')===(b.phone?.trim()||''))return json({error:'لا توجد تغييرات تستدعي التجديد'},409);await db.batch([db.prepare("UPDATE family_cards SET father_name=?,mother_name=?,children_json=?,phone=?,revision=revision+1,updated_at=CURRENT_TIMESTAMP WHERE id=?").bind(b.father_name.trim(),b.mother_name.trim(),children,b.phone?.trim()||null,b.id),db.prepare("INSERT INTO family_card_history(id,family_id,action,previous_children_json,new_children_json,reason,actor_id) VALUES(?,?,'renew',?,?,?,?)").bind(random(),b.id,old.children_json,children,b.reason.trim(),user.id)]);await audit(db,user.id,'renew_family_card','family_card',b.id,{reason:b.reason.trim(),fee:0});return json({ok:true,fee:0});}
  if(method==='POST'&&path==='/api/civil/intake'){const b=await input(req);if(!b||!validText(b.full_name,2,160))return json({error:'الاسم الكامل مطلوب'},400);const id=random(),reference='CIV-'+Date.now().toString(36).toUpperCase()+'-'+id.slice(0,5).toUpperCase();await db.prepare('INSERT INTO civil_intake(id,reference,full_name,parent_name,birth_date,details,created_by) VALUES(?,?,?,?,?,?,?)').bind(id,reference,b.full_name.trim(),String(b.parent_name||'').slice(0,160),b.birth_date||null,String(b.details||'').slice(0,2000),user.id).run();await audit(db,user.id,'civil_intake','civil_intake',id,{reference});return json({id,reference,status:'recorded'},201);}
  if(method==='GET'&&path==='/api/civil/intake'){const r=await db.prepare('SELECT * FROM civil_intake ORDER BY created_at DESC LIMIT 100').all();const counts=await db.prepare("SELECT status,COUNT(*) n FROM saliyah_sim_identities GROUP BY status").all();const bots=await db.prepare("SELECT i.id,i.citizen_id,c.name,i.status,i.issued_at,i.expires_at FROM saliyah_sim_identities i JOIN saliyah_sim_citizens c ON c.id=i.citizen_id ORDER BY CASE WHEN i.status='requested' THEN 0 ELSE 1 END,i.id LIMIT 100").all();return json({applications:r.results,bot_identity_counts:counts.results,bot_identity_applications:bots.results});}
+ if(method==='POST'&&path==='/api/civil/bot-identities/decision'){
+  if(user.role!=='king')return json({error:'هذه الصلاحية للملك فقط'},403);
+  const b=await input(req);
+  if(!b||!['approved','rejected'].includes(b.decision)||(!b.id&&!b.bulk))return json({error:'قرار غير صالح'},400);
+  const note=String(b.note||'').trim().slice(0,500);
+  if(b.decision==='rejected'&&!note)return json({error:'سبب الرفض مطلوب'},400);
+  const limit=b.bulk?Math.min(100,Math.max(1,Number(b.limit)||50)):1;
+  let ids=[];
+  if(b.bulk){const rows=await db.prepare("SELECT id FROM saliyah_sim_identities WHERE status='requested' AND citizen_id LIKE 'sim-resident-%' ORDER BY id LIMIT ?").bind(limit).all();ids=rows.results.map(x=>x.id);}
+  else if(typeof b.id==='string'&&/^sim-id-resident-\d{4}$/.test(b.id))ids=[b.id];
+  if(!ids.length)return json({ok:true,changed:0});
+  let changed=0;
+  for(const id of ids){
+   const result=b.decision==='approved'
+    ?await db.prepare("UPDATE saliyah_sim_identities SET status='issued',issued_at=CURRENT_TIMESTAMP,expires_at=datetime('now','+14 days') WHERE id=? AND status='requested' AND citizen_id LIKE 'sim-resident-%'").bind(id).run()
+    :await db.prepare("UPDATE saliyah_sim_identities SET status='rejected' WHERE id=? AND status='requested' AND citizen_id LIKE 'sim-resident-%'").bind(id).run();
+   changed+=result.meta.changes||0;
+  }
+  if(changed)await audit(db,user.id,'king_bot_identity_decision','saliyah_sim_identities',b.bulk?'bulk':ids[0],{decision:b.decision,changed,note});
+  return json({ok:true,changed});
+ }
  if(method==='POST'&&path==='/api/civil/intake/decision'){
  const b=await input(req);
  if(!b||!validText(b.id,10,80)||!['reviewing','approved','rejected'].includes(b.decision))return json({error:'قرار غير صالح'},400);
