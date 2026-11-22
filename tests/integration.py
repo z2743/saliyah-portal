@@ -52,14 +52,14 @@ class PortalIntegration(unittest.TestCase):
             self.db.execute("INSERT INTO bank_adjustments(id,account_id,actor_id,mode,amount,previous_balance,new_balance,reason) VALUES('adj','a1','king','add',10,100,200,'تصحيح إداري')")
     def test_suspension_request_without_debt(self):
         self.db.execute("INSERT INTO enforcement_cases_v2(id,subject_user_id,document_id,residency_number,amount,reason,ministry_id,created_by,action) VALUES('case1','a',NULL,'alice',0,'طلب مراجعة إيقاف خدمات',1,'king','service_suspension')")
-        row=self.db.execute("SELECT action,amount,status FROM enforcement_cases WHERE id='case1'").fetchone()
+        row=self.db.execute("SELECT action,amount,status FROM enforcement_cases_v2 WHERE id='case1'").fetchone()
         self.assertEqual(row,('service_suspension',0,'pending'))
     def test_enforcement_rejects_zero_debt(self):
         with self.assertRaises(sqlite3.IntegrityError):
             self.db.execute("INSERT INTO enforcement_cases_v2(id,subject_user_id,document_id,residency_number,amount,reason,ministry_id,created_by,action) VALUES('case2','a',NULL,'alice',0,'مطالبة مالية غير صالحة',7,'king','debt')")
     def test_enforcement_supports_user_without_document(self):
         self.db.execute("INSERT INTO enforcement_cases_v2(id,subject_user_id,document_id,residency_number,amount,reason,ministry_id,created_by,action) VALUES('case3','b',NULL,'bob',25,'طلب مالي تجريبي',7,'king','debt')")
-        self.assertEqual(self.db.execute("SELECT subject_user_id FROM enforcement_cases WHERE id='case3'").fetchone()[0],'b')
+        self.assertEqual(self.db.execute("SELECT subject_user_id FROM enforcement_cases_v2 WHERE id='case3'").fetchone()[0],'b')
     def test_site_routes_exist(self):
         js=(ROOT/'public'/'app.js').read_text(encoding='utf-8')
         for route in ('readiness','security','courts','health','municipality','land','commerce','company-staff','service-desk'):
