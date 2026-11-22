@@ -10,6 +10,8 @@ assert.match(sql,/CREATE TRIGGER debt_collect_to_king_on_credit/);
 assert.match(payout,/amount INTEGER NOT NULL CHECK\(amount>=0\)/);
 assert.doesNotMatch(payout,/amount BETWEEN 0 AND 500/);
 assert.match(worker,/ORDER BY random\(\) LIMIT 500/);
+assert.match(worker,/for\(let offset=8;offset>=1;offset--\)/);
+assert.match(worker,/salary-week-/);
 assert.match(worker,/date\(a\.created_at\)<=date\(\?\)/);
 assert.match(worker,/WITH RECURSIVE thread\(id\)/);
 const migrations=readdirSync(new URL('../migrations/',import.meta.url)).filter(n=>n.endsWith('.sql'));
