@@ -125,6 +125,17 @@ if(method==='POST'&&path==='/api/security/revoke-others'){
 }
 
 
+// Service suspension applies only to new optional transactions; login, viewing records,
+// complaints, courts, payments and account access remain available.
+if(user && method==='POST' && (path.startsWith('/api/absher/') || path.startsWith('/api/commerce/') || path.startsWith('/api/land/'))){
+ const hold=await db.prepare("SELECT id FROM service_suspensions WHERE subject_user_id=? AND status='active' LIMIT 1").bind(user.id).first();
+ if(hold)return json({error:'بعض الخدمات الاختيارية موقوفة بقرار إداري. يمكنك مراجعة القرار وتقديم طلب رفع الإيقاف.',code:'SERVICE_SUSPENDED'},403);
+}
+if(method==='GET'&&path==='/api/enforcement/my-status'){
+ if(!user)return json({error:'تسجيل الدخول مطلوب'},401);
+ const r=await db.prepare("SELECT id,reason,created_at,ended_at,status FROM service_suspensions WHERE subject_user_id=? ORDER BY created_at DESC LIMIT 20").bind(user.id).all();
+ return json({suspensions:r.results,active:r.results.some(x=>x.status==='active')});
+}
 // Scoped administrative case workflow. Decisions are recorded, not executed against balances or documents.
 if(path.startsWith('/api/enforcement/')){
  if(!user)return json({error:'تسجيل الدخول مطلوب'},401);
@@ -132,7 +143,7 @@ if(path.startsWith('/api/enforcement/')){
  if(!assigned.length)return json({error:'الخدمة للملك ووزارات الداخلية والعدل والمالية'},403);
  if(method==='GET'&&path==='/api/enforcement/cases'){
   const r=await db.prepare("SELECT e.*,u.username subject_username FROM enforcement_cases e JOIN users u ON u.id=e.subject_user_id ORDER BY e.created_at DESC LIMIT 100").all();
-  return json({cases:r.results,ministries:assigned});
+  const h=await db.prepare("SELECT s.*,u.username subject_username FROM service_suspensions s JOIN users u ON u.id=s.subject_user_id ORDER BY s.created_at DESC LIMIT 100").all();return json({cases:r.results,suspensions:h.results,ministries:assigned});
  }
  if(method==='POST'&&path==='/api/enforcement/cases'){
   const b=await input(req);
@@ -151,10 +162,22 @@ if(path.startsWith('/api/enforcement/')){
  if(method==='POST'&&path==='/api/enforcement/decision'){
   if(user.role!=='king')return json({error:'القرار النهائي للملك فقط'},403);
   const b=await input(req);if(!b||!validText(b.id,10,80)||!['approved','rejected'].includes(b.decision))return json({error:'قرار غير صالح'},400);
-  const r=await db.prepare("UPDATE enforcement_cases SET status=?,decided_by=?,decided_at=CURRENT_TIMESTAMP WHERE id=? AND status='pending'").bind(b.decision,user.id,b.id).run();
-  if(!r.meta.changes)return json({error:'القضية غير موجودة أو صدر قرار سابق'},409);
-  await audit(db,user.id,'enforcement_case_decision','enforcement_case',b.id,{decision:b.decision});
-  return json({status:b.decision,note:'قرار إداري مسجل؛ لا يغيّر الرصيد أو حالة الوثائق تلقائيًا'});
+  const c=await db.prepare("SELECT * FROM enforcement_cases WHERE id=? AND status='pending'").bind(b.id).first();
+  if(!c)return json({error:'القضية غير موجودة أو صدر قرار سابق'},409);
+  const updates=[db.prepare("UPDATE enforcement_cases SET status=?,decided_by=?,decided_at=CURRENT_TIMESTAMP WHERE id=? AND status='pending'").bind(b.decision,user.id,b.id)];
+  const suspend=b.decision==='approved'&&['service_suspension','both'].includes(c.action);
+  if(suspend)updates.push(db.prepare("INSERT INTO service_suspensions(id,case_id,subject_user_id,reason,status,created_by) VALUES(?,?,?,?,'active',?)").bind(random(),c.id,c.subject_user_id,c.reason,user.id));
+  try{await db.batch(updates)}catch{return json({error:'تعذر اعتماد القرار. تحقق من جاهزية جداول الإيقاف'},409)}
+  await audit(db,user.id,'enforcement_case_decision','enforcement_case',b.id,{decision:b.decision,suspension_activated:suspend});
+  return json({status:b.decision,suspension_activated:suspend,note:suspend?'تم تفعيل إيقاف الخدمات الاختيارية المحددة':'تم تسجيل القرار'});
+ }
+ if(method==='POST'&&path==='/api/enforcement/lift'){
+  if(user.role!=='king')return json({error:'رفع الإيقاف للملك فقط'},403);
+  const b=await input(req);if(!validText(b?.id,10,80)||!validText(b?.reason,5,500))return json({error:'حدد الإيقاف وسبب الرفع'},400);
+  const r=await db.prepare("UPDATE service_suspensions SET status='lifted',ended_at=CURRENT_TIMESTAMP,ended_by=?,lift_reason=? WHERE id=? AND status='active'").bind(user.id,b.reason.trim(),b.id).run();
+  if(!r.meta.changes)return json({error:'الإيقاف غير موجود أو مرفوع مسبقًا'},409);
+  await audit(db,user.id,'service_suspension_lifted','service_suspension',b.id,{reason:b.reason.trim()});
+  return json({status:'lifted'});
  }
  return json({error:'المسار غير متاح'},404);
 }
