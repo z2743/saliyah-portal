@@ -451,7 +451,7 @@ if(path.startsWith('/api/x/')){
   const id=u.searchParams.get('post_id')||'';
   const parent=await db.prepare('SELECT id FROM x_posts WHERE id=?').bind(id).first();
   if(!parent)return json({error:'المنشور غير موجود'},404);
-  const rows=await db.prepare("SELECT p.id,p.body,p.created_at,a.id profile_id,a.handle,a.display_name,a.kind,a.verified FROM x_posts p JOIN x_profiles a ON a.id=p.profile_id WHERE p.reply_to=? AND a.kind='bot' ORDER BY p.created_at ASC LIMIT 100").bind(id).all();
+  const rows=await db.prepare("SELECT p.id,p.body,p.created_at,a.id profile_id,a.handle,a.display_name,a.kind,a.verified FROM x_posts p JOIN x_profiles a ON a.id=p.profile_id WHERE a.kind='bot' AND p.id IN (WITH RECURSIVE thread(id) AS (SELECT id FROM x_posts WHERE reply_to=? UNION ALL SELECT child.id FROM x_posts child JOIN thread t ON child.reply_to=t.id) SELECT id FROM thread) ORDER BY p.created_at ASC LIMIT 100").bind(id).all();
   return json({comments:rows.results,simulated:true});
  }
  if(method==='GET'&&path==='/api/x/earnings'){
