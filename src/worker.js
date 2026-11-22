@@ -148,6 +148,11 @@ if(path.startsWith('/api/enforcement/')){
   const suspensions=user.role==='king'?h.results:h.results.filter(x=>assigned.includes(x.ministry_id));
   return json({cases,suspensions,ministries:assigned});
  }
+ if(method==='GET'&&path==='/api/enforcement/debts'){
+  const rows=await db.prepare("SELECT d.*,u.username subject_username FROM debt_claims d JOIN users u ON u.id=d.subject_user_id ORDER BY d.created_at DESC LIMIT 100").all();
+  const debts=user.role==='king'?rows.results:rows.results.filter(x=>assigned.includes(([]).length)); 
+  return json({debts:user.role==='king'?rows.results:[]});
+ }
  if(method==='POST'&&path==='/api/enforcement/cases'){
   const b=await input(req);
   const target=String(b?.subject_identifier||'').trim();
@@ -168,11 +173,17 @@ if(path.startsWith('/api/enforcement/')){
   const c=await db.prepare("SELECT * FROM enforcement_cases_v2 WHERE id=? AND status='pending'").bind(b.id).first();
   if(!c)return json({error:'القضية غير موجودة أو صدر قرار سابق'},409);
   const updates=[db.prepare("UPDATE enforcement_cases_v2 SET status=?,decided_by=?,decided_at=CURRENT_TIMESTAMP WHERE id=? AND status='pending'").bind(b.decision,user.id,b.id)];
+  const collect=b.decision==='approved'&&['debt','both'].includes(c.action);
+  if(collect){
+   const existing=await db.prepare("SELECT id FROM debt_claims WHERE subject_user_id=? AND status='active' LIMIT 1").bind(c.subject_user_id).first();
+   if(existing)return json({error:'توجد مطالبة مالية نشطة لهذا المستخدم. أغلقها أو سدّدها أولًا لتجنب التحصيل المكرر'},409);
+   updates.push(db.prepare("INSERT INTO debt_claims(id,case_id,subject_user_id,original_amount,remaining_amount,status,created_by) VALUES(?,?,?,?,?,'active',?)").bind(random(),c.id,c.subject_user_id,c.amount,c.amount,user.id));
+  }
   const suspend=b.decision==='approved'&&['service_suspension','both'].includes(c.action);
   if(suspend)updates.push(db.prepare("INSERT INTO service_suspensions_v2(id,case_id,subject_user_id,ministry_id,reason,status,created_by) VALUES(?,?,?,?,?,'active',?)").bind(random(),c.id,c.subject_user_id,c.ministry_id,c.reason,user.id));
   try{await db.batch(updates)}catch{return json({error:'تعذر اعتماد القرار. تحقق من جاهزية جداول الإيقاف'},409)}
-  await audit(db,user.id,'enforcement_case_decision','enforcement_case',b.id,{decision:b.decision,suspension_activated:suspend});
-  return json({status:b.decision,suspension_activated:suspend,note:suspend?'تم تفعيل إيقاف الخدمات الاختيارية المحددة':'تم تسجيل القرار'});
+  await audit(db,user.id,'enforcement_case_decision','enforcement_case',b.id,{decision:b.decision,suspension_activated:suspend,collection_activated:collect});
+  return json({status:b.decision,suspension_activated:suspend,collection_activated:collect,note:suspend?'تم تفعيل إيقاف الخدمات الاختيارية المحددة':'تم تسجيل القرار'});
  }
  if(method==='POST'&&path==='/api/enforcement/lift'){
   if(user.role!=='king')return json({error:'رفع الإيقاف للملك فقط'},403);
