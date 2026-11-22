@@ -631,14 +631,6 @@ if(method==='POST'&&path==='/api/admin/simulation/projects/decision'){
  await audit(db,user.id,'simulation_project_decision','saliyah_project',b.id,{decision:b.decision});
  return json({ok:true,status:b.decision});
 }
-if(method==='POST'&&path==='/api/admin/simulation/payroll-period'){
- if(!user||user.role!=='king')return json({error:'للملك فقط'},403);
- const body=await req.json().catch(()=>({}));
- if(!['1','2'].includes(String(body.weeks)))return json({error:'اختر أسبوعًا أو أسبوعين'},400);
- if(typeof body.company_id!=='string'||body.company_id.length>120)return json({error:'معرف الشركة غير صحيح'},400);
- const changed=await db.prepare("UPDATE saliyah_sim_companies SET payroll_weeks=? WHERE id=? AND status='approved'").bind(Number(body.weeks),body.company_id).run();
- return json({ok:!!changed.meta?.changes,payroll_weeks:Number(body.weeks)});
-}
 if(method==='GET'&&path==='/api/admin/simulation/banking'){
  if(!user||user.role!=='king')return json({error:'للملك فقط'},403);
  const filter=u.searchParams.get('type')||'all';
