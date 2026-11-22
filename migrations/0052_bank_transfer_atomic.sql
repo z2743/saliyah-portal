@@ -1,0 +1,2 @@
+CREATE TRIGGER IF NOT EXISTS bank_transfer_validate BEFORE INSERT ON bank_transfers BEGIN SELECT CASE WHEN (SELECT balance FROM bank_accounts WHERE id=NEW.sender_account)<NEW.amount THEN RAISE(ABORT,'insufficient_funds') END; END;
+CREATE TRIGGER IF NOT EXISTS bank_transfer_apply AFTER INSERT ON bank_transfers BEGIN UPDATE bank_accounts SET balance=balance-NEW.amount WHERE id=NEW.sender_account; UPDATE bank_accounts SET balance=balance+NEW.amount WHERE id=NEW.recipient_account; END;
