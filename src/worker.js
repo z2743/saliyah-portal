@@ -20,8 +20,8 @@ if(method==='POST'&&path==='/api/auth/citizen/register'){
  const b=await input(req);
  if(!b||!validText(b.document_number,5,80)||!validText(b.activation_code,16,128)||!validText(b.username,3,40)||!/^[a-z0-9_]+$/i.test(b.username)||!validText(b.password,12,128)||!(b.phone==null||b.phone===''||(/^\\+?[0-9]{7,15}$/.test(b.phone))))return json({error:'تحقق من رقم الهوية ورمز التفعيل واسم المستخدم وكلمة المرور (12 حرفًا على الأقل) والجوال الاختياري'},400);
  const codeHash=await hash(b.activation_code.trim());
- const claim=await db.prepare("SELECT c.id,c.document_id,d.full_name FROM citizen_claims c JOIN documents d ON d.id=c.document_id WHERE d.number=? AND d.type IN ('national_id','residency') AND d.status='valid' AND d.expires_at>=date('now') AND c.token_hash=? AND c.claimed_by IS NULL AND c.expires_at>datetime('now')").bind(b.document_number.trim(),codeHash).first();
- if(!claim)return json({error:'رقم الهوية أو الإقامة أو رمز التفعيل غير صحيح أو منتهي الصلاحية'},403);
+ const claim=await db.prepare("SELECT c.id,c.document_id,d.full_name FROM citizen_claims c JOIN documents d ON d.id=c.document_id WHERE d.number=? AND d.type IN ('national_id','residency','passport') AND d.status='valid' AND d.expires_at>=date('now') AND c.token_hash=? AND c.claimed_by IS NULL AND c.expires_at>datetime('now')").bind(b.document_number.trim(),codeHash).first();
+ if(!claim)return json({error:'رقم الهوية أو الإقامة أو الجواز أو رمز التفعيل غير صحيح أو منتهي الصلاحية'},403);
  const id=random(),salt=random(),phone=b.phone?.trim()||null;
  try{await db.batch([
  db.prepare("INSERT INTO users(id,username,password_hash,salt,role) VALUES(?,?,?,?,'citizen')").bind(id,b.username.trim().toLowerCase(),await derive(b.password,salt),salt),
@@ -1128,9 +1128,9 @@ if(method==='POST'&&path==='/api/requests'){const b=await input(req);if(!b||!['c
 if(path.startsWith('/api/registry/')||path.startsWith('/api/civil/')||path==='/api/admin/requests/status'||path==='/api/admin/audit'){
  const required=path.startsWith('/api/registry/')?'registry':path.startsWith('/api/civil/')?'civil':'requests';if(!(await can(required)))return json({error:'غير مخول'},403);
  if(method==='POST'&&path==='/api/registry/citizen-activation'){
- const b=await input(req);const identifier=String(b?.document_id||b?.document_number||'').trim();if(!validText(identifier,3,100))return json({error:'أدخل رقم الهوية أو معرّف الوثيقة'},400);
- const d=await db.prepare("SELECT id FROM documents WHERE (id=? OR number=?) AND type IN ('national_id','residency') AND status='valid' AND expires_at>=date('now')").bind(identifier,identifier).first();
- if(!d)return json({error:'لم نجد هوية وطنية أو إقامة سارية بهذا الرقم؛ تأكد من اعتماد إصدار الهوية وتاريخ صلاحيتها'},404);
+ const b=await input(req);const identifier=String(b?.document_id||b?.document_number||'').trim();if(!validText(identifier,3,100))return json({error:'أدخل رقم الهوية أو الإقامة أو الجواز أو معرّف الوثيقة'},400);
+ const d=await db.prepare("SELECT id FROM documents WHERE (id=? OR number=?) AND type IN ('national_id','residency','passport') AND status='valid' AND expires_at>=date('now')").bind(identifier,identifier).first();
+ if(!d)return json({error:'لم نجد هوية وطنية أو إقامة أو جواز سفر ساريًا بهذا الرقم؛ تأكد من اعتماد إصدار الهوية وتاريخ صلاحيتها'},404);
  const old=await db.prepare('SELECT claimed_by FROM citizen_claims WHERE document_id=?').bind(d.id).first();
  if(old?.claimed_by||await db.prepare('SELECT 1 FROM citizen_profiles WHERE document_id=?').bind(d.id).first())return json({error:'هذه الوثيقة مرتبطة بحساب بالفعل'},409);
  const code=crypto.randomUUID().replace(/-/g,'')+crypto.randomUUID().replace(/-/g,'').slice(0,8);
