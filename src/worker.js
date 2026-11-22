@@ -1710,7 +1710,7 @@ if(method==='GET'&&path==='/api/registry/documents'){const r=await db.prepare('S
     ?await db.prepare("UPDATE saliyah_sim_identities SET status='issued',issued_at=CURRENT_TIMESTAMP,expires_at=datetime('now','+14 days') WHERE id IN (SELECT id FROM saliyah_sim_identities WHERE status='requested' AND citizen_id LIKE 'sim-resident-%' ORDER BY id LIMIT ?)").bind(limit).run()
     :await db.prepare("UPDATE saliyah_sim_identities SET status='rejected' WHERE id IN (SELECT id FROM saliyah_sim_identities WHERE status='requested' AND citizen_id LIKE 'sim-resident-%' ORDER BY id LIMIT ?)").bind(limit).run();
   }else{
-   if(typeof b.id!=='string'||!/^sim-id-resident-\\d{4}$/.test(b.id))return json({error:'رقم الطلب غير صالح'},400);
+   if(typeof b.id!=='string'||!/^sim-id-resident-\d{4}$/.test(b.id))return json({error:'رقم الطلب غير صالح'},400);
    result=b.decision==='approved'
     ?await db.prepare("UPDATE saliyah_sim_identities SET status='issued',issued_at=CURRENT_TIMESTAMP,expires_at=datetime('now','+14 days') WHERE id=? AND status='requested' AND citizen_id LIKE 'sim-resident-%'").bind(b.id).run()
     :await db.prepare("UPDATE saliyah_sim_identities SET status='rejected' WHERE id=? AND status='requested' AND citizen_id LIKE 'sim-resident-%'").bind(b.id).run();
