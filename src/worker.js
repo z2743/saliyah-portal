@@ -966,6 +966,10 @@ if(method==='GET'&&path==='/api/admin/readiness'){
  await structural('enforcement_actions','حقل أنواع إجراءات المديونيات','SELECT COUNT(*) n FROM pragma_table_info(\'enforcement_cases_v2\') WHERE name=\'action\'');
  await structural('enforcement_zero_amount','دعم إيقاف الخدمات بدون مديونية',"SELECT COUNT(*) n FROM sqlite_master WHERE type='table' AND name='enforcement_cases_v2' AND sql LIKE '%amount>=0%'");
  await structural('enforcement_optional_document','دعم المستخدمين دون وثيقة',"SELECT COUNT(*) n FROM pragma_table_info('enforcement_cases_v2') WHERE name='document_id' AND [notnull]=0");
+ await structural('x_auto_payout_preferences','تفضيلات الصرف التلقائي لإكس الصالية',"SELECT COUNT(*) n FROM sqlite_master WHERE type='table' AND name='x_creator_payout_preferences'");
+ await structural('x_bot_bank_accounts','الحسابات البنكية الافتراضية للبوتات',"SELECT COUNT(*) n FROM sqlite_master WHERE type='table' AND name='x_bot_bank_accounts'");
+ await structural('x_bot_bank_ledger','سجل الحركات البنكية للبوتات',"SELECT COUNT(*) n FROM sqlite_master WHERE type='table' AND name='x_bot_bank_ledger'");
+ await structural('x_auto_payout_account_guard','حماية ملكية حساب أرباح إكس',"SELECT COUNT(*) n FROM sqlite_master WHERE type='trigger' AND name='x_creator_payout_preference_ownership'");
  return json({checks,bindings:{database:true,assets:!!env.ASSETS,court_files:!!env.COURT_FILES},
   environment:'فحص بنيوي محدود؛ لا يثبت الأمان أو نجاح العمليات أو جاهزية الإطلاق',
   ready_for_public_launch:false});
