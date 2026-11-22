@@ -73,6 +73,15 @@ class PortalIntegration(unittest.TestCase):
         self.assertEqual(result,3)
         follows=self.db.execute("SELECT SUM(CASE WHEN p.kind='bot' THEN 1 ELSE 2 END) FROM x_follows f JOIN x_profiles p ON p.id=f.follower_id WHERE f.following_id='creator'").fetchone()[0]
         self.assertEqual(follows,3)
+    def test_auto_payout_preference_rejects_other_users_bank(self):
+        self.db.execute("INSERT INTO x_profiles(id,user_id,handle,display_name) VALUES('creator-a','a','creator-a','Creator')")
+        with self.assertRaises(sqlite3.IntegrityError):
+            self.db.execute("INSERT INTO x_creator_payout_preferences(profile_id,user_id,bank_account_id) VALUES('creator-a','a','b1')")
+        self.db.execute("INSERT INTO x_creator_payout_preferences(profile_id,user_id,bank_account_id) VALUES('creator-a','a','a1')")
+        self.assertEqual(self.db.execute("SELECT enabled FROM x_creator_payout_preferences WHERE profile_id='creator-a'").fetchone()[0],1)
+        with self.assertRaises(sqlite3.IntegrityError):
+            self.db.execute("UPDATE x_creator_payout_preferences SET bank_account_id='b1' WHERE profile_id='creator-a'")
+        self.assertEqual(self.db.execute("SELECT bank_account_id FROM x_creator_payout_preferences WHERE profile_id='creator-a'").fetchone()[0],'a1')
     def test_creator_payout_rejects_other_users_account(self):
         self.db.execute("INSERT INTO x_profiles(id,user_id,handle,display_name) VALUES('profile-a','a','alice-test','Alice')")
         with self.assertRaises(sqlite3.IntegrityError):
