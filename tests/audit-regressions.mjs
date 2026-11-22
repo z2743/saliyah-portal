@@ -15,6 +15,7 @@ assert.match(worker,/for\(let offset=8;offset>=1;offset--\)/);
 assert.match(worker,/salary-week-/);
 assert.match(worker,/date\(a\.created_at\)<=date\(\?\)/);
 assert.match(worker,/WITH RECURSIVE thread\(id\)/);
+assert.match(worker,/pagination:\{page,page_size:pageSize,total:Number\(accountCount\.n\)/);
 assert.match(worker,/followups\[theme\]\[score\(secondBot,p\.id\)%followups\[theme\]\.length\]/);
 const migrations=readdirSync(new URL('../migrations/',import.meta.url)).filter(n=>n.endsWith('.sql'));
 assert.equal(migrations.length,new Set(migrations).size);
