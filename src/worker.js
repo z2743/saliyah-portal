@@ -1704,18 +1704,19 @@ if(method==='GET'&&path==='/api/registry/documents'){const r=await db.prepare('S
   const note=String(b.note||'').trim().slice(0,500);
   if(b.decision==='rejected'&&!note)return json({error:'سبب الرفض مطلوب'},400);
   const limit=b.bulk?Math.min(100,Math.max(1,Number(b.limit)||50)):1;
-  let ids=[];
-  if(b.bulk){const rows=await db.prepare("SELECT id FROM saliyah_sim_identities WHERE status='requested' AND citizen_id LIKE 'sim-resident-%' ORDER BY id LIMIT ?").bind(limit).all();ids=rows.results.map(x=>x.id);}
-  else if(typeof b.id==='string'&&/^sim-id-resident-\d{4}$/.test(b.id))ids=[b.id];
-  if(!ids.length)return json({ok:true,changed:0});
-  let changed=0;
-  for(const id of ids){
-   const result=b.decision==='approved'
-    ?await db.prepare("UPDATE saliyah_sim_identities SET status='issued',issued_at=CURRENT_TIMESTAMP,expires_at=datetime('now','+14 days') WHERE id=? AND status='requested' AND citizen_id LIKE 'sim-resident-%'").bind(id).run()
-    :await db.prepare("UPDATE saliyah_sim_identities SET status='rejected' WHERE id=? AND status='requested' AND citizen_id LIKE 'sim-resident-%'").bind(id).run();
-   changed+=result.meta.changes||0;
+  let result;
+  if(b.bulk){
+   result=b.decision==='approved'
+    ?await db.prepare("UPDATE saliyah_sim_identities SET status='issued',issued_at=CURRENT_TIMESTAMP,expires_at=datetime('now','+14 days') WHERE id IN (SELECT id FROM saliyah_sim_identities WHERE status='requested' AND citizen_id LIKE 'sim-resident-%' ORDER BY id LIMIT ?)").bind(limit).run()
+    :await db.prepare("UPDATE saliyah_sim_identities SET status='rejected' WHERE id IN (SELECT id FROM saliyah_sim_identities WHERE status='requested' AND citizen_id LIKE 'sim-resident-%' ORDER BY id LIMIT ?)").bind(limit).run();
+  }else{
+   if(typeof b.id!=='string'||!/^sim-id-resident-\\d{4}$/.test(b.id))return json({error:'رقم الطلب غير صالح'},400);
+   result=b.decision==='approved'
+    ?await db.prepare("UPDATE saliyah_sim_identities SET status='issued',issued_at=CURRENT_TIMESTAMP,expires_at=datetime('now','+14 days') WHERE id=? AND status='requested' AND citizen_id LIKE 'sim-resident-%'").bind(b.id).run()
+    :await db.prepare("UPDATE saliyah_sim_identities SET status='rejected' WHERE id=? AND status='requested' AND citizen_id LIKE 'sim-resident-%'").bind(b.id).run();
   }
-  if(changed)await audit(db,user.id,'king_bot_identity_decision','saliyah_sim_identities',b.bulk?'bulk':ids[0],{decision:b.decision,changed,note});
+  const changed=result.meta.changes||0;
+  if(changed)await audit(db,user.id,'king_bot_identity_decision','saliyah_sim_identities',b.bulk?'bulk':b.id,{decision:b.decision,changed,note});
   return json({ok:true,changed});
  }
  if(method==='POST'&&path==='/api/civil/intake/decision'){
