@@ -1,0 +1,1 @@
+CREATE TABLE IF NOT EXISTS saliyah_sim_settings (key TEXT PRIMARY KEY,value TEXT NOT NULL);
