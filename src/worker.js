@@ -64,6 +64,27 @@ async function runSaliyahGovernment(db){
   }
 
  }
+ // Simulated border arrivals and departures: no real immigration records are touched.
+ const ports=['منفذ السجادة البري','مطار الصالية الدولي','ميناء المتجار'];
+ const recent=(await db.prepare("SELECT id FROM saliyah_sim_citizens ORDER BY created_at DESC LIMIT 60").all()).results;
+ for(let i=0;i<8&&recent.length;i++){
+  const seq=hour*8+i,c=recent[(hour+i*11)%recent.length];
+  await db.prepare("INSERT OR IGNORE INTO saliyah_sim_border_events(id,citizen_id,port,direction,inspection_status) VALUES(?,?,?,?,?)").bind('border-'+seq,c.id,ports[(hour+i)%ports.length],(hour+i)%2?'exit':'entry','cleared_by_bot').run();
+ }
+ // A fictional police incident is recorded, investigated and tried only within the simulation.
+ if(recent.length>=2){
+  const incident='incident-'+Math.floor(hour/4),suspect=recent[hour%recent.length],officer='العسكري الآلي '+((hour%12)+1);
+  await db.prepare("INSERT OR IGNORE INTO saliyah_sim_incidents(id,suspect_id,officer,allegation,status) VALUES(?,?,?,?,'reported')").bind(incident,suspect.id,officer,['مخالفة مرورية افتراضية','إتلاف ممتلكات افتراضي','مخالفة تجارية افتراضية'][hour%3]).run();
+ }
+ const reports=(await db.prepare("SELECT id FROM saliyah_sim_incidents WHERE status='reported' ORDER BY created_at LIMIT 5").all()).results;
+ for(const report of reports){
+  await db.prepare("UPDATE saliyah_sim_incidents SET status='referred_to_court',arrested_at=CURRENT_TIMESTAMP WHERE id=? AND status='reported'").bind(report.id).run();
+  await db.prepare("INSERT OR IGNORE INTO saliyah_sim_trials(id,incident_id,judge,verdict,status) VALUES(?,?,?,'لا حكم حتى انتهاء المحاكمة','scheduled')").bind('trial-'+report.id,report.id,'القاضي الآلي '+((hour%5)+1)).run();
+ }
+ const trials=(await db.prepare("SELECT id FROM saliyah_sim_trials WHERE status='scheduled' AND created_at < datetime('now','-1 hour') ORDER BY created_at LIMIT 5").all()).results;
+ for(const trial of trials){
+  await db.prepare("UPDATE saliyah_sim_trials SET status='completed',verdict='حكم محاكاة: تنبيه وتوعية',completed_at=CURRENT_TIMESTAMP WHERE id=? AND status='scheduled'").bind(trial.id).run();
+ }
 }
 // Clearly labelled simulated activity: bot accounts never impersonate ministries or publish real decrees.
 async function generateXBotActivity(db){
@@ -297,6 +318,14 @@ if(method==='POST'&&path==='/api/auth/login'){let loginStage='input';try{const b
  loginStage='session_creation';await db.prepare('DELETE FROM login_throttles WHERE login_key=?').bind(loginKey).run();const token=random()+random(),expires=new Date(Date.now()+8*3600*1000).toISOString().replace('T',' ').slice(0,19);await db.prepare('INSERT INTO sessions(token_hash,user_id,expires_at) VALUES(?,?,?)').bind(await hash(token),found.id,expires).run();loginStage='audit';await audit(db,found.id,'login','session',null,{});return json({ok:true,role:found.role},200,{'set-cookie':cookie(req,token,28800)});}catch(err){console.error('login_failure_stage',loginStage,err instanceof Error?err.message:String(err));return json({error:'خطأ داخلي في الخادم',stage:loginStage,code:err instanceof Error?err.name:'RuntimeError'},500);}}
 if(method==='POST'&&path==='/api/auth/logout'){const t=(req.headers.get('cookie')||'').match(/saliyah_session=([a-f0-9-]+)/)?.[1];if(t)await db.prepare('DELETE FROM sessions WHERE token_hash=?').bind(await hash(t)).run();return json({ok:true},200,{'set-cookie':cookie(req,'',0)});}
 // Ministry accounts are isolated by ministry ID. No cross-ministry service permissions.
+if(method==='GET'&&path==='/api/simulation/security'){
+ const [borders,incidents,trials]=await Promise.all([
+  db.prepare("SELECT e.id,e.port,e.direction,e.inspection_status,e.created_at,c.name citizen FROM saliyah_sim_border_events e JOIN saliyah_sim_citizens c ON c.id=e.citizen_id ORDER BY e.created_at DESC LIMIT 100").all(),
+  db.prepare("SELECT i.id,i.officer,i.allegation,i.status,i.created_at,c.name suspect FROM saliyah_sim_incidents i JOIN saliyah_sim_citizens c ON c.id=i.suspect_id ORDER BY i.created_at DESC LIMIT 50").all(),
+  db.prepare("SELECT t.id,t.judge,t.verdict,t.status,t.created_at,i.allegation FROM saliyah_sim_trials t JOIN saliyah_sim_incidents i ON i.id=t.incident_id ORDER BY t.created_at DESC LIMIT 50").all()
+ ]);
+ return json({simulation:true,border_events:borders.results,police_incidents:incidents.results,trials:trials.results});
+}
 if(method==='GET'&&path==='/api/admin/simulation/companies'){
  if(!user||user.role!=='king')return json({error:'للملك فقط'},403);
  const rows=await db.prepare('SELECT * FROM saliyah_sim_companies ORDER BY created_at DESC LIMIT 100').all();
