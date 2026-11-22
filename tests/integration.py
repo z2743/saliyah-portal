@@ -18,6 +18,27 @@ class PortalIntegration(unittest.TestCase):
         self.db.close()
     def balance(self, account):
         return self.db.execute('SELECT balance FROM bank_accounts WHERE id=?',(account,)).fetchone()[0]
+    def test_debt_collection_remits_to_king_once(self):
+        self.db.execute("INSERT INTO bank_accounts(id,user_id,bank,balance) VALUES('king-national','king','national',0)")
+        self.db.execute("INSERT INTO enforcement_cases_v2(id,subject_user_id,residency_number,amount,reason,ministry_id,created_by,status,action) VALUES('enf-debt','a','alice',40,'Debt test',1,'king','approved','debt')")
+        self.db.execute("INSERT INTO debt_claims(id,case_id,subject_user_id,original_amount,remaining_amount,created_by) VALUES('claim1','enf-debt','a',40,40,'king')")
+        self.db.execute("UPDATE bank_accounts SET balance=balance+25 WHERE id='a1'")
+        self.assertEqual(self.balance('a1'),100)
+        self.assertEqual(self.balance('king-national'),25)
+        self.assertEqual(self.db.execute("SELECT remaining_amount FROM debt_claims WHERE id='claim1'").fetchone()[0],15)
+        self.assertEqual(self.db.execute("SELECT COUNT(*) FROM debt_collections WHERE claim_id='claim1'").fetchone()[0],1)
+        self.db.execute("UPDATE bank_accounts SET balance=balance+25 WHERE id='a1'")
+        self.assertEqual(self.balance('a1'),110)
+        self.assertEqual(self.balance('king-national'),40)
+        self.assertEqual(self.db.execute("SELECT status FROM debt_claims WHERE id='claim1'").fetchone()[0],'paid')
+        self.assertEqual(self.db.execute("SELECT COUNT(*) FROM debt_collections WHERE claim_id='claim1'").fetchone()[0],2)
+    def test_uncapped_creator_reward_credits_once(self):
+        self.db.execute("INSERT INTO x_profiles(id,user_id,handle,display_name) VALUES('profile-a','a','alice-test','Alice')")
+        self.db.execute("INSERT INTO x_creator_payouts(id,profile_id,user_id,period,followers,likes,reposts,amount,bank_account_id) VALUES('reward1','profile-a','a','100',1000,10000,500,2500,'a1')")
+        self.assertEqual(self.balance('a1'),2600)
+        with self.assertRaises(sqlite3.IntegrityError):
+            self.db.execute("INSERT INTO x_creator_payouts(id,profile_id,user_id,period,followers,likes,reposts,amount,bank_account_id) VALUES('reward2','profile-a','a','100',1000,10000,500,2500,'a1')")
+        self.assertEqual(self.balance('a1'),2600)
     def test_migrations_are_complete(self):
         self.assertGreaterEqual(len(self.migrations), 35)
         self.assertEqual(self.db.execute('PRAGMA foreign_key_check').fetchall(), [])
