@@ -64,6 +64,46 @@ async function runSaliyahGovernment(db){
   }
 
  }
+ // Simulated property market, company shares, marriages and natural life cycles.
+ const adults=(await db.prepare("SELECT id FROM saliyah_sim_citizens ORDER BY created_at LIMIT 100").all()).results;
+ const propertyId='property-'+Math.floor(hour/6),seller=adults[hour%Math.max(1,adults.length)]?.id;
+ if(seller){
+  await db.prepare("INSERT OR IGNORE INTO saliyah_sim_properties(id,owner_id,kind,location,price,status) VALUES(?,?,?,?,?,'listed')").bind(propertyId,seller,['شقة','فيلا','محل تجاري','أرض'][hour%4],hour%2?'السجادة':'المتجار',55000+(hour%9)*18000).run();
+ }
+ const listed=await db.prepare("SELECT id,owner_id,price FROM saliyah_sim_properties WHERE status='listed' ORDER BY created_at LIMIT 1").first();
+ if(listed&&adults.length>1){
+  const buyer=adults.find(x=>x.id!==listed.owner_id);
+  if(buyer){
+   await db.prepare("UPDATE saliyah_sim_properties SET owner_id=?,status='owned',sold_at=CURRENT_TIMESTAMP WHERE id=? AND status='listed'").bind(buyer.id,listed.id).run();
+   await db.prepare("INSERT OR IGNORE INTO saliyah_sim_property_trades(id,property_id,seller_id,buyer_id,price) VALUES(?,?,?,?,?)").bind('property-trade-'+listed.id,listed.id,listed.owner_id,buyer.id,listed.price).run();
+  }
+ }
+ const companies=(await db.prepare("SELECT id,founder_id,capital FROM saliyah_sim_companies WHERE status='approved' ORDER BY created_at LIMIT 20").all()).results;
+ for(const c of companies){
+  await db.prepare("INSERT OR IGNORE INTO saliyah_sim_shares(id,company_id,owner_id,units) VALUES(?,?,?,?)").bind('shares-founder-'+c.id,c.id,c.founder_id,1000).run();
+ }
+ if(companies.length&&adults.length){
+  const company=companies[hour%companies.length],buyer=adults[hour%adults.length];
+  const holding=await db.prepare("SELECT id,owner_id,units FROM saliyah_sim_shares WHERE company_id=? AND units>=10 ORDER BY units DESC LIMIT 1").bind(company.id).first();
+  if(holding&&holding.owner_id!==buyer.id){
+   const tradeId='share-trade-'+hour;
+   const inserted=await db.prepare("INSERT OR IGNORE INTO saliyah_sim_share_trades(id,company_id,seller_id,buyer_id,units,price_per_unit) VALUES(?,?,?,?,10,?)").bind(tradeId,company.id,holding.owner_id,buyer.id,Math.max(1,Math.round(company.capital/1000))).run();
+   if(inserted.meta.changes){
+    await db.prepare("UPDATE saliyah_sim_shares SET units=units-10 WHERE id=? AND units>=10").bind(holding.id).run();
+    await db.prepare("INSERT INTO saliyah_sim_shares(id,company_id,owner_id,units) VALUES(?,?,?,10) ON CONFLICT(id) DO UPDATE SET units=units+10").bind('shares-'+company.id+'-'+buyer.id,company.id,buyer.id).run();
+   }
+  }
+ }
+ if(adults.length>=2&&hour%8===0){
+  const a=adults[(hour*3)%adults.length],b=adults[(hour*3+1)%adults.length];
+  if(a.id!==b.id)await db.prepare("INSERT OR IGNORE INTO saliyah_sim_marriages(id,partner_a,partner_b,status) VALUES(?,?,?,'married')").bind('marriage-'+Math.floor(hour/8),a.id,b.id).run();
+ }
+ // Simulated deaths never delete accounts, ownership or audit records.
+ if(adults.length>20&&hour%24===0){
+  const candidate=adults[(hour*7)%adults.length];
+  await db.prepare("INSERT OR IGNORE INTO saliyah_sim_life_events(id,citizen_id,kind,description) VALUES(?,?,'death','وفاة طبيعية ضمن المحاكاة')").bind('life-death-'+Math.floor(hour/24),candidate.id).run();
+  await db.prepare("UPDATE saliyah_sim_citizens SET occupation='متوفى' WHERE id=? AND occupation<>'متوفى'").bind(candidate.id).run();
+ }
  // Simulated border arrivals and departures: no real immigration records are touched.
  const ports=['منفذ السجادة البري','مطار الصالية الدولي','ميناء المتجار'];
  const recent=(await db.prepare("SELECT id FROM saliyah_sim_citizens ORDER BY created_at DESC LIMIT 60").all()).results;
@@ -318,6 +358,17 @@ if(method==='POST'&&path==='/api/auth/login'){let loginStage='input';try{const b
  loginStage='session_creation';await db.prepare('DELETE FROM login_throttles WHERE login_key=?').bind(loginKey).run();const token=random()+random(),expires=new Date(Date.now()+8*3600*1000).toISOString().replace('T',' ').slice(0,19);await db.prepare('INSERT INTO sessions(token_hash,user_id,expires_at) VALUES(?,?,?)').bind(await hash(token),found.id,expires).run();loginStage='audit';await audit(db,found.id,'login','session',null,{});return json({ok:true,role:found.role},200,{'set-cookie':cookie(req,token,28800)});}catch(err){console.error('login_failure_stage',loginStage,err instanceof Error?err.message:String(err));return json({error:'خطأ داخلي في الخادم',stage:loginStage,code:err instanceof Error?err.name:'RuntimeError'},500);}}
 if(method==='POST'&&path==='/api/auth/logout'){const t=(req.headers.get('cookie')||'').match(/saliyah_session=([a-f0-9-]+)/)?.[1];if(t)await db.prepare('DELETE FROM sessions WHERE token_hash=?').bind(await hash(t)).run();return json({ok:true},200,{'set-cookie':cookie(req,'',0)});}
 // Ministry accounts are isolated by ministry ID. No cross-ministry service permissions.
+if(method==='GET'&&path==='/api/simulation/economy'){
+ const [properties,propertyTrades,shares,shareTrades,marriages,lifeEvents]=await Promise.all([
+  db.prepare('SELECT * FROM saliyah_sim_properties ORDER BY created_at DESC LIMIT 60').all(),
+  db.prepare('SELECT * FROM saliyah_sim_property_trades ORDER BY created_at DESC LIMIT 60').all(),
+  db.prepare('SELECT * FROM saliyah_sim_shares ORDER BY units DESC LIMIT 60').all(),
+  db.prepare('SELECT * FROM saliyah_sim_share_trades ORDER BY created_at DESC LIMIT 60').all(),
+  db.prepare('SELECT * FROM saliyah_sim_marriages ORDER BY created_at DESC LIMIT 30').all(),
+  db.prepare('SELECT * FROM saliyah_sim_life_events ORDER BY created_at DESC LIMIT 30').all()
+ ]);
+ return json({simulation:true,properties:properties.results,property_trades:propertyTrades.results,shareholdings:shares.results,share_trades:shareTrades.results,marriages:marriages.results,life_events:lifeEvents.results});
+}
 if(method==='GET'&&path==='/api/simulation/security'){
  const [borders,incidents,trials]=await Promise.all([
   db.prepare("SELECT e.id,e.port,e.direction,e.inspection_status,e.created_at,c.name citizen FROM saliyah_sim_border_events e JOIN saliyah_sim_citizens c ON c.id=e.citizen_id ORDER BY e.created_at DESC LIMIT 100").all(),
