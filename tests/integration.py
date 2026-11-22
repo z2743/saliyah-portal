@@ -39,6 +39,21 @@ class PortalIntegration(unittest.TestCase):
         with self.assertRaises(sqlite3.IntegrityError):
             self.db.execute("INSERT INTO x_creator_payouts(id,profile_id,user_id,period,followers,likes,reposts,amount,bank_account_id) VALUES('reward2','profile-a','a','100',1000,10000,500,2500,'a1')")
         self.assertEqual(self.balance('a1'),2600)
+    def test_bot_engagement_counts_as_half_real_engagement(self):
+        self.db.execute("INSERT INTO x_profiles(id,user_id,handle,display_name,kind) VALUES('creator','a','creator-test','Creator','person'),('human','b','human-test','Human','person'),('bot',NULL,'bot-test','Bot','bot')")
+        self.db.execute("INSERT INTO x_posts(id,profile_id,body) VALUES('post','creator','A test post')")
+        self.db.execute("INSERT INTO x_follows(follower_id,following_id) VALUES('human','creator'),('bot','creator')")
+        self.db.execute("INSERT INTO x_likes(profile_id,post_id) VALUES('human','post'),('bot','post')")
+        result=self.db.execute("SELECT SUM(CASE WHEN p.kind='bot' THEN 1 ELSE 2 END) FROM x_likes l JOIN x_profiles p ON p.id=l.profile_id WHERE l.post_id='post'").fetchone()[0]
+        self.assertEqual(result,3)
+        follows=self.db.execute("SELECT SUM(CASE WHEN p.kind='bot' THEN 1 ELSE 2 END) FROM x_follows f JOIN x_profiles p ON p.id=f.follower_id WHERE f.following_id='creator'").fetchone()[0]
+        self.assertEqual(follows,3)
+    def test_creator_payout_rejects_other_users_account(self):
+        self.db.execute("INSERT INTO x_profiles(id,user_id,handle,display_name) VALUES('profile-a','a','alice-test','Alice')")
+        with self.assertRaises(sqlite3.IntegrityError):
+            self.db.execute("INSERT INTO x_creator_payouts(id,profile_id,user_id,period,followers,likes,reposts,amount,bank_account_id) VALUES('reward-invalid','profile-a','a','200',10,20,5,100,'b1')")
+        self.assertEqual(self.balance('b1'),10)
+        self.assertEqual(self.db.execute("SELECT COUNT(*) FROM x_creator_payouts WHERE id='reward-invalid'").fetchone()[0],0)
     def test_migrations_are_complete(self):
         self.assertGreaterEqual(len(self.migrations), 35)
         self.assertEqual(self.db.execute('PRAGMA foreign_key_check').fetchall(), [])
