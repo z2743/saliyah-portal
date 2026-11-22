@@ -14,7 +14,9 @@ check('Database ID replaced',/database_id\s*=\s*"(?!REPLACE_WITH_YOUR_D1_DATABAS
 check('No setup secret committed to config',!/SETUP_SECRET\s*=/.test(cfg),'Use wrangler secret put SETUP_SECRET');
 const migrations=readdirSync(join(root,'migrations')).filter(x=>x.endsWith('.sql')).sort();
 check('Migrations present',migrations.length>=34);
-check('No duplicate migration numbers',new Set(migrations.map(x=>x.slice(0,4))).size===migrations.length);
+// D1 identifies migrations by full filename, not their numeric prefix.
+check('Migration filenames are unique',new Set(migrations).size===migrations.length);
+check('Migration filenames use numeric prefixes',migrations.every(x=>/^\\d{4}_[a-z0-9_]+\\.sql$/.test(x)));
 check('Release test command configured',typeof pkg.scripts?.test==='string'&&pkg.scripts.test.includes('integration.py'));
 check('Site assets exist',['index.html','app.js','style.css'].every(x=>existsSync(join(root,'public',x))));
 check('Health and readiness endpoints exist',read('src/worker.js').includes('/api/admin/readiness')&&read('src/worker.js').includes('/api/health/'));
