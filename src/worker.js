@@ -335,7 +335,7 @@ async function checkSimulationHealth(db){
   ['orphan_posts',"SELECT COUNT(*) n FROM x_posts p LEFT JOIN x_profiles x ON x.id=p.profile_id WHERE x.id IS NULL"],
   ['orphan_sim_bank_accounts',"SELECT COUNT(*) n FROM saliyah_sim_bank_accounts a LEFT JOIN saliyah_sim_citizens c ON a.owner_type='citizen' AND a.owner_id=c.id LEFT JOIN saliyah_sim_companies b ON a.owner_type='company' AND a.owner_id=b.id WHERE (a.owner_type='citizen' AND c.id IS NULL) OR (a.owner_type='company' AND b.id IS NULL)"],
   ['orphan_sim_bank_transactions',"SELECT COUNT(*) n FROM saliyah_sim_bank_transactions t LEFT JOIN saliyah_sim_bank_accounts a ON a.id=t.account_id WHERE a.id IS NULL"],
-  ['unbalanced_sim_payroll',"SELECT COUNT(*) n FROM (SELECT substr(id,1,length(id)-4) ref,SUM(amount) amount,COUNT(*) entries FROM saliyah_sim_bank_transactions WHERE kind IN ('salary_debit','salary_credit') GROUP BY substr(id,1,length(id)-4) HAVING amount<>0 OR entries<>2)"],
+  ['unbalanced_sim_payroll',"SELECT COUNT(*) n FROM (SELECT CASE WHEN kind='salary_debit' THEN substr(id,1,length(id)-4) ELSE substr(id,1,length(id)-3) END ref,SUM(amount) amount,COUNT(*) entries FROM saliyah_sim_bank_transactions WHERE kind IN ('salary_debit','salary_credit') GROUP BY CASE WHEN kind='salary_debit' THEN substr(id,1,length(id)-4) ELSE substr(id,1,length(id)-3) END HAVING amount<>0 OR entries<>2)"],
   ['negative_sim_balances',"SELECT COUNT(*) n FROM saliyah_sim_bank_accounts WHERE balance<0"]
  ];
  const problems={};
