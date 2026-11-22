@@ -11,6 +11,29 @@ const secureCookie=(req)=>new URL(req.url).protocol==='https:'?'; Secure':'';
 const cookie=(req,t,max)=>`saliyah_session=${t}; HttpOnly; SameSite=Strict; Path=/; Max-Age=${max}${secureCookie(req)}`;
 async function audit(db,who,action,entity,id,details){await db.prepare('INSERT INTO audit_log (id,actor_id,action,entity_type,entity_id,details) VALUES (?,?,?,?,?,?)').bind(random(),who,action,entity,id,JSON.stringify(details||{})).run()}
 const ministries=[['الخارجية','كسلان بن زياد بن بندر العمري'],['الداخلية','قندس بن زياد بن بندر العمري'],['الدفاع','جدو بن جدون الجدي البطريقي'],['العدل','جدو بن جدون الجدي البطريقي'],['الطوارئ وإدارة الكوارث','جدو بن جدون الجدي البطريقي'],['الإعلام','جدو بن جدون الجدي البطريقي'],['شؤون المحافظات','جدو بن جدون الجدي البطريقي'],['المالية','أبو شخطه بن شخطون الشخطي الشيخطاني'],['الطاقة','أبو شخطه بن شخطون الشخطي الشيخطاني'],['التجارة','أبو شخطه بن شخطون الشخطي الشيخطاني'],['الصناعة','أبو شخطه بن شخطون الشخطي الشيخطاني'],['الاستثمار','جدو بن جدون الجدي البطريقي'],['التخطيط والتنمية','أبو شخطه بن شخطون الشخطي الشيخطاني'],['الثروة المعدنية','كوب بن زياد بن بندر العمري'],['الطاقة النووية','خرفون بن خروف الخرفي الخرفاني'],['الصحة','خرفون بن خروف الخرفي الخرفاني'],['التعليم','كوب بن زياد بن بندر العمري'],['الإسكان','أبو شخطه بن شخطون الشخطي الشيخطاني'],['الثقافة','جدو بن جدون الجدي البطريقي'],['السياحة','أبو شخطه بن شخطون الشخطي الشيخطاني'],['الرياضة','أبو شخطه بن شخطون الشخطي الشيخطاني'],['الموارد البشرية والتنمية الاجتماعية','خرفون بن خروف الخرفي الخرفاني'],['الأوقاف والشؤون الدينية','جدو بن جدون الجدي البطريقي'],['الشباب','خرفون بن خروف الخرفي الخرفاني'],['شؤون المستهلك','كوب بن زياد بن بندر العمري'],['الآثار والتراث','جدو بن جدون الجدي البطريقي'],['النقل والخدمات اللوجستية','خرفون بن خروف الخرفي الخرفاني'],['النقل البحري والموانئ','خرفون بن خروف الخرفي الخرفاني'],['الاتصالات وتقنية المعلومات','خرفون بن خروف الخرفي الخرفاني'],['اتصالات الفضاء','خرفون بن خروف الخرفي الخرفاني'],['البيئة والمياه والزراعة','أبو شخطه بن شخطون الشخطي الشيخطاني'],['الشؤون البلدية والقروية','خرفون بن خروف الخرفي الخرفاني'],['الأمن الغذائي','خرفون بن خروف الخرفي الخرفاني'],['الثروة الحيوانية والسمكية','كوب بن زياد بن بندر العمري'],['الإحصاء والتعداد','خرفون بن خروف الخرفي الخرفاني']].map(([name,minister],id)=>({id,name:'وزارة '+name,minister}));
+// AI minister simulation: non-sovereign planning only. Major projects await a human decision.
+const botMinisters=ministries.filter(m=>m.id!==0&&m.id!==1).map(m=>({...m,minister:'الوزير الآلي '+m.name.replace('وزارة ','')+' 🤖',automated:true}));
+async function runSaliyahGovernment(db){
+ const hour=Math.floor(Date.now()/3600000);
+ const plans=[
+  {ministry:16,type:'school',title:'مدرسة المستقبل الصالية',location:'السجادة',description:'مدرسة افتراضية تضم 12 فصلاً مع وظائف للمعلمين والإداريين',budget:180000},
+  {ministry:15,type:'clinic',title:'مركز العافية الصحي',location:'المتجار',description:'مركز صحي افتراضي للعيادات الأساسية',budget:240000},
+  {ministry:17,type:'housing',title:'حي النخيل السكني',location:'السجادة',description:'مخطط سكني افتراضي يضم 30 وحدة',budget:900000},
+  {ministry:26,type:'transport',title:'خط النقل الصالي',location:'المتجار',description:'خدمة نقل افتراضية تربط الأحياء والمرافق',budget:120000},
+  {ministry:9,type:'commerce',title:'حاضنة الأعمال الصالية',location:'السجادة',description:'مركز افتراضي لدعم الشركات الناشئة وتوفير وظائف',budget:75000},
+  {ministry:28,type:'telecom',title:'مركز الاتصال الرقمي',location:'السجادة',description:'مركز افتراضي لتطوير الاتصالات وخدمات الإنترنت',budget:110000}
+ ];
+ const plan=plans[Math.floor(hour/6)%plans.length];
+ const slot=Math.floor(hour/6);
+ const id='gov-plan-'+slot;
+ await db.prepare("INSERT OR IGNORE INTO saliyah_projects(id,ministry_id,project_type,title,location,description,budget,status,proposed_by) VALUES(?,?,?,?,?,?,?,'pending_human','bot')").bind(id,plan.ministry,plan.type,plan.title,plan.location,plan.description,plan.budget).run();
+ // Generate separate fictional citizens; never impersonate or alter real user accounts.
+ const citizens=['ناصر','ريم','سعود','لولوة','بدر','شهد','ماجد','غلا','تركي','نورة','فهد','سارة'];
+ for(let i=0;i<3;i++){
+  const seq=hour*3+i, id='citizen-'+seq, name=citizens[seq%citizens.length]+' الصالي';
+  await db.prepare("INSERT OR IGNORE INTO saliyah_sim_citizens(id,name,occupation,created_at) VALUES(?,?,?,CURRENT_TIMESTAMP)").bind(id,name,['باحث عن عمل','طالب','تاجر','موظف'][seq%4]).run();
+ }
+}
 // Clearly labelled simulated activity: bot accounts never impersonate ministries or publish real decrees.
 async function generateXBotActivity(db){
  const names=['نواف','سارة','راكان','ليان','فهد','ريم','تركي','جود','ماجد','هيا','بدر','دانة','سلطان','نورة','مشعل','لمى','عبدالله','شهد','فيصل','غلا','خالد','أريج','عمر','رغد','سلمان','مها','يوسف','رنا','طلال','عبير'];
@@ -59,7 +82,7 @@ async function generateXBotActivity(db){
   await db.prepare('INSERT OR IGNORE INTO x_likes(profile_id,post_id) VALUES(?,?)').bind(bot,p.id).run();
  }
 }
-export default {async scheduled(event,env,ctx){ctx.waitUntil(generateXBotActivity(env.DB))},async fetch(req,env){const u=new URL(req.url);if(!u.pathname.startsWith('/api/'))return env.ASSETS.fetch(req);try{if(!env.DB)return json({error:'Database binding missing'},503);const db=env.DB;const method=req.method;const path=u.pathname;const user=(path==='/api/auth/login'||path==='/api/setup/king'||path==='/api/setup/status'||path==='/api/setup/recover-owner'||path==='/api/auth/citizen/register')?null:await actor(req,db);if(method!=='GET'&&method!=='HEAD'){const origin=req.headers.get('origin');const site=req.headers.get('sec-fetch-site');if((origin&&origin!==u.origin)||(site&&site!=='same-origin'&&site!=='none'))return json({error:'مصدر الطلب غير مسموح'},403);}
+export default {async scheduled(event,env,ctx){ctx.waitUntil(Promise.all([generateXBotActivity(env.DB),runSaliyahGovernment(env.DB)]))},async fetch(req,env){const u=new URL(req.url);if(!u.pathname.startsWith('/api/'))return env.ASSETS.fetch(req);try{if(!env.DB)return json({error:'Database binding missing'},503);const db=env.DB;const method=req.method;const path=u.pathname;const user=(path==='/api/auth/login'||path==='/api/setup/king'||path==='/api/setup/status'||path==='/api/setup/recover-owner'||path==='/api/auth/citizen/register')?null:await actor(req,db);if(method!=='GET'&&method!=='HEAD'){const origin=req.headers.get('origin');const site=req.headers.get('sec-fetch-site');if((origin&&origin!==u.origin)||(site&&site!=='same-origin'&&site!=='none'))return json({error:'مصدر الطلب غير مسموح'},403);}
 
 // X Al-Saliyah: profiles are bound to authenticated accounts; ministry verification
 // is granted only for a ministry assignment recorded by the government.
@@ -212,7 +235,7 @@ if(path.startsWith('/api/x/')){
  }
  return json({error:'مسار غير موجود'},404);
 }
-if(method==='GET'&&path==='/api/public') {const news=await db.prepare('SELECT id,title,body,kind,created_at FROM news ORDER BY created_at DESC LIMIT 12').all();return json({ministries,governorates:[{id:'sajjadah',name:'السجادة',governor:'قندس بن زياد بن بندر العمري',description:'العاصمة · مدينة السجادة'},{id:'mutajjar',name:'المتجار',governor:'كوب بن زياد بن بندر العمري',description:'محافظة صناعية وتجارية'},{id:'aqar',name:'عقار',governor:'خرفون بن خروف الخرفي الخرفاني',description:'الأراضي والعقارات'}],news:news.results});}
+if(method==='GET'&&path==='/api/public') {const news=await db.prepare('SELECT id,title,body,kind,created_at FROM news ORDER BY created_at DESC LIMIT 12').all();return json({ministries:ministries.map(m=>botMinisters.find(b=>b.id===m.id)||m),governorates:[{id:'sajjadah',name:'السجادة',governor:'قندس بن زياد بن بندر العمري',description:'العاصمة · مدينة السجادة'},{id:'mutajjar',name:'المتجار',governor:'كوب بن زياد بن بندر العمري',description:'محافظة صناعية وتجارية'},{id:'aqar',name:'عقار',governor:'خرفون بن خروف الخرفي الخرفاني',description:'الأراضي والعقارات'}],news:news.results});}
 if(method==='GET'&&path==='/api/setup/status'){const row=await db.prepare("SELECT COUNT(*) n FROM users WHERE role='king'").first();return json({needsSetup:row.n===0});}
 if(method==='POST'&&path==='/api/setup/king'){const b=await input(req);if(!env.SETUP_SECRET||!b||b.setup_secret!==env.SETUP_SECRET)return json({error:'رمز التهيئة غير صحيح أو لم يتم إعداده'},403);if(!b||!validText(b.username,3,40)||!validText(b.password,12,128))return json({error:'اسم مستخدم 3-40 حرف وكلمة مرور 12-128 حرف'},400);if(!/^[a-z0-9_]+$/i.test(b.username))return json({error:'اسم المستخدم أحرف إنجليزية وأرقام وشرطة سفلية فقط'},400);const row=await db.prepare('SELECT COUNT(*) n FROM users').first();if(row.n!==0)return json({error:'التهيئة مغلقة'},403);const salt=random(),id=random();try{await db.prepare("INSERT INTO users(id,username,password_hash,salt,role) VALUES (?,?,?,?, 'king')").bind(id,b.username.toLowerCase(),await derive(b.password,salt),salt).run()}catch(err){console.error('setup_king_insert_failed',err instanceof Error?err.message:String(err));return json({error:'تعذر إنشاء الحساب'},409)}await audit(db,id,'setup_king','user',id,{});return json({ok:true});}
 if(method==='POST'&&path==='/api/setup/recover-owner'){const b=await input(req);if(!env.SETUP_SECRET||!b||typeof b.setup_secret!=='string'||b.setup_secret!==env.SETUP_SECRET)return json({error:'رمز الاسترداد غير صحيح'},403);if(!validText(b.password,12,128))return json({error:'كلمة المرور يجب أن تكون بين 12 و128 حرفًا'},400);const owner=await db.prepare("SELECT id FROM users WHERE username='king' AND role='king'").first();if(!owner)return json({error:'حساب الملك غير موجود'},404);const salt=random();const digest=await derive(b.password,salt);await db.prepare("UPDATE users SET password_hash=?,salt=? WHERE id=? AND role='king'").bind(digest,salt,owner.id).run();await db.prepare('DELETE FROM sessions WHERE user_id=?').bind(owner.id).run();await db.prepare('DELETE FROM login_throttles').run();await audit(db,owner.id,'recover_owner_credentials','user',owner.id,{});return json({ok:true,message:'تم استرداد حساب الملك. سجّل الدخول بكلمة المرور الجديدة.'});}
@@ -243,6 +266,24 @@ if(method==='POST'&&path==='/api/auth/login'){let loginStage='input';try{const b
  loginStage='session_creation';await db.prepare('DELETE FROM login_throttles WHERE login_key=?').bind(loginKey).run();const token=random()+random(),expires=new Date(Date.now()+8*3600*1000).toISOString().replace('T',' ').slice(0,19);await db.prepare('INSERT INTO sessions(token_hash,user_id,expires_at) VALUES(?,?,?)').bind(await hash(token),found.id,expires).run();loginStage='audit';await audit(db,found.id,'login','session',null,{});return json({ok:true,role:found.role},200,{'set-cookie':cookie(req,token,28800)});}catch(err){console.error('login_failure_stage',loginStage,err instanceof Error?err.message:String(err));return json({error:'خطأ داخلي في الخادم',stage:loginStage,code:err instanceof Error?err.name:'RuntimeError'},500);}}
 if(method==='POST'&&path==='/api/auth/logout'){const t=(req.headers.get('cookie')||'').match(/saliyah_session=([a-f0-9-]+)/)?.[1];if(t)await db.prepare('DELETE FROM sessions WHERE token_hash=?').bind(await hash(t)).run();return json({ok:true},200,{'set-cookie':cookie(req,'',0)});}
 // Ministry accounts are isolated by ministry ID. No cross-ministry service permissions.
+if(method==='GET'&&path==='/api/admin/simulation/projects'){
+ if(!user||user.role!=='king')return json({error:'للملك فقط'},403);
+ const rows=await db.prepare('SELECT * FROM saliyah_projects ORDER BY created_at DESC LIMIT 100').all();
+ return json({projects:rows.results});
+}
+if(method==='POST'&&path==='/api/admin/simulation/projects/decision'){
+ if(!user||user.role!=='king')return json({error:'للملك فقط'},403);
+ const b=await input(req);
+ if(!b||!['approved','rejected'].includes(b.decision)||typeof b.id!=='string')return json({error:'قرار غير صالح'},400);
+ const updated=await db.prepare("UPDATE saliyah_projects SET status=?,reviewed_by=?,reviewed_at=CURRENT_TIMESTAMP WHERE id=? AND status='pending_human'").bind(b.decision,user.id,b.id).run();
+ if(!updated.meta.changes)return json({error:'الطلب غير موجود أو تمت مراجعته'},409);
+ await audit(db,user.id,'simulation_project_decision','saliyah_project',b.id,{decision:b.decision});
+ return json({ok:true,status:b.decision});
+}
+if(method==='GET'&&path==='/api/simulation/status'){
+ const [citizens,projects]=await Promise.all([db.prepare('SELECT COUNT(*) n FROM saliyah_sim_citizens').first(),db.prepare('SELECT status,COUNT(*) n FROM saliyah_projects GROUP BY status').all()]);
+ return json({simulated_citizens:citizens.n,projects:projects.results,automated_ministries:botMinisters.length,human_ministries:['الخارجية','الداخلية']});
+}
 if(method==='GET'&&path==='/api/admin/ministries/roster'){
  if(!user||user.role!=='king')return json({error:'للملك فقط'},403);
  const ministers=[...new Set(ministries.map(m=>m.minister))];
