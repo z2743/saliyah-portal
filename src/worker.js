@@ -287,7 +287,35 @@ async function checkSimulationHealth(db){
  await db.prepare("INSERT INTO saliyah_sim_settings(key,value) VALUES('simulation_health_status',?) ON CONFLICT(key) DO UPDATE SET value=excluded.value").bind(JSON.stringify({status,checked_at:new Date().toISOString(),problems})).run();
  return {status,problems};
 }
-export default {async scheduled(event,env,ctx){ctx.waitUntil((async()=>{for(const [name,fn] of [['government',runSaliyahGovernment],['x_bots',generateXBotActivity]]{try{await fn(env.DB);await env.DB.prepare("INSERT INTO saliyah_sim_settings(key,value) VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value").bind('last_'+name+'_success',new Date().toISOString()).run();await env.DB.prepare('DELETE FROM saliyah_sim_settings WHERE key=?').bind('last_'+name+'_error').run();console.log('simulation_cron_success',name)}catch(e){const message=String(e instanceof Error?e.message:e).slice(0,300);console.error('simulation_cron_failed',name,e instanceof Error?e.stack:String(e));try{await env.DB.prepare("INSERT INTO saliyah_sim_settings(key,value) VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value").bind('last_'+name+'_error',new Date().toISOString()+' '+message).run()}catch(logError){console.error('simulation_log_failed',logError)}}try{const health=await checkSimulationHealth(env.DB);console.log('simulation_health',JSON.stringify(health))}catch(e){console.error('simulation_health_failed',e);try{await env.DB.prepare("INSERT INTO saliyah_sim_settings(key,value) VALUES('simulation_health_error',?) ON CONFLICT(key) DO UPDATE SET value=excluded.value").bind(new Date().toISOString()+' '+String(e).slice(0,250)).run()}catch(_){}}}})())},async fetch(req,env){const u=new URL(req.url);if(u.pathname==='/simulation.html'){if(!env.DB)return new Response('Unavailable',{status:503});const royal=await actor(req,env.DB);if(royal?.role!=='king')return new Response('هذه الصفحة مخصصة للملك فقط',{status:403,headers:{'content-type':'text/plain; charset=utf-8','cache-control':'no-store'}});return env.ASSETS.fetch(req)}if(!u.pathname.startsWith('/api/'))return env.ASSETS.fetch(req);try{if(!env.DB)return json({error:'Database binding missing'},503);const db=env.DB;const method=req.method;const path=u.pathname;const user=(path==='/api/auth/login'||path==='/api/setup/king'||path==='/api/setup/status'||path==='/api/setup/recover-owner'||path==='/api/auth/citizen/register')?null:await actor(req,db);if(method!=='GET'&&method!=='HEAD'){const origin=req.headers.get('origin');const site=req.headers.get('sec-fetch-site');if((origin&&origin!==u.origin)||(site&&site!=='same-origin'&&site!=='none'))return json({error:'مصدر الطلب غير مسموح'},403);}
+export default {
+ async scheduled(event,env,ctx){
+  ctx.waitUntil((async()=>{
+   for(const [name,fn] of [['government',runSaliyahGovernment],['x_bots',generateXBotActivity]]){
+    try{
+     await fn(env.DB);
+     await env.DB.prepare("INSERT INTO saliyah_sim_settings(key,value) VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value").bind('last_'+name+'_success',new Date().toISOString()).run();
+     await env.DB.prepare('DELETE FROM saliyah_sim_settings WHERE key=?').bind('last_'+name+'_error').run();
+     console.log('simulation_cron_success',name);
+    }catch(e){
+     const message=String(e instanceof Error?e.message:e).slice(0,300);
+     console.error('simulation_cron_failed',name,e instanceof Error?e.stack:String(e));
+     try{
+      await env.DB.prepare("INSERT INTO saliyah_sim_settings(key,value) VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value").bind('last_'+name+'_error',new Date().toISOString()+' '+message).run();
+     }catch(logError){console.error('simulation_log_failed',logError)}
+    }
+   }
+   try{
+    const health=await checkSimulationHealth(env.DB);
+    await env.DB.prepare("DELETE FROM saliyah_sim_settings WHERE key='simulation_health_error'").run();
+    console.log('simulation_health',JSON.stringify(health));
+   }catch(e){
+    console.error('simulation_health_failed',e);
+    try{
+     await env.DB.prepare("INSERT INTO saliyah_sim_settings(key,value) VALUES('simulation_health_error',?) ON CONFLICT(key) DO UPDATE SET value=excluded.value").bind(new Date().toISOString()+' '+String(e).slice(0,250)).run();
+    }catch(logError){console.error('simulation_health_log_failed',logError)}
+   }
+  })());
+ },async fetch(req,env){const u=new URL(req.url);if(u.pathname==='/simulation.html'){if(!env.DB)return new Response('Unavailable',{status:503});const royal=await actor(req,env.DB);if(royal?.role!=='king')return new Response('هذه الصفحة مخصصة للملك فقط',{status:403,headers:{'content-type':'text/plain; charset=utf-8','cache-control':'no-store'}});return env.ASSETS.fetch(req)}if(!u.pathname.startsWith('/api/'))return env.ASSETS.fetch(req);try{if(!env.DB)return json({error:'Database binding missing'},503);const db=env.DB;const method=req.method;const path=u.pathname;const user=(path==='/api/auth/login'||path==='/api/setup/king'||path==='/api/setup/status'||path==='/api/setup/recover-owner'||path==='/api/auth/citizen/register')?null:await actor(req,db);if(method!=='GET'&&method!=='HEAD'){const origin=req.headers.get('origin');const site=req.headers.get('sec-fetch-site');if((origin&&origin!==u.origin)||(site&&site!=='same-origin'&&site!=='none'))return json({error:'مصدر الطلب غير مسموح'},403);}
 
 // X Al-Saliyah: profiles are bound to authenticated accounts; ministry verification
 // is granted only for a ministry assignment recorded by the government.
