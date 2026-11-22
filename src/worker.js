@@ -177,9 +177,19 @@ async function generateXBotActivity(db){
  'مساء الخير 🌙 وش جديدكم في عالم الصالية؟',
  'هل تفضلون منشورات قصيرة أو شروحات طويلة عن خدمات الموقع؟'
  ];
- // Create a large, clearly marked fictional population in one batch, rather than one request per bot.
- await db.prepare("WITH RECURSIVE seq(n) AS (SELECT 1 UNION ALL SELECT n+1 FROM seq WHERE n<1999) INSERT OR IGNORE INTO x_profiles(id,user_id,handle,display_name,bio,kind,verified) SELECT 'x-sim-bot-'+printf('%04d',n),NULL,'saliyah_bot_'+printf('%04d',n),'مواطن صالي آلي '+n+' 🤖','حساب محاكاة آلي؛ ليس شخصًا حقيقيًا أو جهة رسمية','bot',0 FROM seq").run();
+ const firstNames=['أحمد','محمد','عبدالله','خالد','فهد','نواف','راكان','تركي','سلمان','عمر','يوسف','ماجد','بدر','سلطان','فيصل','سارة','نورة','ريم','ليان','هيا','شهد','غلا','دانة','لمى','رغد','مها','جود','أريج','عبير','لولوة'];
+ const familyNames=['العتيبي','القحطاني','الشمري','العنزي','الحربي','الدوسري','المطيري','الغامدي','الزهراني','المالكي','السالمي','الراشدي','الصالي','الهاجري','العمري','الشهري'];
+ // Human-style fictional names, always clearly identified as bots with 🤖.
  const botIds=Array.from({length:1999},(_,i)=>'x-sim-bot-'+String(i+1).padStart(4,'0'));
+ const seed=await db.prepare("WITH RECURSIVE seq(n) AS (SELECT 1 UNION ALL SELECT n+1 FROM seq WHERE n<1999) INSERT OR IGNORE INTO x_profiles(id,user_id,handle,display_name,bio,kind,verified) SELECT 'x-sim-bot-'||printf('%04d',n),NULL,'saliyah_bot_'||printf('%04d',n),'مواطن صالي آلي '||n||' 🤖','حساب محاكاة آلي؛ ليس شخصًا حقيقيًا','bot',0 FROM seq").run();
+ for(let offset=0;offset<1999;offset+=100){
+  const statements=[];
+  for(let i=offset;i<Math.min(offset+100,1999);i++){
+   const name=firstNames[(i*7+Math.floor(i/30))%firstNames.length]+' '+familyNames[(i*11+Math.floor(i/16))%familyNames.length]+' 🤖';
+   statements.push(db.prepare("UPDATE x_profiles SET display_name=? WHERE id=? AND kind='bot' AND display_name<>?").bind(name,botIds[i],name));
+  }
+  await db.batch(statements);
+ }
  const now=Math.floor(Date.now()/3600000);
  // Idempotent per hour, safe if the scheduled job is retried.
  for(let i=0;i<36;i++){
@@ -195,6 +205,22 @@ async function generateXBotActivity(db){
   if(bot===p.profile_id)continue;
   await db.prepare('INSERT OR IGNORE INTO x_likes(profile_id,post_id) VALUES(?,?)').bind(bot,p.id).run();
  }
+ // Bots reply to one another with context-aware, visibly automated discussions.
+ const replies=[
+ ['أتفق معك، خصوصًا لو الخدمة تصير أسرع.','أنا أشوف الموضوع يحتاج تجربة قبل القرار.','فكرة حلوة، لكن وش رأيكم بالتكاليف؟'],
+ ['عن نفسي أفضل التطبيق على زيارة الفرع.','مو كل الناس تفضل الجوال، لازم يظل فيه خيار حضوري.','صحيح، والأهم تكون الخطوات واضحة.'],
+ ['المدارس والجامعات بتفيد المملكة كثير.','أتمنى نشوف وظائف أكثر للخريجين.','التعليم مهم، بس نحتاج كذلك تدريب عملي.'],
+ ['الخدمات البنكية تحتاج إشعارات واضحة.','أنا أفضل التحويل السريع بين الحسابات.','وش رايكم يكون فيه سجل مصروفات؟']
+ ];
+ const discussionPosts=(await db.prepare("SELECT id,profile_id,body FROM x_posts WHERE reply_to IS NULL ORDER BY created_at DESC LIMIT 45").all()).results;
+ for(let i=0;i<Math.min(60,discussionPosts.length*2);i++){
+  const p=discussionPosts[i%discussionPosts.length],bot=botIds[(now*19+i*23)%botIds.length];
+  if(bot===p.profile_id)continue;
+  const theme=/مدرس|جامع|تعليم/.test(p.body)?2:/بنك|تحويل|هلل/.test(p.body)?3:/جوال|أبشر|فرع/.test(p.body)?1:0;
+  const body=replies[theme][(now+i)%3];
+  await db.prepare("INSERT OR IGNORE INTO x_posts(id,profile_id,body,reply_to) VALUES(?,?,?,?)").bind('sim-reply-'+now+'-'+i,bot,body,p.id).run();
+ }
+
 }
 export default {async scheduled(event,env,ctx){ctx.waitUntil((async()=>{for(const [name,fn] of [['x_bots',generateXBotActivity],['government',runSaliyahGovernment]]){try{await fn(env.DB);await env.DB.prepare("INSERT INTO saliyah_sim_settings(key,value) VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value").bind('last_'+name+'_success',new Date().toISOString()).run();await env.DB.prepare('DELETE FROM saliyah_sim_settings WHERE key=?').bind('last_'+name+'_error').run();console.log('simulation_cron_success',name)}catch(e){const message=String(e instanceof Error?e.message:e).slice(0,300);console.error('simulation_cron_failed',name,e instanceof Error?e.stack:String(e));try{await env.DB.prepare("INSERT INTO saliyah_sim_settings(key,value) VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value").bind('last_'+name+'_error',new Date().toISOString()+' '+message).run()}catch(logError){console.error('simulation_log_failed',logError)}}}})())},async fetch(req,env){const u=new URL(req.url);if(u.pathname==='/simulation.html'){if(!env.DB)return new Response('Unavailable',{status:503});const royal=await actor(req,env.DB);if(royal?.role!=='king')return new Response('هذه الصفحة مخصصة للملك فقط',{status:403,headers:{'content-type':'text/plain; charset=utf-8','cache-control':'no-store'}});return env.ASSETS.fetch(req)}if(!u.pathname.startsWith('/api/'))return env.ASSETS.fetch(req);try{if(!env.DB)return json({error:'Database binding missing'},503);const db=env.DB;const method=req.method;const path=u.pathname;const user=(path==='/api/auth/login'||path==='/api/setup/king'||path==='/api/setup/status'||path==='/api/setup/recover-owner'||path==='/api/auth/citizen/register')?null:await actor(req,db);if(method!=='GET'&&method!=='HEAD'){const origin=req.headers.get('origin');const site=req.headers.get('sec-fetch-site');if((origin&&origin!==u.origin)||(site&&site!=='same-origin'&&site!=='none'))return json({error:'مصدر الطلب غير مسموح'},403);}
 
