@@ -89,7 +89,9 @@ async function runSaliyahGovernment(db){
   ['أطلس الصالية للصيانة','الصيانة','المتجار','خدمات صيانة المباني والمرافق الافتراضية',34000]
  ];
  const slotCompany=Math.floor(hour/8),venture=ventures[slotCompany%ventures.length],companyId='sim-company-'+slotCompany;
- await db.prepare("INSERT OR IGNORE INTO saliyah_sim_companies(id,founder_id,name,activity,location,description,capital,status) VALUES(?,?,?,?,?,?,?,'pending_human')").bind(companyId,'citizen-'+(hour*3),...venture).run();
+ await db.prepare("INSERT OR IGNORE INTO saliyah_sim_companies(id,founder_id,name,activity,location,description,capital,status) VALUES(?,?,?,?,?,?,?,'approved')").bind(companyId,'sim-resident-'+String(1+slotCompany%2000).padStart(4,'0'),...venture).run();
+ // Standing royal authorization: ordinary fictional businesses may operate automatically.
+ await db.prepare("UPDATE saliyah_sim_companies SET status='approved',reviewed_by='royal-standing-authorization',reviewed_at=CURRENT_TIMESTAMP WHERE status='pending_human' AND capital<=100000").run();
  // Employers can automatically process fictional applicants for approved companies only.
  const pendingApplications=(await db.prepare("SELECT a.id,a.citizen_id,a.job_id FROM saliyah_sim_job_applications a JOIN saliyah_sim_jobs j ON j.id=a.job_id JOIN saliyah_sim_companies c ON c.id=j.company_id WHERE a.status='applied' AND c.status='approved' ORDER BY a.created_at LIMIT 15").all()).results;
  for(const a of pendingApplications){
