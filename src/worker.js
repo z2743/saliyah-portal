@@ -213,20 +213,36 @@ async function generateXBotActivity(db){
   if(bot===candidate.profile_id)continue;
   await db.prepare('INSERT OR IGNORE INTO x_likes(profile_id,post_id) VALUES(?,?)').bind(bot,candidate.id).run();
  }
- // Bots reply to one another with context-aware, visibly automated discussions.
+ // Fictional accounts hold uneven, contextual, multi-turn discussions.
  const replies=[
- ['أتفق معك، خصوصًا لو الخدمة تصير أسرع.','أنا أشوف الموضوع يحتاج تجربة قبل القرار.','فكرة حلوة، لكن وش رأيكم بالتكاليف؟'],
- ['عن نفسي أفضل التطبيق على زيارة الفرع.','مو كل الناس تفضل الجوال، لازم يظل فيه خيار حضوري.','صحيح، والأهم تكون الخطوات واضحة.'],
- ['المدارس والجامعات بتفيد المملكة كثير.','أتمنى نشوف وظائف أكثر للخريجين.','التعليم مهم، بس نحتاج كذلك تدريب عملي.'],
- ['الخدمات البنكية تحتاج إشعارات واضحة.','أنا أفضل التحويل السريع بين الحسابات.','وش رايكم يكون فيه سجل مصروفات؟']
+  ['أتفق معك، خصوصًا لو الخدمة تصير أسرع.','أنا أشوف الموضوع يحتاج تجربة قبل القرار.','فكرة حلوة، لكن وش رأيكم بالتكاليف؟','وش تقصد بالتحديد؟','وجهة نظر مختلفة، لكن أحترمها.'],
+  ['عن نفسي أفضل التطبيق على زيارة الفرع.','مو كل الناس تفضل الجوال، لازم يظل فيه خيار حضوري.','صحيح، والأهم تكون الخطوات واضحة.','هل جربت الخدمة بنفسك؟','لو وفروا دعم فني بتكون أفضل.'],
+  ['المدارس والجامعات بتفيد المملكة كثير.','أتمنى نشوف وظائف أكثر للخريجين.','التعليم مهم، بس نحتاج كذلك تدريب عملي.','أنا أشوف تطوير المدارس أولًا.','الجامعة مهمة، لكن لازم تخصصات مطلوبة.'],
+  ['الخدمات البنكية تحتاج إشعارات واضحة.','أنا أفضل التحويل السريع بين الحسابات.','وش رايكم يكون فيه سجل مصروفات؟','الرسوم مهمة بعد، لازم تكون واضحة.','أتمنى يصير الدفع أسهل بالريال الصالي.']
  ];
- const discussionPosts=(await db.prepare("SELECT id,profile_id,body FROM x_posts WHERE reply_to IS NULL ORDER BY created_at DESC LIMIT 45").all()).results;
- for(let i=0;i<Math.min(60,discussionPosts.length*2);i++){
-  const p=discussionPosts[i%discussionPosts.length],bot=botIds[(now*19+i*23)%botIds.length];
+ const followups=['ممكن توضح فكرتك أكثر؟','أتفق مع جزء من كلامك، بس مو كله.','كلامك منطقي، وش الحل برأيك؟','أنا أشوف العكس، التجربة تختلف من شخص لثاني.','صحيح، وخلونا نشوف آراء الباقين.'];
+ const discussionPosts=(await db.prepare("SELECT id,profile_id,body FROM x_posts WHERE reply_to IS NULL ORDER BY created_at DESC LIMIT 120").all()).results;
+ let made=0;
+ for(let i=0;i<120&&discussionPosts.length;i++){
+  const p=discussionPosts[score(now+':discussion:'+i,'target')%discussionPosts.length];
+  const reach=score(p.id,Math.floor(now/24))%100;
+  const chance=reach<70?5:reach<95?35:90;
+  if(score(p.id,now+':comment:'+i)%100>=chance)continue;
+  const bot=botIds[score(p.id,now+':commenter:'+i)%botIds.length];
   if(bot===p.profile_id)continue;
-  const theme=/مدرس|جامع|تعليم/.test(p.body)?2:/بنك|تحويل|هلل/.test(p.body)?3:/جوال|أبشر|فرع/.test(p.body)?1:0;
-  const body=replies[theme][(now+i)%3];
-  await db.prepare("INSERT OR IGNORE INTO x_posts(id,profile_id,body,reply_to) VALUES(?,?,?,?)").bind('sim-reply-'+now+'-'+i,bot,body,p.id).run();
+  const theme=/مدرس|جامع|تعليم/.test(p.body)?2:/بنك|تحويل|هلل|ريال/.test(p.body)?3:/جوال|أبشر|فرع/.test(p.body)?1:0;
+  const body=replies[theme][score(bot,p.id+':reply')%replies[theme].length];
+  const replyId='sim-reply-'+now+'-'+i;
+  await db.prepare("INSERT OR IGNORE INTO x_posts(id,profile_id,body,reply_to) VALUES(?,?,?,?)").bind(replyId,bot,body,p.id).run();
+  made++;
+  // Some conversations develop into a second exchange; others stop after one comment.
+  if(score(p.id,now+':thread:'+i)%100<35){
+   const secondBot=botIds[score(p.id,now+':second:'+i)%botIds.length];
+   if(secondBot!==bot){
+    const second=followups[score(secondBot,p.id)%followups.length];
+    await db.prepare("INSERT OR IGNORE INTO x_posts(id,profile_id,body,reply_to) VALUES(?,?,?,?)").bind('sim-thread-'+now+'-'+i,secondBot,second,replyId).run();
+   }
+  }
  }
 
 }
