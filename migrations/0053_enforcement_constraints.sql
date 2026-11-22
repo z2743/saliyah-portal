@@ -1,5 +1,2 @@
-CREATE TABLE enforcement_cases_new(id TEXT PRIMARY KEY,subject_user_id TEXT NOT NULL REFERENCES users(id),document_id TEXT REFERENCES documents(id),residency_number TEXT NOT NULL,amount INTEGER NOT NULL CHECK(amount>=0),reason TEXT NOT NULL,ministry_id INTEGER NOT NULL CHECK(ministry_id IN (1,3,7)),created_by TEXT NOT NULL REFERENCES users(id),status TEXT NOT NULL DEFAULT 'pending' CHECK(status IN ('pending','approved','rejected')),decided_by TEXT REFERENCES users(id),decided_at TEXT,created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,action TEXT NOT NULL DEFAULT 'debt' CHECK(action IN ('debt','service_suspension','both')),CHECK(action='service_suspension' OR amount>0));
-INSERT INTO enforcement_cases_new SELECT id,subject_user_id,document_id,residency_number,amount,reason,ministry_id,created_by,status,decided_by,decided_at,created_at,action FROM enforcement_cases;
-DROP TABLE enforcement_cases;
-ALTER TABLE enforcement_cases_new RENAME TO enforcement_cases;
-CREATE INDEX IF NOT EXISTS idx_enforcement_subject ON enforcement_cases(subject_user_id,status);
+-- Superseded by 0055_enforcement_v2.sql. Retain legacy tables and foreign keys; no destructive changes.
+SELECT 1;
