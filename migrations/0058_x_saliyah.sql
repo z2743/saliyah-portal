@@ -1,0 +1,7 @@
+CREATE TABLE IF NOT EXISTS x_profiles(id TEXT PRIMARY KEY,user_id TEXT UNIQUE REFERENCES users(id),handle TEXT NOT NULL UNIQUE,display_name TEXT NOT NULL,bio TEXT NOT NULL DEFAULT '',kind TEXT NOT NULL DEFAULT 'person' CHECK(kind IN ('person','ministry','bot')),ministry_id INTEGER UNIQUE,verified INTEGER NOT NULL DEFAULT 0 CHECK(verified IN (0,1)),created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP);
+CREATE TABLE IF NOT EXISTS x_posts(id TEXT PRIMARY KEY,profile_id TEXT NOT NULL REFERENCES x_profiles(id),body TEXT NOT NULL CHECK(length(body) BETWEEN 1 AND 500),reply_to TEXT REFERENCES x_posts(id),repost_of TEXT REFERENCES x_posts(id),created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP);
+CREATE TABLE IF NOT EXISTS x_follows(follower_id TEXT NOT NULL REFERENCES x_profiles(id),following_id TEXT NOT NULL REFERENCES x_profiles(id),created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,PRIMARY KEY(follower_id,following_id),CHECK(follower_id<>following_id));
+CREATE TABLE IF NOT EXISTS x_likes(profile_id TEXT NOT NULL REFERENCES x_profiles(id),post_id TEXT NOT NULL REFERENCES x_posts(id),created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,PRIMARY KEY(profile_id,post_id));
+CREATE INDEX IF NOT EXISTS idx_x_posts_created ON x_posts(created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_x_posts_reply ON x_posts(reply_to);
+INSERT OR IGNORE INTO x_profiles(id,user_id,handle,display_name,bio,kind,verified) VALUES('x-chatgpt-saliyah',NULL,'chatgpt_saliyah','ChatGPT الصالي','حساب مساعد ذكاء اصطناعي تجريبي؛ لا ينشر تلقائياً ولا يمثل جهة حكومية.','bot',1);
