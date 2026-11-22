@@ -1,0 +1,3 @@
+CREATE TABLE IF NOT EXISTS ministry_accounts (ministry_id INTEGER PRIMARY KEY, user_id TEXT NOT NULL UNIQUE REFERENCES users(id), created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP);
+CREATE TABLE IF NOT EXISTS ministry_actions (id TEXT PRIMARY KEY, ministry_id INTEGER NOT NULL, actor_id TEXT NOT NULL REFERENCES users(id), subject TEXT NOT NULL, details TEXT NOT NULL DEFAULT '', status TEXT NOT NULL DEFAULT 'draft' CHECK(status IN ('draft','submitted')), created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP);
+CREATE INDEX IF NOT EXISTS idx_ministry_actions_ministry ON ministry_actions(ministry_id,created_at);
