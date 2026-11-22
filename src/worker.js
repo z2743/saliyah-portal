@@ -18,7 +18,19 @@ async function runSaliyahGovernment(db){
  const roles=['موظف خدمة عملاء','موظف أحوال مدنية','معلم','ممرض','محاسب','موظف اتصالات','موظف بلدية','موظف بريد','فني صيانة','موظف نقل'];
  // Fictional employed citizens are separate from real staff and cannot gain permissions.
  await db.prepare("WITH RECURSIVE seq(n) AS (SELECT 1 UNION ALL SELECT n+1 FROM seq WHERE n<500) INSERT OR IGNORE INTO saliyah_sim_citizens(id,name,occupation) SELECT 'sim-employee-'||printf('%04d',n),'موظف صالي افتراضي '||n,CASE n%10 WHEN 0 THEN 'موظف خدمة عملاء' WHEN 1 THEN 'موظف أحوال مدنية' WHEN 2 THEN 'معلم' WHEN 3 THEN 'ممرض' WHEN 4 THEN 'محاسب' WHEN 5 THEN 'موظف اتصالات' WHEN 6 THEN 'موظف بلدية' WHEN 7 THEN 'موظف بريد' WHEN 8 THEN 'فني صيانة' ELSE 'موظف نقل' END FROM seq").run();
+ // 2,000 additional fictional residents with independent lives and no access to real user accounts.
+ await db.prepare("WITH RECURSIVE seq(n) AS (SELECT 1 UNION ALL SELECT n+1 FROM seq WHERE n<2000) INSERT OR IGNORE INTO saliyah_sim_citizens(id,name,occupation) SELECT 'sim-resident-'||printf('%04d',n),'مواطن صالي افتراضي '||n,CASE n%6 WHEN 0 THEN 'طالب' WHEN 1 THEN 'باحث عن عمل' WHEN 2 THEN 'تاجر' WHEN 3 THEN 'معلم' WHEN 4 THEN 'موظف' ELSE 'صاحب مشروع' END FROM seq").run();
+ // Identity requests are recorded first; simulated issuance occurs in a later scheduled cycle.
+ await db.prepare("INSERT OR IGNORE INTO saliyah_sim_identities(id,citizen_id,status,issued_at,expires_at) SELECT 'sim-id-resident-'||substr(id,-4),id,'requested','', '' FROM saliyah_sim_citizens WHERE id LIKE 'sim-resident-%'").run();
+ await db.prepare("UPDATE saliyah_sim_identities SET status='issued',issued_at=CURRENT_TIMESTAMP,expires_at=datetime('now','+14 days') WHERE status='requested' AND citizen_id IN (SELECT id FROM saliyah_sim_citizens WHERE id LIKE 'sim-resident-%') AND id IN (SELECT id FROM saliyah_sim_identities WHERE status='requested' LIMIT 120)").run();
+ await db.prepare("UPDATE saliyah_sim_identities SET status='renewal_requested' WHERE status='issued' AND expires_at<=CURRENT_TIMESTAMP AND citizen_id LIKE 'sim-resident-%'").run();
+ await db.prepare("UPDATE saliyah_sim_identities SET status='issued',issued_at=CURRENT_TIMESTAMP,expires_at=datetime('now','+14 days') WHERE status='renewal_requested' AND citizen_id LIKE 'sim-resident-%'").run();
+ // Daily life events: studying, job hunting, shopping and running businesses.
+ const day=Math.floor(Date.now()/86400000);
+ await db.prepare("INSERT OR IGNORE INTO saliyah_sim_life_events(id,citizen_id,kind,description) SELECT 'sim-life-'||?||'-'||substr(id,-4),id,CASE (CAST(substr(id,-4) AS INTEGER)+?)%4 WHEN 0 THEN 'education' WHEN 1 THEN 'employment' WHEN 2 THEN 'shopping' ELSE 'business' END,CASE (CAST(substr(id,-4) AS INTEGER)+?)%4 WHEN 0 THEN 'حضور الدراسة في المملكة' WHEN 1 THEN 'البحث عن وظيفة أو أداء العمل' WHEN 2 THEN 'التسوق وشراء المستلزمات' ELSE 'متابعة مشروع تجاري افتراضي' END FROM saliyah_sim_citizens WHERE id LIKE 'sim-resident-%' AND CAST(substr(id,-4) AS INTEGER)%10=?").bind(day,day,day,day%10).run();
  const plans=[
+  {ministry:16,type:'university',title:'جامعة الصالية الوطنية',location:'السجادة',description:'جامعة افتراضية للكليات والتخصصات وفرص التوظيف، بانتظار الاعتماد الملكي',budget:2500000},
+  {ministry:16,type:'school',title:'مدرسة الأجيال الصالية',location:'المتجار',description:'مدرسة افتراضية جديدة بانتظار الاعتماد الملكي',budget:210000},
   {ministry:16,type:'school',title:'مدرسة المستقبل الصالية',location:'السجادة',description:'مدرسة افتراضية تضم 12 فصلاً مع وظائف للمعلمين والإداريين',budget:180000},
   {ministry:15,type:'clinic',title:'مركز العافية الصحي',location:'المتجار',description:'مركز صحي افتراضي للعيادات الأساسية',budget:240000},
   {ministry:17,type:'housing',title:'حي النخيل السكني',location:'السجادة',description:'مخطط سكني افتراضي يضم 30 وحدة',budget:900000},
