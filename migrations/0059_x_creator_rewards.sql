@@ -1,2 +1,4 @@
 -- Monthly capped fictional creator rewards; one payout per profile per UTC month.
 CREATE TABLE IF NOT EXISTS x_creator_payouts(id TEXT PRIMARY KEY,profile_id TEXT NOT NULL REFERENCES x_profiles(id),user_id TEXT NOT NULL REFERENCES users(id),period TEXT NOT NULL,followers INTEGER NOT NULL,likes INTEGER NOT NULL,reposts INTEGER NOT NULL,amount INTEGER NOT NULL CHECK(amount BETWEEN 0 AND 500),bank_account_id TEXT NOT NULL REFERENCES bank_accounts(id),created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,UNIQUE(profile_id,period)); CREATE INDEX IF NOT EXISTS idx_x_creator_payouts_user ON x_creator_payouts(user_id,created_at DESC);
+
+CREATE TRIGGER IF NOT EXISTS x_creator_payout_apply AFTER INSERT ON x_creator_payouts WHEN NEW.amount>0 BEGIN UPDATE bank_accounts SET balance=balance+NEW.amount WHERE id=NEW.bank_account_id AND user_id=NEW.user_id; SELECT CASE WHEN changes()!=1 THEN RAISE(ABORT,'creator payout account mismatch') END; END;
