@@ -29,6 +29,7 @@ async function runSaliyahGovernment(db){
  await db.prepare("UPDATE saliyah_sim_citizens SET gender=CASE WHEN CAST(substr(id,-4) AS INTEGER)%2=0 THEN 'female' ELSE 'male' END WHERE id LIKE 'sim-resident-%' AND gender IS NULL").run();
  await db.prepare("UPDATE saliyah_sim_citizens SET gender='male' WHERE id LIKE 'sim-employee-%' AND gender IS NULL").run();
  await db.prepare("UPDATE saliyah_sim_citizens SET name=(CASE CAST(substr(id,-4) AS INTEGER)%20 WHEN 0 THEN 'نورة' WHEN 2 THEN 'سارة' WHEN 4 THEN 'ريم' WHEN 6 THEN 'هيا' WHEN 8 THEN 'ليان' WHEN 10 THEN 'جود' WHEN 12 THEN 'لمى' WHEN 14 THEN 'شهد' WHEN 16 THEN 'غلا' ELSE 'دانة' END)||' بنت '||(CASE ((CAST(substr(id,-4) AS INTEGER)-1)/400) WHEN 0 THEN 'إبراهيم' WHEN 1 THEN 'صالح' WHEN 2 THEN 'عبدالرحمن' WHEN 3 THEN 'حمد' ELSE 'سعد' END)||' '||substr(name,instr(name,' ')+1) WHERE id LIKE 'sim-resident-%' AND gender='female' AND name NOT LIKE '% بنت %'").run();
+ await db.prepare("UPDATE saliyah_sim_citizens SET name=replace(name,' بن محمد ',' ') WHERE gender='female' AND name LIKE '% بنت % بن محمد %'").run();
  // Identity requests are recorded first; simulated issuance occurs in a later scheduled cycle.
  await db.prepare("INSERT OR IGNORE INTO saliyah_sim_identities(id,citizen_id,status,issued_at,expires_at) SELECT 'sim-id-resident-'||substr(id,-4),id,'requested','', '' FROM saliyah_sim_citizens WHERE id LIKE 'sim-resident-%'").run();
  // Deterministic fictional eligibility: 20% incomplete/rejected, 40% eligible,
