@@ -77,6 +77,11 @@ async function runSaliyahGovernment(db){
    ]);
   }catch(e){console.error('simulated_payroll_failed',transferId,String(e));}
  }
+ // Automatic labor complaints for overdue fictional wages, one case per employee and period.
+ await db.prepare("CREATE TABLE IF NOT EXISTS saliyah_sim_labor_cases(id TEXT PRIMARY KEY,job_id TEXT NOT NULL,company_id TEXT NOT NULL,citizen_id TEXT NOT NULL,period_start TEXT NOT NULL,amount INTEGER NOT NULL CHECK(amount>0),reason TEXT NOT NULL,status TEXT NOT NULL DEFAULT 'pending' CHECK(status IN ('pending','under_review','resolved','rejected')),filed_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,resolved_at TEXT,UNIQUE(job_id,citizen_id,period_start))").run();
+ const dueWeek=(()=>{const d=new Date();d.setUTCDate(d.getUTCDate()-(d.getUTCDay()+6)%7-7);return d.toISOString().slice(0,10)})();
+ const dueIndex=Math.floor(Date.parse(dueWeek+'T00:00:00Z')/604800000);
+ await db.prepare("INSERT OR IGNORE INTO saliyah_sim_labor_cases(id,job_id,company_id,citizen_id,period_start,amount,reason) SELECT 'labor-'||?||'-'||j.id||'-'||a.citizen_id,j.id,j.company_id,a.citizen_id,?,j.salary*CASE WHEN c.payroll_weeks=2 THEN 2 ELSE 1 END,'عدم استلام الراتب المستحق' FROM saliyah_sim_jobs j JOIN saliyah_sim_companies c ON c.id=j.company_id JOIN saliyah_sim_job_applications a ON a.job_id=j.id AND a.status='hired' WHERE c.status='approved' AND j.salary>0 AND (c.payroll_weeks=1 OR ?%2=0) AND NOT EXISTS(SELECT 1 FROM saliyah_sim_bank_transactions t WHERE t.id='salary-week-'||?||'-'||j.id||'-in')").bind(dueWeek,dueWeek,dueIndex,dueWeek).run();
  // Identity requests are recorded first; simulated issuance occurs in a later scheduled cycle.
  await db.prepare("INSERT OR IGNORE INTO saliyah_sim_identities(id,citizen_id,status,issued_at,expires_at) SELECT 'sim-id-resident-'||substr(id,-4),id,'requested','', '' FROM saliyah_sim_citizens WHERE id LIKE 'sim-resident-%'").run();
  // Deterministic fictional eligibility: 20% incomplete/rejected, 40% eligible,
@@ -629,6 +634,19 @@ if(method==='POST'&&path==='/api/admin/simulation/projects/decision'){
  if(!updated.meta.changes)return json({error:'الطلب غير موجود أو تمت مراجعته'},409);
  await audit(db,user.id,'simulation_project_decision','saliyah_project',b.id,{decision:b.decision});
  return json({ok:true,status:b.decision});
+}
+if(method==='GET'&&path==='/api/admin/simulation/labor-cases'){
+ if(!user||user.role!=='king')return json({error:'للملك فقط'},403);
+ const rows=await db.prepare("SELECT l.*,c.name company_name,z.name employee_name,j.title job_title FROM saliyah_sim_labor_cases l JOIN saliyah_sim_companies c ON c.id=l.company_id JOIN saliyah_sim_citizens z ON z.id=l.citizen_id JOIN saliyah_sim_jobs j ON j.id=l.job_id ORDER BY l.filed_at DESC,l.id DESC LIMIT 200").all();
+ return json({cases:rows.results,currency:'ريال صالي'});
+}
+if(method==='POST'&&path==='/api/admin/simulation/labor-cases/decision'){
+ if(!user||user.role!=='king')return json({error:'للملك فقط'},403);
+ const b=await input(req);
+ if(!b||typeof b.id!=='string'||!['under_review','resolved','rejected'].includes(b.status))return json({error:'بيانات القرار غير صالحة'},400);
+ const updated=await db.prepare("UPDATE saliyah_sim_labor_cases SET status=?,resolved_at=CASE WHEN ?='under_review' THEN NULL ELSE CURRENT_TIMESTAMP END WHERE id=? AND status IN ('pending','under_review')").bind(b.status,b.status,b.id).run();
+ if(!updated.meta.changes)return json({error:'القضية غير موجودة أو أُغلقت'},409);
+ await audit(db,user.id,'simulation_labor_case_decision','saliyah_sim_labor_case',b.id,{status:b.status});return json({ok:true,status:b.status});
 }
 if(method==='GET'&&path==='/api/admin/simulation/banking'){
  if(!user||user.role!=='king')return json({error:'للملك فقط'},403);
