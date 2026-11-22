@@ -150,8 +150,8 @@ if(path.startsWith('/api/enforcement/')){
  }
  if(method==='GET'&&path==='/api/enforcement/debts'){
   const rows=await db.prepare("SELECT d.*,u.username subject_username FROM debt_claims d JOIN users u ON u.id=d.subject_user_id ORDER BY d.created_at DESC LIMIT 100").all();
-  const debts=user.role==='king'?rows.results:rows.results.filter(x=>assigned.includes(([]).length)); 
-  return json({debts:user.role==='king'?rows.results:[]});
+  if(user.role!=='king')return json({error:'سجل التحصيل للملك فقط'},403);
+  return json({debts:rows.results});
  }
  if(method==='POST'&&path==='/api/enforcement/cases'){
   const b=await input(req);
