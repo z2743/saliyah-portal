@@ -15,6 +15,9 @@ const ministries=[['الخارجية','كسلان بن زياد بن بندر ا
 const botMinisters=ministries.filter(m=>m.id!==0&&m.id!==1).map(m=>({...m,minister:'الوزير الآلي '+m.name.replace('وزارة ','')+' 🤖',automated:true}));
 async function runSaliyahGovernment(db){
  const hour=Math.floor(Date.now()/3600000);
+ const roles=['موظف خدمة عملاء','موظف أحوال مدنية','معلم','ممرض','محاسب','موظف اتصالات','موظف بلدية','موظف بريد','فني صيانة','موظف نقل'];
+ // Fictional employed citizens are separate from real staff and cannot gain permissions.
+ await db.prepare("WITH RECURSIVE seq(n) AS (SELECT 1 UNION ALL SELECT n+1 FROM seq WHERE n<500) INSERT OR IGNORE INTO saliyah_sim_citizens(id,name,occupation) SELECT 'sim-employee-'||printf('%04d',n),'موظف صالي افتراضي '||n,CASE n%10 WHEN 0 THEN 'موظف خدمة عملاء' WHEN 1 THEN 'موظف أحوال مدنية' WHEN 2 THEN 'معلم' WHEN 3 THEN 'ممرض' WHEN 4 THEN 'محاسب' WHEN 5 THEN 'موظف اتصالات' WHEN 6 THEN 'موظف بلدية' WHEN 7 THEN 'موظف بريد' WHEN 8 THEN 'فني صيانة' ELSE 'موظف نقل' END FROM seq").run();
  const plans=[
   {ministry:16,type:'school',title:'مدرسة المستقبل الصالية',location:'السجادة',description:'مدرسة افتراضية تضم 12 فصلاً مع وظائف للمعلمين والإداريين',budget:180000},
   {ministry:15,type:'clinic',title:'مركز العافية الصحي',location:'المتجار',description:'مركز صحي افتراضي للعيادات الأساسية',budget:240000},
@@ -153,8 +156,8 @@ async function generateXBotActivity(db){
  'هل تفضلون منشورات قصيرة أو شروحات طويلة عن خدمات الموقع؟'
  ];
  // Create a large, clearly marked fictional population in one batch, rather than one request per bot.
- await db.prepare("WITH RECURSIVE seq(n) AS (SELECT 1 UNION ALL SELECT n+1 FROM seq WHERE n<1000) INSERT OR IGNORE INTO x_profiles(id,user_id,handle,display_name,bio,kind,verified) SELECT 'x-sim-bot-'+printf('%04d',n),NULL,'saliyah_bot_'+printf('%04d',n),'مواطن صالي آلي '+n+' 🤖','حساب محاكاة آلي؛ ليس شخصًا حقيقيًا أو جهة رسمية','bot',0 FROM seq").run();
- const botIds=Array.from({length:1000},(_,i)=>'x-sim-bot-'+String(i+1).padStart(4,'0'));
+ await db.prepare("WITH RECURSIVE seq(n) AS (SELECT 1 UNION ALL SELECT n+1 FROM seq WHERE n<2000) INSERT OR IGNORE INTO x_profiles(id,user_id,handle,display_name,bio,kind,verified) SELECT 'x-sim-bot-'+printf('%04d',n),NULL,'saliyah_bot_'+printf('%04d',n),'مواطن صالي آلي '+n+' 🤖','حساب محاكاة آلي؛ ليس شخصًا حقيقيًا أو جهة رسمية','bot',0 FROM seq").run();
+ const botIds=Array.from({length:2000},(_,i)=>'x-sim-bot-'+String(i+1).padStart(4,'0'));
  const now=Math.floor(Date.now()/3600000);
  // Idempotent per hour, safe if the scheduled job is retried.
  for(let i=0;i<36;i++){
