@@ -21,6 +21,8 @@ const ui=read('public/app.js');
 const dashboard=read('public/simulation.html');
 assert.doesNotMatch(ui,/المبلغ بالهلل الصالي/);
 assert.match(ui,/المبلغ بالريال الصالي/);
+assert.match(ui,/الصرف التلقائي لم يُفعّل بعد/);
+assert.match(worker,/path==='\/api\/x\/earnings\/claim'/);
 assert.doesNotMatch(worker,/كل ريال صالي يساوي 100 هلل صالي/);
 assert.match(dashboard,/id="bankPrev"/);
 assert.match(dashboard,/id="bankNext"/);
