@@ -143,7 +143,10 @@ if(path.startsWith('/api/enforcement/')){
  if(!assigned.length)return json({error:'الخدمة للملك ووزارات الداخلية والعدل والمالية'},403);
  if(method==='GET'&&path==='/api/enforcement/cases'){
   const r=await db.prepare("SELECT e.*,u.username subject_username FROM enforcement_cases e JOIN users u ON u.id=e.subject_user_id ORDER BY e.created_at DESC LIMIT 100").all();
-  const h=await db.prepare("SELECT s.*,u.username subject_username FROM service_suspensions s JOIN users u ON u.id=s.subject_user_id ORDER BY s.created_at DESC LIMIT 100").all();return json({cases:r.results,suspensions:h.results,ministries:assigned});
+  const h=await db.prepare("SELECT s.*,u.username subject_username FROM service_suspensions s JOIN users u ON u.id=s.subject_user_id ORDER BY s.created_at DESC LIMIT 100").all();
+  const cases=user.role==='king'?r.results:r.results.filter(x=>assigned.includes(x.ministry_id));
+  const suspensions=user.role==='king'?h.results:h.results.filter(x=>assigned.includes(x.ministry_id));
+  return json({cases,suspensions,ministries:assigned});
  }
  if(method==='POST'&&path==='/api/enforcement/cases'){
   const b=await input(req);
