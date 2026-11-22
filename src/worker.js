@@ -43,6 +43,21 @@ if(method==='POST'&&path==='/api/auth/login'){let loginStage='input';try{const b
  loginStage='session_creation';await db.prepare('DELETE FROM login_throttles WHERE login_key=?').bind(loginKey).run();const token=random()+random(),expires=new Date(Date.now()+8*3600*1000).toISOString().replace('T',' ').slice(0,19);await db.prepare('INSERT INTO sessions(token_hash,user_id,expires_at) VALUES(?,?,?)').bind(await hash(token),found.id,expires).run();loginStage='audit';await audit(db,found.id,'login','session',null,{});return json({ok:true,role:found.role},200,{'set-cookie':cookie(req,token,28800)});}catch(err){console.error('login_failure_stage',loginStage,err instanceof Error?err.message:String(err));return json({error:'خطأ داخلي في الخادم',stage:loginStage,code:err instanceof Error?err.name:'RuntimeError'},500);}}
 if(method==='POST'&&path==='/api/auth/logout'){const t=(req.headers.get('cookie')||'').match(/saliyah_session=([a-f0-9-]+)/)?.[1];if(t)await db.prepare('DELETE FROM sessions WHERE token_hash=?').bind(await hash(t)).run();return json({ok:true},200,{'set-cookie':cookie(req,'',0)});}
 // Ministry accounts are isolated by ministry ID. No cross-ministry service permissions.
+if(method==='POST'&&path==='/api/admin/ministries/provision'){
+ if(!user||user.role!=='king')return json({error:'للملك فقط'},403);
+ const created=[];
+ for(let i=0;i<ministries.length;i++){
+  const exists=await db.prepare('SELECT 1 FROM ministry_accounts WHERE ministry_id=?').bind(i).first();
+  if(exists)continue;
+  const username='ministry_'+String(i+1).padStart(2,'0');
+  const password=crypto.randomUUID().replace(/-/g,'')+crypto.randomUUID().replace(/-/g,'').slice(0,8);
+  const id=random(),salt=random();
+  await db.batch([db.prepare("INSERT INTO users(id,username,password_hash,salt,role) VALUES(?,?,?,?,'employee')").bind(id,username,await derive(password,salt),salt),db.prepare('INSERT INTO ministry_accounts(ministry_id,user_id) VALUES(?,?)').bind(i,id)]);
+  created.push({ministry_id:i,ministry:ministries[i].name,minister:ministries[i].minister,username,password});
+  await audit(db,user.id,'provision_ministry','ministry',String(i),{username});
+ }
+ return json({created,count:created.length,note:'احفظ بيانات الدخول الآن؛ لن تُعرض كلمات المرور مرة أخرى'});
+}
 if(method==='GET'&&path==='/api/ministries/accounts'){
  if(!user||user.role!=='king')return json({error:'للملك فقط'},403);
  const r=await db.prepare("SELECT m.ministry_id,u.username,m.created_at FROM ministry_accounts m JOIN users u ON u.id=m.user_id ORDER BY m.ministry_id").all();
