@@ -51,7 +51,7 @@ if(method==='POST'&&path==='/api/admin/ministries/provision'){
   const owned=ministries.filter(m=>m.minister===ministers[i]);
   const existing=await db.prepare('SELECT m.user_id,u.username FROM ministry_accounts m JOIN users u ON u.id=m.user_id WHERE m.ministry_id=?').bind(owned[0].id).first();
   let id=existing?.user_id,username=existing?.username,password=null;
-  if(!id){username='minister_'+String(i+1).padStart(2,'0');password=crypto.randomUUID().replace(/-/g,'')+crypto.randomUUID().replace(/-/g,'').slice(0,8);id=random();const salt=random();await db.prepare("INSERT INTO users(id,username,password_hash,salt,role) VALUES(?,?,?,?,'employee')").bind(id,username,await derive(password,salt),salt).run();}
+  if(!id){username=["kaslan_alomari","qondos_alomari","jeddo_albatreeqi","abu_shakhta","koob_alomari","kharfoon_alkharafi"][i];password=crypto.randomUUID().replace(/-/g,'')+crypto.randomUUID().replace(/-/g,'').slice(0,8);id=random();const salt=random();await db.prepare("INSERT INTO users(id,username,password_hash,salt,role) VALUES(?,?,?,?,'employee')").bind(id,username,await derive(password,salt),salt).run();}
   for(const m of owned){
    const assigned=await db.prepare('SELECT user_id FROM ministry_accounts WHERE ministry_id=?').bind(m.id).first();
    if(assigned&&assigned.user_id!==id)continue;
