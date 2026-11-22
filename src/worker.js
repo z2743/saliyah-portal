@@ -42,6 +42,26 @@ if(method==='POST'&&path==='/api/auth/login'){let loginStage='input';try{const b
  }
  loginStage='session_creation';await db.prepare('DELETE FROM login_throttles WHERE login_key=?').bind(loginKey).run();const token=random()+random(),expires=new Date(Date.now()+8*3600*1000).toISOString().replace('T',' ').slice(0,19);await db.prepare('INSERT INTO sessions(token_hash,user_id,expires_at) VALUES(?,?,?)').bind(await hash(token),found.id,expires).run();loginStage='audit';await audit(db,found.id,'login','session',null,{});return json({ok:true,role:found.role},200,{'set-cookie':cookie(req,token,28800)});}catch(err){console.error('login_failure_stage',loginStage,err instanceof Error?err.message:String(err));return json({error:'خطأ داخلي في الخادم',stage:loginStage,code:err instanceof Error?err.name:'RuntimeError'},500);}}
 if(method==='POST'&&path==='/api/auth/logout'){const t=(req.headers.get('cookie')||'').match(/saliyah_session=([a-f0-9-]+)/)?.[1];if(t)await db.prepare('DELETE FROM sessions WHERE token_hash=?').bind(await hash(t)).run();return json({ok:true},200,{'set-cookie':cookie(req,'',0)});}
+// Ministry accounts are isolated by ministry ID. No cross-ministry service permissions.
+if(method==='GET'&&path==='/api/ministries/accounts'){
+ if(!user||user.role!=='king')return json({error:'للملك فقط'},403);
+ const r=await db.prepare("SELECT m.ministry_id,u.username,m.created_at FROM ministry_accounts m JOIN users u ON u.id=m.user_id ORDER BY m.ministry_id").all();
+ return json({accounts:r.results.map(x=>({...x,ministry:ministries[x.ministry_id]?.name||''}))});
+}
+if(path.startsWith('/api/ministry-office/')){
+ if(!user)return json({error:'يجب تسجيل الدخول'},401);
+ const b=method==='POST'?await input(req):null;
+ const id=user.role==='king'?Number(method==='POST'?b?.ministry_id:u.searchParams.get('ministry_id')):Number((await db.prepare('SELECT ministry_id FROM ministry_accounts WHERE user_id=?').bind(user.id).first())?.ministry_id);
+ if(!Number.isInteger(id)||id<0||id>=ministries.length)return json({error:'ليس لديك حساب وزارة أو وزارة غير صالحة'},403);
+ if(method==='GET'&&path==='/api/ministry-office/profile')return json({ministry:ministries[id],scope:'إدارة طلبات الوزارة ومراسلاتها فقط؛ لا تشمل صلاحيات جهات أخرى أو القرارات السيادية'});
+ if(method==='GET'&&path==='/api/ministry-office/actions'){const r=await db.prepare('SELECT id,subject,details,status,created_at FROM ministry_actions WHERE ministry_id=? ORDER BY created_at DESC LIMIT 100').bind(id).all();return json({ministry:ministries[id],actions:r.results});
+ }
+ if(method==='POST'&&path==='/api/ministry-office/actions'){
+  if(!b||!validText(b.subject,3,160)||!validText(b.details,0,3000)||!['draft','submitted'].includes(b.status))return json({error:'بيانات المعاملة غير صالحة'},400);
+  const recordId=random();await db.prepare('INSERT INTO ministry_actions(id,ministry_id,actor_id,subject,details,status) VALUES(?,?,?,?,?,?)').bind(recordId,id,user.id,b.subject.trim(),b.details.trim(),b.status).run();await audit(db,user.id,'ministry_action','ministry',String(id),{record_id:recordId,status:b.status});return json({id:recordId},201);
+ }
+ return json({error:'الخدمة غير موجودة'},404);
+}
 if(method==='GET'&&path==='/api/me')return json({user:user||null});
 if(!user)return json({error:'يجب تسجيل الدخول'},401);
 if(method==='GET'&&path==='/api/citizen/profile'){
