@@ -11,7 +11,55 @@ const secureCookie=(req)=>new URL(req.url).protocol==='https:'?'; Secure':'';
 const cookie=(req,t,max)=>`saliyah_session=${t}; HttpOnly; SameSite=Strict; Path=/; Max-Age=${max}${secureCookie(req)}`;
 async function audit(db,who,action,entity,id,details){await db.prepare('INSERT INTO audit_log (id,actor_id,action,entity_type,entity_id,details) VALUES (?,?,?,?,?,?)').bind(random(),who,action,entity,id,JSON.stringify(details||{})).run()}
 const ministries=[['الخارجية','كسلان بن زياد بن بندر العمري'],['الداخلية','قندس بن زياد بن بندر العمري'],['الدفاع','جدو بن جدون الجدي البطريقي'],['العدل','جدو بن جدون الجدي البطريقي'],['الطوارئ وإدارة الكوارث','جدو بن جدون الجدي البطريقي'],['الإعلام','جدو بن جدون الجدي البطريقي'],['شؤون المحافظات','جدو بن جدون الجدي البطريقي'],['المالية','أبو شخطه بن شخطون الشخطي الشيخطاني'],['الطاقة','أبو شخطه بن شخطون الشخطي الشيخطاني'],['التجارة','أبو شخطه بن شخطون الشخطي الشيخطاني'],['الصناعة','أبو شخطه بن شخطون الشخطي الشيخطاني'],['الاستثمار','جدو بن جدون الجدي البطريقي'],['التخطيط والتنمية','أبو شخطه بن شخطون الشخطي الشيخطاني'],['الثروة المعدنية','كوب بن زياد بن بندر العمري'],['الطاقة النووية','خرفون بن خروف الخرفي الخرفاني'],['الصحة','خرفون بن خروف الخرفي الخرفاني'],['التعليم','كوب بن زياد بن بندر العمري'],['الإسكان','أبو شخطه بن شخطون الشخطي الشيخطاني'],['الثقافة','جدو بن جدون الجدي البطريقي'],['السياحة','أبو شخطه بن شخطون الشخطي الشيخطاني'],['الرياضة','أبو شخطه بن شخطون الشخطي الشيخطاني'],['الموارد البشرية والتنمية الاجتماعية','خرفون بن خروف الخرفي الخرفاني'],['الأوقاف والشؤون الدينية','جدو بن جدون الجدي البطريقي'],['الشباب','خرفون بن خروف الخرفي الخرفاني'],['شؤون المستهلك','كوب بن زياد بن بندر العمري'],['الآثار والتراث','جدو بن جدون الجدي البطريقي'],['النقل والخدمات اللوجستية','خرفون بن خروف الخرفي الخرفاني'],['النقل البحري والموانئ','خرفون بن خروف الخرفي الخرفاني'],['الاتصالات وتقنية المعلومات','خرفون بن خروف الخرفي الخرفاني'],['اتصالات الفضاء','خرفون بن خروف الخرفي الخرفاني'],['البيئة والمياه والزراعة','أبو شخطه بن شخطون الشخطي الشيخطاني'],['الشؤون البلدية والقروية','خرفون بن خروف الخرفي الخرفاني'],['الأمن الغذائي','خرفون بن خروف الخرفي الخرفاني'],['الثروة الحيوانية والسمكية','كوب بن زياد بن بندر العمري'],['الإحصاء والتعداد','خرفون بن خروف الخرفي الخرفاني']].map(([name,minister],id)=>({id,name:'وزارة '+name,minister}));
-export default {async fetch(req,env){const u=new URL(req.url);if(!u.pathname.startsWith('/api/'))return env.ASSETS.fetch(req);try{if(!env.DB)return json({error:'Database binding missing'},503);const db=env.DB;const method=req.method;const path=u.pathname;const user=(path==='/api/auth/login'||path==='/api/setup/king'||path==='/api/setup/status'||path==='/api/setup/recover-owner'||path==='/api/auth/citizen/register')?null:await actor(req,db);if(method!=='GET'&&method!=='HEAD'){const origin=req.headers.get('origin');const site=req.headers.get('sec-fetch-site');if((origin&&origin!==u.origin)||(site&&site!=='same-origin'&&site!=='none'))return json({error:'مصدر الطلب غير مسموح'},403);}
+// Clearly labelled simulated activity: bot accounts never impersonate ministries or publish real decrees.
+async function generateXBotActivity(db){
+ const names=['نواف','سارة','راكان','ليان','فهد','ريم','تركي','جود','ماجد','هيا','بدر','دانة','سلطان','نورة','مشعل','لمى','عبدالله','شهد','فيصل','غلا','خالد','أريج','عمر','رغد','سلمان','مها','يوسف','رنا','طلال','عبير'];
+ const topics=[
+ 'وش رأيكم في تجربة إكس الصالية اليوم؟ 🤖',
+ 'تذكير من حساب آلي: تابعوا الأخبار الحكومية من الحسابات الرسمية الموثقة فقط.',
+ 'سؤال للنقاش: وش الخدمة اللي تتمنون إضافتها للبنوك الصالية؟ 🏦',
+ 'تجربة محاكاة: لو صار عندنا قرار صالي جديد عن الخدمات الإلكترونية، وش أول شيء تتمنونه؟',
+ 'الهلل الصالي صار موضوع نقاشنا اليوم 💰 وش رأيكم بطريقة الدفع؟',
+ 'هل تفضلون إنجاز خدمات الأحوال من الجوال أو زيارة الفرع؟ 📱',
+ 'يا أهل الصالية، وش أكثر ميزة تستخدمونها في الموقع؟',
+ 'منشور آلي للنقاش: كيف نخلي منصة إكس الصالية أكثر فائدة للجميع؟',
+ 'سؤال: وش رأيكم بخدمات أبشر الصالية الإلكترونية؟',
+ 'تخيلوا لو أطلقت وزارة النقل الصالية خدمة جديدة، وش تتمنون تكون؟ 🚗',
+ 'البنوك الصالية تحتاج أفكاركم: تحويلات أسرع أو كشف حساب أو إشعارات؟',
+ 'تجربة نقاش افتراضي: هل تؤيدون إعلانات دورية عن تحديثات الموقع؟',
+ 'مين جرّب يكتب أول تعليق في إكس الصالية؟ 💬',
+ 'وش أفضل شيء في تصميم البوابة الحكومية الصالية؟',
+ 'سؤال خفيف: لو فتحت مشروع في الصالية، وش بتسميه؟',
+ 'الحسابات الرسمية لها توثيق خاص، أما هذا حساب آلي للتفاعل 🤖',
+ 'نقاش افتراضي: وش الخدمة اللي تحتاج تبسيط أكثر في المملكة الصالية؟',
+ 'صباح الخير يا أهل الصالية ☀️ شاركونا أفكاركم للمنصة.',
+ 'مساء الخير 🌙 وش جديدكم في عالم الصالية؟',
+ 'هل تفضلون منشورات قصيرة أو شروحات طويلة عن خدمات الموقع؟'
+ ];
+ const botIds=[];
+ for(let i=0;i<names.length;i++){
+  const handle='saliyah_bot_'+String(i+1).padStart(2,'0');
+  const id='x-sim-bot-'+String(i+1).padStart(2,'0');
+  await db.prepare("INSERT OR IGNORE INTO x_profiles(id,user_id,handle,display_name,bio,kind,verified) VALUES(?,NULL,?,?,?,'bot',0)").bind(id,handle,names[i]+' 🤖','حساب آلي محاكى للنقاش والترفيه؛ ليس جهة رسمية').run();
+  botIds.push(id);
+ }
+ const now=Math.floor(Date.now()/3600000);
+ // Idempotent per hour, safe if the scheduled job is retried.
+ for(let i=0;i<18;i++){
+  const id='sim-'+now+'-'+i;
+  const profile=botIds[(now*7+i*11)%botIds.length];
+  const body=topics[(now*3+i*7)%topics.length];
+  await db.prepare('INSERT OR IGNORE INTO x_posts(id,profile_id,body) VALUES(?,?,?)').bind(id,profile,body).run();
+ }
+ const posts=await db.prepare("SELECT id,profile_id FROM x_posts ORDER BY created_at DESC LIMIT 90").all();
+ for(let i=0;i<Math.min(180,posts.results.length*3);i++){
+  const p=posts.results[(now*13+i*17)%posts.results.length];
+  const bot=botIds[(now*5+i*7)%botIds.length];
+  if(bot===p.profile_id)continue;
+  await db.prepare('INSERT OR IGNORE INTO x_likes(profile_id,post_id) VALUES(?,?)').bind(bot,p.id).run();
+ }
+}
+export default {async scheduled(event,env,ctx){ctx.waitUntil(generateXBotActivity(env.DB))},async fetch(req,env){const u=new URL(req.url);if(!u.pathname.startsWith('/api/'))return env.ASSETS.fetch(req);try{if(!env.DB)return json({error:'Database binding missing'},503);const db=env.DB;const method=req.method;const path=u.pathname;const user=(path==='/api/auth/login'||path==='/api/setup/king'||path==='/api/setup/status'||path==='/api/setup/recover-owner'||path==='/api/auth/citizen/register')?null:await actor(req,db);if(method!=='GET'&&method!=='HEAD'){const origin=req.headers.get('origin');const site=req.headers.get('sec-fetch-site');if((origin&&origin!==u.origin)||(site&&site!=='same-origin'&&site!=='none'))return json({error:'مصدر الطلب غير مسموح'},403);}
 
 // X Al-Saliyah: profiles are bound to authenticated accounts; ministry verification
 // is granted only for a ministry assignment recorded by the government.
