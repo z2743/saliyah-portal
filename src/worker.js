@@ -44,6 +44,17 @@ if(method==='POST'&&path==='/api/auth/login'){let loginStage='input';try{const b
 if(method==='POST'&&path==='/api/auth/logout'){const t=(req.headers.get('cookie')||'').match(/saliyah_session=([a-f0-9-]+)/)?.[1];if(t)await db.prepare('DELETE FROM sessions WHERE token_hash=?').bind(await hash(t)).run();return json({ok:true},200,{'set-cookie':cookie(req,'',0)});}
 if(method==='GET'&&path==='/api/me')return json({user:user||null});
 if(!user)return json({error:'يجب تسجيل الدخول'},401);
+if(method==='GET'&&path==='/api/citizen/profile'){
+ if(user.role!=='citizen')return json({error:'الخدمة للمواطنين فقط'},403);
+ const p=await db.prepare('SELECT p.phone,d.number,d.full_name FROM citizen_profiles p JOIN documents d ON d.id=p.document_id WHERE p.user_id=?').bind(user.id).first();return json({profile:p||null});
+}
+if(method==='POST'&&path==='/api/citizen/profile/phone'){
+ if(user.role!=='citizen')return json({error:'الخدمة للمواطنين فقط'},403);
+ const b=await input(req);if(!b||!(b.phone==null||b.phone===''||/^\\+?[0-9]{7,15}$/.test(b.phone)))return json({error:'رقم الجوال يجب أن يكون من 7 إلى 15 رقمًا أو فارغًا'},400);
+ const phone=b.phone?.trim()||null;
+ const r=await db.prepare('UPDATE citizen_profiles SET phone=?,updated_at=CURRENT_TIMESTAMP WHERE user_id=?').bind(phone,user.id).run();if(!r.meta.changes)return json({error:'ملف المواطن غير موجود'},404);
+ await audit(db,user.id,'citizen_phone_update','user',user.id,{});return json({ok:true});
+}
 // Phase 33: account session controls.
 if(method==='GET'&&path==='/api/security/sessions'){
  const current=(req.headers.get('cookie')||'').match(/(?:^|;\s*)saliyah_session=([a-f0-9-]+)/)?.[1];
