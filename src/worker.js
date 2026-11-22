@@ -270,6 +270,23 @@ async function runSaliyahGovernment(db){
  }
 }
 // Clearly labelled simulated activity: bot accounts never impersonate ministries or publish real decrees.
+async function runXCreatorAutoPayouts(db){
+ const period=Math.floor(Date.now()/259200000).toString();
+ // Up to 100 eligible opted-in creators per run; repeat cron runs process the remaining creators.
+ const prefs=(await db.prepare("SELECT p.profile_id,p.user_id,p.bank_account_id FROM x_creator_payout_preferences p JOIN x_profiles x ON x.id=p.profile_id AND x.user_id=p.user_id AND x.kind='person' JOIN bank_accounts a ON a.id=p.bank_account_id AND a.user_id=p.user_id WHERE p.enabled=1 AND NOT EXISTS(SELECT 1 FROM x_creator_payouts r WHERE r.profile_id=p.profile_id AND r.period=?) ORDER BY p.profile_id LIMIT 100").bind(period).all()).results;
+ for(const p of prefs){
+  try{
+   const real=await db.prepare("SELECT (SELECT COUNT(*) FROM x_follows WHERE following_id=?) followers,(SELECT COUNT(*) FROM x_likes l JOIN x_posts post ON post.id=l.post_id WHERE post.profile_id=? AND l.profile_id<>?) likes,(SELECT COUNT(DISTINCT r.profile_id) FROM x_posts r JOIN x_posts post ON post.id=r.repost_of WHERE post.profile_id=? AND r.profile_id<>?) reposts,(SELECT COALESCE(SUM(CASE WHEN actor.kind='bot' THEN 1 ELSE 2 END),0) FROM x_follows f JOIN x_profiles actor ON actor.id=f.follower_id WHERE f.following_id=?) fw,(SELECT COALESCE(SUM(CASE WHEN actor.kind='bot' THEN 1 ELSE 2 END),0) FROM x_likes l JOIN x_posts post ON post.id=l.post_id JOIN x_profiles actor ON actor.id=l.profile_id WHERE post.profile_id=? AND l.profile_id<>?) lw,(SELECT COALESCE(SUM(CASE WHEN actor.kind='bot' THEN 1 ELSE 2 END),0) FROM (SELECT DISTINCT r.profile_id FROM x_posts r JOIN x_posts post ON post.id=r.repost_of WHERE post.profile_id=?) rr JOIN x_profiles actor ON actor.id=rr.profile_id WHERE rr.profile_id<>?) rw").bind(p.profile_id,p.profile_id,p.profile_id,p.profile_id,p.profile_id,p.profile_id,p.profile_id,p.profile_id,p.profile_id,p.profile_id).first();
+   const bot=await db.prepare("SELECT COALESCE(SUM(CAST((max(0,julianday('now')-julianday(created_at))*max(0,julianday('now')-julianday(created_at))*1250)+(bot_likes*min(1,max(0,julianday('now')-julianday(created_at))/3)) AS INTEGER)),0) likes,COALESCE(SUM(CAST((max(0,julianday('now')-julianday(created_at))*max(0,julianday('now')-julianday(created_at))*75)+(bot_reposts*min(1,max(0,julianday('now')-julianday(created_at))/3)) AS INTEGER)),0) reposts FROM x_bot_reach WHERE post_id IN (SELECT id FROM x_posts WHERE profile_id=?)").bind(p.profile_id).first();
+   const followers=Number(real.followers)+Math.floor(Number(bot.likes)/100);
+   const likes=Number(real.likes)+Number(bot.likes),reposts=Number(real.reposts)+Number(bot.reposts);
+   if(followers<10||likes<20||reposts<5)continue;
+   const amount=Math.floor((Number(real.fw)+Math.floor(Number(bot.likes)/100)+2*(Number(real.lw)+Number(bot.likes))+3*(Number(real.rw)+Number(bot.reposts)))/2);
+   if(!Number.isSafeInteger(amount)||amount<=0)continue;
+   await db.prepare("INSERT OR IGNORE INTO x_creator_payouts(id,profile_id,user_id,period,followers,likes,reposts,amount,bank_account_id) SELECT ?,?,?,?,?,?,?,?,? WHERE EXISTS(SELECT 1 FROM x_creator_payout_preferences WHERE profile_id=? AND user_id=? AND bank_account_id=? AND enabled=1)").bind(crypto.randomUUID(),p.profile_id,p.user_id,period,followers,likes,reposts,amount,p.bank_account_id,p.profile_id,p.user_id,p.bank_account_id).run();
+  }catch(error){console.error('x_auto_payout_failed',p.profile_id,String(error));}
+ }
+}
 async function generateXBotActivity(db){
  const names=['نواف','سارة','راكان','ليان','فهد','ريم','تركي','جود','ماجد','هيا','بدر','دانة','سلطان','نورة','مشعل','لمى','عبدالله','شهد','فيصل','غلا','خالد','أريج','عمر','رغد','سلمان','مها','يوسف','رنا','طلال','عبير'];
  const topics=[
@@ -404,7 +421,7 @@ async function checkSimulationHealth(db){
 export default {
  async scheduled(event,env,ctx){
   ctx.waitUntil((async()=>{
-   for(const [name,fn] of [['government',runSaliyahGovernment],['x_bots',generateXBotActivity]]){
+   for(const [name,fn] of [['government',runSaliyahGovernment],['x_bots',generateXBotActivity],['x_rewards',runXCreatorAutoPayouts]]){
     try{
      await fn(env.DB);
      await env.DB.prepare("INSERT INTO saliyah_sim_settings(key,value) VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value").bind('last_'+name+'_success',new Date().toISOString()).run();
@@ -514,6 +531,7 @@ if(path.startsWith('/api/x/')){
   const id=random();
   try{await db.prepare('INSERT INTO x_creator_payouts(id,profile_id,user_id,period,followers,likes,reposts,amount,bank_account_id) VALUES(?,?,?,?,?,?,?,?,?)').bind(id,own.id,user.id,period,stats.followers,stats.likes,stats.reposts,amount,account.id).run();}
   catch{return json({error:'تم صرف مكافأة هذه الدورة مسبقاً أو تعذر إتمام التحويل'},409)}
+  await db.prepare("INSERT INTO x_creator_payout_preferences(profile_id,user_id,bank_account_id,enabled) VALUES(?,?,?,1) ON CONFLICT(profile_id) DO UPDATE SET bank_account_id=excluded.bank_account_id,user_id=excluded.user_id,enabled=1,updated_at=CURRENT_TIMESTAMP").bind(own.id,user.id,account.id).run();
   await audit(db,user.id,'x_creator_reward','x_creator_payout',id,{amount,period});
   return json({ok:true,amount,period});
  }
