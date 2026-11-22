@@ -27,6 +27,23 @@ async function runSaliyahGovernment(db){
  const slot=Math.floor(hour/6);
  const id='gov-plan-'+slot;
  await db.prepare("INSERT OR IGNORE INTO saliyah_projects(id,ministry_id,project_type,title,location,description,budget,status,proposed_by) VALUES(?,?,?,?,?,?,?,'pending_human','bot')").bind(id,plan.ministry,plan.type,plan.title,plan.location,plan.description,plan.budget).run();
+ // Fictional founders propose businesses; registration is never approved by bots.
+ const ventures=[
+  ['مؤسسة النخبة الصالية للتقنية','تقنية المعلومات','السجادة','تطوير مواقع وتطبيقات للمنشآت الافتراضية',45000],
+  ['مخابز القمح الصالي','الأغذية والمخابز','المتجار','إنتاج الخبز وتوزيعه داخل المدينة الافتراضية',28000],
+  ['النورس الصالي للنقل','النقل والخدمات اللوجستية','السجادة','توصيل الطلبات ونقل البضائع بين المحافظات',62000],
+  ['مزارع الواحة الصالية','الزراعة','المتجار','إنتاج الخضروات للمحال والمطاعم الافتراضية',39000],
+  ['مدار الصالية للتجارة','التجارة الإلكترونية','السجادة','متجر افتراضي لبيع المستلزمات المنزلية',22000],
+  ['أطلس الصالية للصيانة','الصيانة','المتجار','خدمات صيانة المباني والمرافق الافتراضية',34000]
+ ];
+ const slotCompany=Math.floor(hour/8),venture=ventures[slotCompany%ventures.length],companyId='sim-company-'+slotCompany;
+ await db.prepare("INSERT OR IGNORE INTO saliyah_sim_companies(id,founder_id,name,activity,location,description,capital,status) VALUES(?,?,?,?,?,?,?,'pending_human')").bind(companyId,'citizen-'+(hour*3),...venture).run();
+ // Once a human approves a fictional business, it can hire simulated workers autonomously.
+ const approved=(await db.prepare("SELECT id FROM saliyah_sim_companies WHERE status='approved' ORDER BY created_at DESC LIMIT 15").all()).results;
+ for(const c of approved){
+  const jobId='sim-job-'+c.id+'-'+Math.floor(hour/12);
+  await db.prepare("INSERT OR IGNORE INTO saliyah_sim_jobs(id,company_id,title,salary,status) VALUES(?,?,?,?,'open')").bind(jobId,c.id,['محاسب','موظف خدمة عملاء','سائق','فني','مسؤول مبيعات'][hour%5],1800+(hour%5)*350).run();
+ }
  // Generate separate fictional citizens; never impersonate or alter real user accounts.
  const citizens=['ناصر','ريم','سعود','لولوة','بدر','شهد','ماجد','غلا','تركي','نورة','فهد','سارة'];
  for(let i=0;i<3;i++){
@@ -266,6 +283,20 @@ if(method==='POST'&&path==='/api/auth/login'){let loginStage='input';try{const b
  loginStage='session_creation';await db.prepare('DELETE FROM login_throttles WHERE login_key=?').bind(loginKey).run();const token=random()+random(),expires=new Date(Date.now()+8*3600*1000).toISOString().replace('T',' ').slice(0,19);await db.prepare('INSERT INTO sessions(token_hash,user_id,expires_at) VALUES(?,?,?)').bind(await hash(token),found.id,expires).run();loginStage='audit';await audit(db,found.id,'login','session',null,{});return json({ok:true,role:found.role},200,{'set-cookie':cookie(req,token,28800)});}catch(err){console.error('login_failure_stage',loginStage,err instanceof Error?err.message:String(err));return json({error:'خطأ داخلي في الخادم',stage:loginStage,code:err instanceof Error?err.name:'RuntimeError'},500);}}
 if(method==='POST'&&path==='/api/auth/logout'){const t=(req.headers.get('cookie')||'').match(/saliyah_session=([a-f0-9-]+)/)?.[1];if(t)await db.prepare('DELETE FROM sessions WHERE token_hash=?').bind(await hash(t)).run();return json({ok:true},200,{'set-cookie':cookie(req,'',0)});}
 // Ministry accounts are isolated by ministry ID. No cross-ministry service permissions.
+if(method==='GET'&&path==='/api/admin/simulation/companies'){
+ if(!user||user.role!=='king')return json({error:'للملك فقط'},403);
+ const rows=await db.prepare('SELECT * FROM saliyah_sim_companies ORDER BY created_at DESC LIMIT 100').all();
+ return json({companies:rows.results});
+}
+if(method==='POST'&&path==='/api/admin/simulation/companies/decision'){
+ if(!user||user.role!=='king')return json({error:'للملك فقط'},403);
+ const b=await input(req);
+ if(!b||!['approved','rejected'].includes(b.decision)||typeof b.id!=='string')return json({error:'قرار غير صالح'},400);
+ const result=await db.prepare("UPDATE saliyah_sim_companies SET status=?,reviewed_by=?,reviewed_at=CURRENT_TIMESTAMP WHERE id=? AND status='pending_human'").bind(b.decision,user.id,b.id).run();
+ if(!result.meta.changes)return json({error:'الشركة غير موجودة أو تمت مراجعتها'},409);
+ await audit(db,user.id,'simulation_company_decision','saliyah_sim_company',b.id,{decision:b.decision});
+ return json({ok:true,status:b.decision});
+}
 if(method==='GET'&&path==='/api/admin/simulation/projects'){
  if(!user||user.role!=='king')return json({error:'للملك فقط'},403);
  const rows=await db.prepare('SELECT * FROM saliyah_projects ORDER BY created_at DESC LIMIT 100').all();
@@ -282,7 +313,7 @@ if(method==='POST'&&path==='/api/admin/simulation/projects/decision'){
 }
 if(method==='GET'&&path==='/api/simulation/status'){
  const [citizens,projects]=await Promise.all([db.prepare('SELECT COUNT(*) n FROM saliyah_sim_citizens').first(),db.prepare('SELECT status,COUNT(*) n FROM saliyah_projects GROUP BY status').all()]);
- return json({simulated_citizens:citizens.n,projects:projects.results,automated_ministries:botMinisters.length,human_ministries:['الخارجية','الداخلية']});
+ const companies=await db.prepare('SELECT status,COUNT(*) n FROM saliyah_sim_companies GROUP BY status').all();const jobs=await db.prepare('SELECT COUNT(*) n FROM saliyah_sim_jobs').first();return json({simulated_citizens:citizens.n,projects:projects.results,companies:companies.results,simulated_jobs:jobs.n,automated_ministries:botMinisters.length,human_ministries:['الخارجية','الداخلية']});
 }
 if(method==='GET'&&path==='/api/admin/ministries/roster'){
  if(!user||user.role!=='king')return json({error:'للملك فقط'},403);
