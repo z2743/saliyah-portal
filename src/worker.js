@@ -464,6 +464,15 @@ if(path.startsWith('/api/x/')){
   const rows=await db.prepare("SELECT p.id,p.body,p.created_at,a.handle,a.display_name,a.kind,a.verified FROM x_posts p JOIN x_profiles a ON a.id=p.profile_id WHERE p.reply_to=? ORDER BY p.created_at ASC LIMIT 100").bind(id).all();
   return json({comments:rows.results});
  }
+ if(method==='GET'&&path==='/api/admin/x/bot-bank-accounts'){
+  if(!user||user.role!=='king')return json({error:'للملك فقط'},403);
+  const page=Math.max(1,Math.min(10000,Number.parseInt(u.searchParams.get('page')||'1',10)||1));
+  const size=100;
+  const q=(u.searchParams.get('q')||'').trim().slice(0,80);
+  const count=await db.prepare("SELECT COUNT(*) n FROM x_bot_bank_accounts a JOIN x_profiles p ON p.id=a.profile_id WHERE p.kind='bot' AND (?='' OR p.handle LIKE ? OR p.display_name LIKE ? OR a.account_number LIKE ?)").bind(q,'%'+q+'%','%'+q+'%','%'+q+'%').first();
+  const rows=await db.prepare("SELECT p.handle,p.display_name,a.account_number,a.bank_name,a.balance,a.created_at FROM x_bot_bank_accounts a JOIN x_profiles p ON p.id=a.profile_id WHERE p.kind='bot' AND (?='' OR p.handle LIKE ? OR p.display_name LIKE ? OR a.account_number LIKE ?) ORDER BY p.handle LIMIT ? OFFSET ?").bind(q,'%'+q+'%','%'+q+'%','%'+q+'%',size,(page-1)*size).all();
+  return json({accounts:rows.results,pagination:{page,page_size:size,total:Number(count.n),pages:Math.ceil(Number(count.n)/size)},simulated:true});
+ }
  if(method==='GET'&&path==='/api/x/bot-directory'){
   const page=Math.max(1,Math.min(10000,Number.parseInt(u.searchParams.get('page')||'1',10)||1));
   const size=30;
