@@ -125,11 +125,21 @@ if(method==='POST'&&path==='/api/security/revoke-others'){
 }
 
 
-// Service suspension applies only to new optional transactions; login, viewing records,
-// complaints, courts, payments and account access remain available.
-if(user && method==='POST' && (path.startsWith('/api/absher/') || path.startsWith('/api/commerce/') || path.startsWith('/api/land/'))){
- const hold=await db.prepare("SELECT id FROM service_suspensions_v2 WHERE subject_user_id=? AND status='active' LIMIT 1").bind(user.id).first();
- if(hold)return json({error:'بعض الخدمات الاختيارية موقوفة بقرار إداري. يمكنك مراجعة القرار وتقديم طلب رفع الإيقاف.',code:'SERVICE_SUSPENDED'},403);
+// Active service suspensions prevent starting or modifying optional services across
+// banking, telecom, commerce and other citizen-facing modules. Keep authentication,
+// read-only access, health, courts, complaints and debt/appeal access available.
+if(user && !['GET','HEAD','OPTIONS'].includes(method)){
+ const blockedPrefixes=[
+  '/api/absher/','/api/commerce/','/api/land/','/api/municipality/',
+  '/api/telecom/','/api/banking/','/api/pos/','/api/installments/',
+  '/api/education/','/api/company/','/api/citizen/profile/phone'
+ ];
+ const blockedExact=new Set(['/api/requests','/api/registry/applications','/api/civil/family-cards']);
+ const isBlocked=blockedPrefixes.some(prefix=>path.startsWith(prefix))||blockedExact.has(path);
+ if(isBlocked){
+  const hold=await db.prepare("SELECT id FROM service_suspensions_v2 WHERE subject_user_id=? AND status='active' LIMIT 1").bind(user.id).first();
+  if(hold)return json({error:'الخدمات موقوفة بقرار إداري. لا يمكن إصدار حساب بنكي أو رقم اتصال أو تنفيذ خدمة جديدة حتى رفع الإيقاف. يمكنك الاطلاع على بياناتك ومراجعة القرار.',code:'SERVICE_SUSPENDED'},403);
+ }
 }
 if(method==='GET'&&path==='/api/enforcement/my-status'){
  if(!user)return json({error:'تسجيل الدخول مطلوب'},401);
