@@ -35,21 +35,27 @@ async function runSaliyahGovernment(db){
  await db.prepare("CREATE TABLE IF NOT EXISTS saliyah_sim_bank_transactions(id TEXT PRIMARY KEY,account_id TEXT NOT NULL,kind TEXT NOT NULL,amount INTEGER NOT NULL,description TEXT NOT NULL,related_account_id TEXT,created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,FOREIGN KEY(account_id) REFERENCES saliyah_sim_bank_accounts(id))").run();
  await db.prepare("INSERT OR IGNORE INTO saliyah_sim_bank_accounts(id,owner_type,owner_id,account_number,bank_name,balance) SELECT 'sim-bank-c-'||id,'citizen',id,'SC'||printf('%012d',CAST(substr(id,-4) AS INTEGER)+CASE WHEN id LIKE 'sim-employee-%' THEN 300000 ELSE 100000 END),'البنك الصالي',CASE WHEN CAST(substr(id,-4) AS INTEGER)%11=0 THEN 0 ELSE 800+CAST(substr(id,-4) AS INTEGER)%12000 END FROM saliyah_sim_citizens WHERE id LIKE 'sim-resident-%' OR id LIKE 'sim-employee-%'").run();
  await db.prepare("INSERT OR IGNORE INTO saliyah_sim_bank_accounts(id,owner_type,owner_id,account_number,bank_name,balance) SELECT 'sim-bank-b-'||id,'company',id,'SB-'||id,'البنك الصالي للأعمال',MAX(0,capital) FROM saliyah_sim_companies WHERE status='approved'").run();
- // Monthly fictional payroll. A D1 batch is transactional: all debit/credit and journal
+ // Each simulated company chooses weekly (1) or fortnightly (2) payroll.
+ try{await db.prepare("ALTER TABLE saliyah_sim_companies ADD COLUMN payroll_weeks INTEGER NOT NULL DEFAULT 1").run()}catch(e){if(!String(e).includes('duplicate column name'))throw e}
+ // Weekly pay cycle starts on Monday, every second Monday for fortnightly companies.
+ A D1 batch is transactional: all debit/credit and journal
  // writes succeed together or are rolled back. Unique payment IDs make retries idempotent.
  const payrollWeek=(()=>{const d=new Date();const day=(d.getUTCDay()+6)%7;d.setUTCDate(d.getUTCDate()-day);return d.toISOString().slice(0,10)})();
- const payroll=(await db.prepare("SELECT j.id job_id,j.salary,j.company_id,a.citizen_id,co.id payer,ci.id payee,co.balance available FROM saliyah_sim_jobs j JOIN saliyah_sim_job_applications a ON a.job_id=j.id AND a.status='hired' JOIN saliyah_sim_bank_accounts co ON co.owner_type='company' AND co.owner_id=j.company_id JOIN saliyah_sim_bank_accounts ci ON ci.owner_type='citizen' AND ci.owner_id=a.citizen_id WHERE j.salary>0 LIMIT 30").all()).results;
+ const payroll=(await db.prepare("SELECT j.id job_id,j.salary,j.company_id,c.payroll_weeks,a.citizen_id,co.id payer,ci.id payee,co.balance available FROM saliyah_sim_jobs j JOIN saliyah_sim_companies c ON c.id=j.company_id JOIN saliyah_sim_job_applications a ON a.job_id=j.id AND a.status='hired' JOIN saliyah_sim_bank_accounts co ON co.owner_type='company' AND co.owner_id=j.company_id JOIN saliyah_sim_bank_accounts ci ON ci.owner_type='citizen' AND ci.owner_id=a.citizen_id WHERE j.salary>0 LIMIT 30").all()).results;
  for(const job of payroll){
   const amount=Math.floor(Number(job.salary)||0);
   if(amount<=0||Number(job.available)<amount)continue;
+  const weeks=Number(job.payroll_weeks)===2?2:1;
+  const weekIndex=Math.floor(Date.parse(payrollWeek+'T00:00:00Z')/604800000);
+  if(weeks===2&&weekIndex%2!==0)continue;
   const transferId='salary-week-'+payrollWeek+'-'+job.job_id;
   if(await db.prepare("SELECT 1 FROM saliyah_sim_bank_transactions WHERE id=?").bind(transferId+'-out').first())continue;
   try{
    await db.batch([
-    db.prepare("INSERT INTO saliyah_sim_bank_transactions(id,account_id,kind,amount,description,related_account_id) VALUES(?,?,'salary_debit',?,?,?)").bind(transferId+'-out',job.payer,-amount,'راتب أسبوعي افتراضي '+payrollWeek,job.payee),
+    db.prepare("INSERT INTO saliyah_sim_bank_transactions(id,account_id,kind,amount,description,related_account_id) VALUES(?,?,'salary_debit',?,?,?)").bind(transferId+'-out',job.payer,-amount,'راتب '+(weeks===2?'كل أسبوعين':'أسبوعي')+' افتراضي '+payrollWeek,job.payee),
     db.prepare("UPDATE saliyah_sim_bank_accounts SET balance=balance-? WHERE id=? AND balance>=?").bind(amount,job.payer,amount),
     db.prepare("UPDATE saliyah_sim_bank_accounts SET balance=balance+? WHERE id=?").bind(amount,job.payee),
-    db.prepare("INSERT INTO saliyah_sim_bank_transactions(id,account_id,kind,amount,description,related_account_id) VALUES(?,?,'salary_credit',?,?,?)").bind(transferId+'-in',job.payee,amount,'راتب أسبوعي افتراضي '+payrollWeek,job.payer)
+    db.prepare("INSERT INTO saliyah_sim_bank_transactions(id,account_id,kind,amount,description,related_account_id) VALUES(?,?,'salary_credit',?,?,?)").bind(transferId+'-in',job.payee,amount,'راتب '+(weeks===2?'كل أسبوعين':'أسبوعي')+' افتراضي '+payrollWeek,job.payer)
    ]);
   }catch(e){console.error('simulated_payroll_failed',transferId,String(e));}
  }
@@ -611,15 +617,24 @@ if(method==='POST'&&path==='/api/admin/simulation/projects/decision'){
  await audit(db,user.id,'simulation_project_decision','saliyah_project',b.id,{decision:b.decision});
  return json({ok:true,status:b.decision});
 }
+if(method==='POST'&&path==='/api/admin/simulation/payroll-period'){
+ if(!user||user.role!=='king')return json({error:'للملك فقط'},403);
+ const body=await req.json().catch(()=>({}));
+ if(!['1','2'].includes(String(body.weeks)))return json({error:'اختر أسبوعًا أو أسبوعين'},400);
+ if(typeof body.company_id!=='string'||body.company_id.length>120)return json({error:'معرف الشركة غير صحيح'},400);
+ const changed=await db.prepare("UPDATE saliyah_sim_companies SET payroll_weeks=? WHERE id=? AND status='approved'").bind(Number(body.weeks),body.company_id).run();
+ return json({ok:!!changed.meta?.changes,payroll_weeks:Number(body.weeks)});
+}
 if(method==='GET'&&path==='/api/admin/simulation/banking'){
  if(!user||user.role!=='king')return json({error:'للملك فقط'},403);
  const filter=u.searchParams.get('type')||'all';
  const q=(u.searchParams.get('q')||'').trim().slice(0,80);
  if(!['all','citizen','company'].includes(filter))return json({error:'نوع الحساب غير صحيح'},400);
  const accounts=await db.prepare("SELECT a.id,a.account_number,a.bank_name,a.owner_type,a.owner_id,COALESCE(c.name,b.name,'مجهول') owner_name,a.balance,a.status,a.created_at FROM saliyah_sim_bank_accounts a LEFT JOIN saliyah_sim_citizens c ON a.owner_type='citizen' AND c.id=a.owner_id LEFT JOIN saliyah_sim_companies b ON a.owner_type='company' AND b.id=a.owner_id WHERE (?='all' OR a.owner_type=?) AND (?='' OR a.account_number LIKE ? OR c.name LIKE ? OR b.name LIKE ?) ORDER BY a.created_at DESC,a.id LIMIT 150").bind(filter,filter,q,'%'+q+'%','%'+q+'%','%'+q+'%').all();
+ const companies=await db.prepare("SELECT id,name,payroll_weeks FROM saliyah_sim_companies WHERE status='approved' ORDER BY name LIMIT 150").all();
  const totals=await db.prepare("SELECT owner_type,COUNT(*) accounts,SUM(balance) balance FROM saliyah_sim_bank_accounts GROUP BY owner_type").all();
  const transactions=await db.prepare("SELECT t.id,t.kind,t.amount,t.description,t.created_at,a.account_number,a.owner_type,COALESCE(c.name,b.name,'مجهول') owner_name FROM saliyah_sim_bank_transactions t JOIN saliyah_sim_bank_accounts a ON a.id=t.account_id LEFT JOIN saliyah_sim_citizens c ON a.owner_type='citizen' AND c.id=a.owner_id LEFT JOIN saliyah_sim_companies b ON a.owner_type='company' AND b.id=a.owner_id ORDER BY t.created_at DESC,t.id DESC LIMIT 100").all();
- return json({accounts:accounts.results,totals:totals.results,transactions:transactions.results,virtual_currency:'ريال صالي',note:'حسابات المحاكاة منفصلة عن الحسابات البنكية الحقيقية'});
+ return json({accounts:accounts.results,companies:companies.results,totals:totals.results,transactions:transactions.results,virtual_currency:'ريال صالي',note:'حسابات المحاكاة منفصلة عن الحسابات البنكية الحقيقية'});
 }
 if(method==='GET'&&path==='/api/admin/simulation/citizens'){
  if(!user||user.role!=='king')return json({error:'للملك فقط'},403);
