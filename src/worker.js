@@ -37,19 +37,19 @@ async function runSaliyahGovernment(db){
  await db.prepare("INSERT OR IGNORE INTO saliyah_sim_bank_accounts(id,owner_type,owner_id,account_number,bank_name,balance) SELECT 'sim-bank-b-'||id,'company',id,'SB-'||id,'البنك الصالي للأعمال',MAX(0,capital) FROM saliyah_sim_companies WHERE status='approved'").run();
  // Monthly fictional payroll. A D1 batch is transactional: all debit/credit and journal
  // writes succeed together or are rolled back. Unique payment IDs make retries idempotent.
- const payrollMonth=new Date().toISOString().slice(0,7);
+ const payrollWeek=(()=>{const d=new Date();const day=(d.getUTCDay()+6)%7;d.setUTCDate(d.getUTCDate()-day);return d.toISOString().slice(0,10)})();
  const payroll=(await db.prepare("SELECT j.id job_id,j.salary,j.company_id,a.citizen_id,co.id payer,ci.id payee,co.balance available FROM saliyah_sim_jobs j JOIN saliyah_sim_job_applications a ON a.job_id=j.id AND a.status='hired' JOIN saliyah_sim_bank_accounts co ON co.owner_type='company' AND co.owner_id=j.company_id JOIN saliyah_sim_bank_accounts ci ON ci.owner_type='citizen' AND ci.owner_id=a.citizen_id WHERE j.salary>0 LIMIT 30").all()).results;
  for(const job of payroll){
   const amount=Math.floor(Number(job.salary)||0);
   if(amount<=0||Number(job.available)<amount)continue;
-  const transferId='salary-'+payrollMonth+'-'+job.job_id;
+  const transferId='salary-week-'+payrollWeek+'-'+job.job_id;
   if(await db.prepare("SELECT 1 FROM saliyah_sim_bank_transactions WHERE id=?").bind(transferId+'-out').first())continue;
   try{
    await db.batch([
-    db.prepare("INSERT INTO saliyah_sim_bank_transactions(id,account_id,kind,amount,description,related_account_id) VALUES(?,?,'salary_debit',?,?,?)").bind(transferId+'-out',job.payer,-amount,'راتب شهري افتراضي '+payrollMonth,job.payee),
+    db.prepare("INSERT INTO saliyah_sim_bank_transactions(id,account_id,kind,amount,description,related_account_id) VALUES(?,?,'salary_debit',?,?,?)").bind(transferId+'-out',job.payer,-amount,'راتب أسبوعي افتراضي '+payrollWeek,job.payee),
     db.prepare("UPDATE saliyah_sim_bank_accounts SET balance=balance-? WHERE id=? AND balance>=?").bind(amount,job.payer,amount),
     db.prepare("UPDATE saliyah_sim_bank_accounts SET balance=balance+? WHERE id=?").bind(amount,job.payee),
-    db.prepare("INSERT INTO saliyah_sim_bank_transactions(id,account_id,kind,amount,description,related_account_id) VALUES(?,?,'salary_credit',?,?,?)").bind(transferId+'-in',job.payee,amount,'راتب شهري افتراضي '+payrollMonth,job.payer)
+    db.prepare("INSERT INTO saliyah_sim_bank_transactions(id,account_id,kind,amount,description,related_account_id) VALUES(?,?,'salary_credit',?,?,?)").bind(transferId+'-in',job.payee,amount,'راتب أسبوعي افتراضي '+payrollWeek,job.payer)
    ]);
   }catch(e){console.error('simulated_payroll_failed',transferId,String(e));}
  }
@@ -619,7 +619,7 @@ if(method==='GET'&&path==='/api/admin/simulation/banking'){
  const accounts=await db.prepare("SELECT a.id,a.account_number,a.bank_name,a.owner_type,a.owner_id,COALESCE(c.name,b.name,'مجهول') owner_name,a.balance,a.status,a.created_at FROM saliyah_sim_bank_accounts a LEFT JOIN saliyah_sim_citizens c ON a.owner_type='citizen' AND c.id=a.owner_id LEFT JOIN saliyah_sim_companies b ON a.owner_type='company' AND b.id=a.owner_id WHERE (?='all' OR a.owner_type=?) AND (?='' OR a.account_number LIKE ? OR c.name LIKE ? OR b.name LIKE ?) ORDER BY a.created_at DESC,a.id LIMIT 150").bind(filter,filter,q,'%'+q+'%','%'+q+'%','%'+q+'%').all();
  const totals=await db.prepare("SELECT owner_type,COUNT(*) accounts,SUM(balance) balance FROM saliyah_sim_bank_accounts GROUP BY owner_type").all();
  const transactions=await db.prepare("SELECT t.id,t.kind,t.amount,t.description,t.created_at,a.account_number,a.owner_type,COALESCE(c.name,b.name,'مجهول') owner_name FROM saliyah_sim_bank_transactions t JOIN saliyah_sim_bank_accounts a ON a.id=t.account_id LEFT JOIN saliyah_sim_citizens c ON a.owner_type='citizen' AND c.id=a.owner_id LEFT JOIN saliyah_sim_companies b ON a.owner_type='company' AND b.id=a.owner_id ORDER BY t.created_at DESC,t.id DESC LIMIT 100").all();
- return json({accounts:accounts.results,totals:totals.results,transactions:transactions.results,virtual_currency:'هلل صالي',note:'حسابات المحاكاة منفصلة عن الحسابات البنكية الحقيقية'});
+ return json({accounts:accounts.results,totals:totals.results,transactions:transactions.results,virtual_currency:'ريال صالي',note:'حسابات المحاكاة منفصلة عن الحسابات البنكية الحقيقية'});
 }
 if(method==='GET'&&path==='/api/admin/simulation/citizens'){
  if(!user||user.role!=='king')return json({error:'للملك فقط'},403);
