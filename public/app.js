@@ -348,6 +348,30 @@ async function enforcementPage(){
  action.onchange=sync;sync();
  form.onsubmit=async e=>{e.preventDefault();try{const b=Object.fromEntries(new FormData(form));b.amount=Number(b.amount||0);b.ministry_id=Number(b.ministry_id);await post('/enforcement/cases',b);await enforcementPage()}catch(err){form.querySelector('[role=status]').textContent=err.message}};
  document.querySelectorAll('.liftEnforcement').forEach(b=>b.onclick=async()=>{const reason=prompt('سبب رفع الإيقاف (5 أحرف على الأقل)');if(!reason)return;try{await post('/enforcement/lift',{id:b.dataset.id,reason});await enforcementPage()}catch(err){alert(err.message)}});
- document.querySelectorAll('.decisionEnforcement').forEach(b=>b.onclick=async()=>{if(!confirm(b.dataset.decision==='approved'?'هل تريد اعتماد المعاملة وتفعيل آثارها؟':'هل تريد رفض المعاملة؟'))return;const previous=b.textContent;b.disabled=true;b.textContent='جارٍ تنفيذ القرار...';try{const result=await post('/enforcement/decision',{id:b.dataset.id,decision:b.dataset.decision});await enforcementPage();const note=document.querySelector('.notice');if(note)note.textContent='تم '+(result.status==='approved'?'اعتماد':'رفض')+' المعاملة بنجاح.'}catch(err){b.disabled=false;b.textContent=previous;const box=document.createElement('p');box.setAttribute('role','alert');box.style.color='#b42318';box.textContent='تعذر تنفيذ القرار: '+err.message;b.parentElement.appendChild(box)}});
+ // Delegated handler: works even when the case cards are re-rendered.
+ const decisions=document.querySelectorAll('.decisionEnforcement');
+ decisions.forEach(btn=>btn.setAttribute('type','button'));
+ app.onclick=async e=>{
+  const btn=e.target.closest('.decisionEnforcement');
+  if(!btn||!app.contains(btn)||btn.disabled)return;
+  e.preventDefault();
+  const id=btn.dataset.id,decision=btn.dataset.decision;
+  const card=btn.closest('.card');
+  let status=card.querySelector('.enforcementDecisionStatus');
+  if(!status){status=document.createElement('p');status.className='enforcementDecisionStatus';status.setAttribute('role','status');card.appendChild(status)}
+  status.textContent='جارٍ '+(decision==='approved'?'اعتماد':'رفض')+' المعاملة...';
+  const buttons=card.querySelectorAll('.decisionEnforcement');
+  buttons.forEach(x=>x.disabled=true);
+  try{
+   const result=await post('/enforcement/decision',{id,decision});
+   status.textContent='تم '+(result.status==='approved'?'اعتماد':'رفض')+' المعاملة بنجاح.';
+   await enforcementPage();
+  }catch(err){
+   status.textContent='فشل تنفيذ القرار: '+err.message;
+   status.style.color='#b42318';
+   buttons.forEach(x=>x.disabled=false);
+  }
+ };
+
  }catch(err){page('المديونيات وإيقاف الخدمات','<div class="notice">'+safe(err.message)+'</div>')}
 }
