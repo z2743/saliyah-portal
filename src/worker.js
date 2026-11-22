@@ -35,19 +35,23 @@ async function runSaliyahGovernment(db){
  await db.prepare("CREATE TABLE IF NOT EXISTS saliyah_sim_bank_transactions(id TEXT PRIMARY KEY,account_id TEXT NOT NULL,kind TEXT NOT NULL,amount INTEGER NOT NULL,description TEXT NOT NULL,related_account_id TEXT,created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,FOREIGN KEY(account_id) REFERENCES saliyah_sim_bank_accounts(id))").run();
  await db.prepare("INSERT OR IGNORE INTO saliyah_sim_bank_accounts(id,owner_type,owner_id,account_number,bank_name,balance) SELECT 'sim-bank-c-'||id,'citizen',id,'SC'||printf('%012d',CAST(substr(id,-4) AS INTEGER)+CASE WHEN id LIKE 'sim-employee-%' THEN 300000 ELSE 100000 END),'البنك الصالي',CASE WHEN CAST(substr(id,-4) AS INTEGER)%11=0 THEN 0 ELSE 800+CAST(substr(id,-4) AS INTEGER)%12000 END FROM saliyah_sim_citizens WHERE id LIKE 'sim-resident-%' OR id LIKE 'sim-employee-%'").run();
  await db.prepare("INSERT OR IGNORE INTO saliyah_sim_bank_accounts(id,owner_type,owner_id,account_number,bank_name,balance) SELECT 'sim-bank-b-'||id,'company',id,'SB-'||id,'البنك الصالي للأعمال',MAX(0,capital) FROM saliyah_sim_companies WHERE status='approved'").run();
- // One salary payment per simulated company/job/day, with a debit and matching credit.
- const payrollDay=new Date().toISOString().slice(0,10);
+ // Monthly fictional payroll. A D1 batch is transactional: all debit/credit and journal
+ // writes succeed together or are rolled back. Unique payment IDs make retries idempotent.
+ const payrollMonth=new Date().toISOString().slice(0,7);
  const payroll=(await db.prepare("SELECT j.id job_id,j.salary,j.company_id,a.citizen_id,co.id payer,ci.id payee,co.balance available FROM saliyah_sim_jobs j JOIN saliyah_sim_job_applications a ON a.job_id=j.id AND a.status='hired' JOIN saliyah_sim_bank_accounts co ON co.owner_type='company' AND co.owner_id=j.company_id JOIN saliyah_sim_bank_accounts ci ON ci.owner_type='citizen' AND ci.owner_id=a.citizen_id WHERE j.salary>0 LIMIT 30").all()).results;
  for(const job of payroll){
-  const amount=Math.max(0,Math.floor(Number(job.salary)||0));
-  if(!amount)continue;
-  const transferId='salary-'+payrollDay+'-'+job.job_id;
+  const amount=Math.floor(Number(job.salary)||0);
+  if(amount<=0||Number(job.available)<amount)continue;
+  const transferId='salary-'+payrollMonth+'-'+job.job_id;
   if(await db.prepare("SELECT 1 FROM saliyah_sim_bank_transactions WHERE id=?").bind(transferId+'-out').first())continue;
-  const debit=await db.prepare("UPDATE saliyah_sim_bank_accounts SET balance=balance-? WHERE id=? AND balance>=?").bind(amount,job.payer,amount).run();
-  if(!debit.meta?.changes)continue;
-  await db.prepare("UPDATE saliyah_sim_bank_accounts SET balance=balance+? WHERE id=?").bind(amount,job.payee).run();
-  await db.prepare("INSERT OR IGNORE INTO saliyah_sim_bank_transactions(id,account_id,kind,amount,description,related_account_id) VALUES(?,?,'salary_debit',?,?,?)").bind(transferId+'-out',job.payer,-amount,'راتب وظيفة افتراضية '+job.job_id,job.payee).run();
-  await db.prepare("INSERT OR IGNORE INTO saliyah_sim_bank_transactions(id,account_id,kind,amount,description,related_account_id) VALUES(?,?,'salary_credit',?,?,?)").bind(transferId+'-in',job.payee,amount,'راتب وظيفة افتراضية '+job.job_id,job.payer).run();
+  try{
+   await db.batch([
+    db.prepare("INSERT INTO saliyah_sim_bank_transactions(id,account_id,kind,amount,description,related_account_id) VALUES(?,?,'salary_debit',?,?,?)").bind(transferId+'-out',job.payer,-amount,'راتب شهري افتراضي '+payrollMonth,job.payee),
+    db.prepare("UPDATE saliyah_sim_bank_accounts SET balance=balance-? WHERE id=? AND balance>=?").bind(amount,job.payer,amount),
+    db.prepare("UPDATE saliyah_sim_bank_accounts SET balance=balance+? WHERE id=?").bind(amount,job.payee),
+    db.prepare("INSERT INTO saliyah_sim_bank_transactions(id,account_id,kind,amount,description,related_account_id) VALUES(?,?,'salary_credit',?,?,?)").bind(transferId+'-in',job.payee,amount,'راتب شهري افتراضي '+payrollMonth,job.payer)
+   ]);
+  }catch(e){console.error('simulated_payroll_failed',transferId,String(e));}
  }
  // Identity requests are recorded first; simulated issuance occurs in a later scheduled cycle.
  await db.prepare("INSERT OR IGNORE INTO saliyah_sim_identities(id,citizen_id,status,issued_at,expires_at) SELECT 'sim-id-resident-'||substr(id,-4),id,'requested','', '' FROM saliyah_sim_citizens WHERE id LIKE 'sim-resident-%'").run();
