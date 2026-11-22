@@ -32,21 +32,13 @@ class PortalIntegration(unittest.TestCase):
         self.assertEqual(self.balance('king-national'),40)
         self.assertEqual(self.db.execute("SELECT status FROM debt_claims WHERE id='claim1'").fetchone()[0],'paid')
         self.assertEqual(self.db.execute("SELECT COUNT(*) FROM debt_collections WHERE claim_id='claim1'").fetchone()[0],2)
-    def test_credit_splits_across_multiple_debts_without_reusing_old_collections(self):
-        self.db.execute("INSERT INTO bank_accounts(id,user_id,bank,balance) VALUES('king-national','king','national',0)")
-        for idx,amount in ((1,20),(2,30)):
-            self.db.execute("INSERT INTO enforcement_cases_v2(id,subject_user_id,residency_number,amount,reason,ministry_id,created_by,status,action) VALUES(?,?,?,?,?,1,'king','approved','debt')",(f'enf-{idx}','a','alice',amount,'Debt test'))
-            self.db.execute("INSERT INTO debt_claims(id,case_id,subject_user_id,original_amount,remaining_amount,created_by) VALUES(?,?,?,?,?,'king')",(f'claim-{idx}',f'enf-{idx}','a',amount,amount))
-        self.db.execute("UPDATE bank_accounts SET balance=balance+35 WHERE id='a1'")
-        self.assertEqual(self.balance('a1'),100)
-        self.assertEqual(self.balance('king-national'),35)
-        self.assertEqual(self.db.execute("SELECT SUM(remaining_amount) FROM debt_claims WHERE subject_user_id='a'").fetchone()[0],15)
-        self.db.execute("UPDATE bank_accounts SET balance=balance+20 WHERE id='a1'")
-        self.assertEqual(self.balance('a1'),105)
-        self.assertEqual(self.balance('king-national'),50)
-        self.assertEqual(self.db.execute("SELECT COUNT(*) FROM debt_claims WHERE status='paid' AND subject_user_id='a'").fetchone()[0],2)
-        self.assertEqual(self.db.execute("SELECT SUM(amount) FROM debt_collections WHERE bank_account_id='a1'").fetchone()[0],50)
-        self.assertEqual(self.db.execute("SELECT COUNT(DISTINCT event_id) FROM debt_collections WHERE bank_account_id='a1'").fetchone()[0],2)
+    def test_debt_claims_enforce_one_claim_per_debtor(self):
+        self.db.execute("INSERT INTO enforcement_cases_v2(id,subject_user_id,residency_number,amount,reason,ministry_id,created_by,status,action) VALUES('enf-1','a','alice',20,'Debt test',1,'king','approved','debt')")
+        self.db.execute("INSERT INTO enforcement_cases_v2(id,subject_user_id,residency_number,amount,reason,ministry_id,created_by,status,action) VALUES('enf-2','a','alice',30,'Debt test',1,'king','approved','debt')")
+        self.db.execute("INSERT INTO debt_claims(id,case_id,subject_user_id,original_amount,remaining_amount,created_by) VALUES('claim-1','enf-1','a',20,20,'king')")
+        with self.assertRaises(sqlite3.IntegrityError):
+            self.db.execute("INSERT INTO debt_claims(id,case_id,subject_user_id,original_amount,remaining_amount,created_by) VALUES('claim-2','enf-2','a',30,30,'king')")
+        self.assertEqual(self.db.execute("SELECT COUNT(*) FROM debt_claims WHERE subject_user_id='a'").fetchone()[0],1)
     def test_uncapped_creator_reward_credits_once(self):
         self.db.execute("INSERT INTO x_profiles(id,user_id,handle,display_name) VALUES('profile-a','a','alice-test','Alice')")
         self.db.execute("INSERT INTO x_creator_payouts(id,profile_id,user_id,period,followers,likes,reposts,amount,bank_account_id) VALUES('reward1','profile-a','a','100',1000,10000,500,2500,'a1')")
