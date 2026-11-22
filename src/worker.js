@@ -57,9 +57,10 @@ async function runSaliyahGovernment(db){
  const payrollWeek=(()=>{const d=new Date();const day=(d.getUTCDay()+6)%7;d.setUTCDate(d.getUTCDate()-day);return d.toISOString().slice(0,10)})();
  const payroll=(await db.prepare("SELECT j.id job_id,j.salary,j.company_id,c.payroll_weeks,a.citizen_id,co.id payer,ci.id payee,co.balance available FROM saliyah_sim_jobs j JOIN saliyah_sim_companies c ON c.id=j.company_id JOIN saliyah_sim_job_applications a ON a.job_id=j.id AND a.status='hired' JOIN saliyah_sim_bank_accounts co ON co.owner_type='company' AND co.owner_id=j.company_id JOIN saliyah_sim_bank_accounts ci ON ci.owner_type='citizen' AND ci.owner_id=a.citizen_id WHERE j.salary>0 LIMIT 30").all()).results;
  for(const job of payroll){
-  const amount=Math.floor(Number(job.salary)||0);
-  if(amount<=0||Number(job.available)<amount)continue;
+  // Weekly salary; pay two weeks when the company selects a fortnightly cycle.
   const weeks=Number(job.payroll_weeks)===2?2:1;
+  const amount=Math.floor(Number(job.salary)||0)*weeks;
+  if(amount<=0||Number(job.available)<amount)continue;
   const weekIndex=Math.floor(Date.parse(payrollWeek+'T00:00:00Z')/604800000);
   if(weeks===2&&weekIndex%2!==0)continue;
   const transferId='salary-week-'+payrollWeek+'-'+job.job_id;
@@ -302,7 +303,7 @@ async function generateXBotActivity(db){
   ['بالتوفيق في الحساب الجديد، وش نوع المحتوى اللي بتنشرونه؟','حياكم في إكس الصالية، ننتظر أول أخباركم.','بداية موفقة، تابعنا الحساب وننتظر الجديد.'],
   ['أتمنى تكون إجراءات الخدمة واضحة وسريعة.','هل الخدمة متاحة إلكترونيًا أو لازم زيارة الفرع؟','الأهم توضيح المتطلبات والرسوم قبل التقديم.'],
   ['تطوير التعليم مهم، هل فيه تفاصيل عن التسجيل؟','أتمنى توفرون تخصصات وفرص تدريب للطلاب.','متى تبدأ الدراسة وكيف طريقة التقديم؟'],
-  ['هل التحويلات البنكية متاحة لجميع الحسابات؟','ياليت توضحون رسوم الخدمة وحدود التحويل.','هل الدفع يتم بالهلل الصالي من التطبيق؟'],
+  ['هل التحويلات البنكية متاحة لجميع الحسابات؟','ياليت توضحون رسوم الخدمة وحدود التحويل.','هل الدفع يتم بالريال الصالي من التطبيق؟'],
   ['وين موقع العقار وكم سعره؟','هل العقار في السجادة أو محافظة عقار؟','هل فيه تفاصيل عن المساحة وطريقة الشراء؟'],
   ['وش شروط التقديم على الوظيفة؟','هل التوظيف مفتوح لجميع المواطنين؟','كم الراتب وكيف أقدم؟'],
   ['مبروك الخبر، متى يبدأ التنفيذ؟','هل فيه تفاصيل أكثر عن القرار؟','ننتظر التحديثات الرسمية عن الموضوع.'],
@@ -429,15 +430,10 @@ if(path.startsWith('/api/x/')){
  }
  if(method==='GET'&&path==='/api/x/bot-comments'){
   const id=u.searchParams.get('post_id')||'';
-  const p=await db.prepare('SELECT p.id,p.body,p.created_at,b.created_at started FROM x_posts p JOIN x_bot_reach b ON b.post_id=p.id WHERE p.id=?').bind(id).first();
-  if(!p)return json({error:'المنشور غير موجود أو لا توجد تفاعلات آلية'},404);
-  const ageDays=Math.max(0,(Date.now()-Date.parse(p.started.replace(' ','T')+'Z'))/86400000);
-  const count=Math.min(30,Math.floor(ageDays*1.8));
-  const names=['نواف 🤖','سارة 🤖','راكان 🤖','ليان 🤖','فهد 🤖','ريم 🤖','تركي 🤖','جود 🤖','عبدالله 🤖','شهد 🤖','ماجد 🤖','هيا 🤖'];
-  const comments=['طرح جميل 👏','اتفق معك 👍','موضوع يستحق النقاش','أول مرة أشوف هالكلام 👀','واصل النشر 🔥','مثير للاهتمام','وش رأي الباقين؟','أعجبني المنشور ❤️','ننتظر المزيد','مشاركة موفقة','فكرة حلوة','تفاعل قوي هنا 🔥'];
-  let hash=0;for(const c of p.id)hash=(Math.imul(hash,31)+c.charCodeAt(0))>>>0;
-  const items=Array.from({length:count},(_,i)=>({name:names[(hash+i*7)%names.length],body:comments[(hash+i*5)%comments.length],bot:true}));
-  return json({comments:items,simulated:true});
+  const parent=await db.prepare('SELECT id FROM x_posts WHERE id=?').bind(id).first();
+  if(!parent)return json({error:'المنشور غير موجود'},404);
+  const rows=await db.prepare("SELECT p.id,p.body,p.created_at,a.id profile_id,a.handle,a.display_name,a.kind,a.verified FROM x_posts p JOIN x_profiles a ON a.id=p.profile_id WHERE p.reply_to=? AND a.kind='bot' ORDER BY p.created_at ASC LIMIT 100").bind(id).all();
+  return json({comments:rows.results,simulated:true});
  }
  if(method==='GET'&&path==='/api/x/earnings'){
   if(!user)return json({error:'سجل الدخول أولاً'},401);
