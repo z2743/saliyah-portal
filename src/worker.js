@@ -152,23 +152,19 @@ async function generateXBotActivity(db){
  'مساء الخير 🌙 وش جديدكم في عالم الصالية؟',
  'هل تفضلون منشورات قصيرة أو شروحات طويلة عن خدمات الموقع؟'
  ];
- const botIds=[];
- for(let i=0;i<names.length;i++){
-  const handle='saliyah_bot_'+String(i+1).padStart(2,'0');
-  const id='x-sim-bot-'+String(i+1).padStart(2,'0');
-  await db.prepare("INSERT OR IGNORE INTO x_profiles(id,user_id,handle,display_name,bio,kind,verified) VALUES(?,NULL,?,?,?,'bot',0)").bind(id,handle,names[i]+' 🤖','حساب آلي محاكى للنقاش والترفيه؛ ليس جهة رسمية').run();
-  botIds.push(id);
- }
+ // Create a large, clearly marked fictional population in one batch, rather than one request per bot.
+ await db.prepare("WITH RECURSIVE seq(n) AS (SELECT 1 UNION ALL SELECT n+1 FROM seq WHERE n<1000) INSERT OR IGNORE INTO x_profiles(id,user_id,handle,display_name,bio,kind,verified) SELECT 'x-sim-bot-'+printf('%04d',n),NULL,'saliyah_bot_'+printf('%04d',n),'مواطن صالي آلي '+n+' 🤖','حساب محاكاة آلي؛ ليس شخصًا حقيقيًا أو جهة رسمية','bot',0 FROM seq").run();
+ const botIds=Array.from({length:1000},(_,i)=>'x-sim-bot-'+String(i+1).padStart(4,'0'));
  const now=Math.floor(Date.now()/3600000);
  // Idempotent per hour, safe if the scheduled job is retried.
- for(let i=0;i<18;i++){
+ for(let i=0;i<36;i++){
   const id='sim-'+now+'-'+i;
   const profile=botIds[(now*7+i*11)%botIds.length];
   const body=topics[(now*3+i*7)%topics.length];
   await db.prepare('INSERT OR IGNORE INTO x_posts(id,profile_id,body) VALUES(?,?,?)').bind(id,profile,body).run();
  }
  const posts=await db.prepare("SELECT id,profile_id FROM x_posts ORDER BY created_at DESC LIMIT 90").all();
- for(let i=0;i<Math.min(180,posts.results.length*3);i++){
+ for(let i=0;i<Math.min(360,posts.results.length*4);i++){
   const p=posts.results[(now*13+i*17)%posts.results.length];
   const bot=botIds[(now*5+i*7)%botIds.length];
   if(bot===p.profile_id)continue;
