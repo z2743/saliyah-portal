@@ -17,8 +17,16 @@ export default {async fetch(req,env){const u=new URL(req.url);if(!u.pathname.sta
 // is granted only for a ministry assignment recorded by the government.
 if(path.startsWith('/api/x/')){
  const profileFor=async()=>user?db.prepare('SELECT * FROM x_profiles WHERE user_id=?').bind(user.id).first():null;
+ const botReachSQL="SELECT COALESCE(SUM(min(1000000,bot_likes+max(0,CAST((julianday('now')-julianday(created_at))*24 AS INTEGER))*2500)),0) bot_likes,COALESCE(SUM(min(1000000,bot_reposts+max(0,CAST((julianday('now')-julianday(created_at))*24 AS INTEGER))*150)),0) bot_reposts FROM x_bot_reach WHERE post_id IN (SELECT id FROM x_posts WHERE profile_id=?)";
+ const creatorStats=async profileId=>{
+  const real=await db.prepare("SELECT (SELECT COUNT(*) FROM x_follows f WHERE f.following_id=?) followers,(SELECT COUNT(*) FROM x_likes l JOIN x_posts p ON p.id=l.post_id WHERE p.profile_id=? AND l.profile_id<>?) likes,(SELECT COUNT(DISTINCT r.profile_id) FROM x_posts r JOIN x_posts p ON p.id=r.repost_of WHERE p.profile_id=? AND r.profile_id<>?) reposts,(SELECT COALESCE(SUM(CASE WHEN actor.kind='bot' THEN 1 ELSE 2 END),0) FROM x_follows f JOIN x_profiles actor ON actor.id=f.follower_id WHERE f.following_id=?) followers_twice,(SELECT COALESCE(SUM(CASE WHEN actor.kind='bot' THEN 1 ELSE 2 END),0) FROM x_likes l JOIN x_posts p ON p.id=l.post_id JOIN x_profiles actor ON actor.id=l.profile_id WHERE p.profile_id=? AND l.profile_id<>?) likes_twice,(SELECT COALESCE(SUM(CASE WHEN actor.kind='bot' THEN 1 ELSE 2 END),0) FROM (SELECT DISTINCT r.profile_id FROM x_posts r JOIN x_posts original ON original.id=r.repost_of WHERE original.profile_id=?) rr JOIN x_profiles actor ON actor.id=rr.profile_id WHERE rr.profile_id<>?) reposts_twice").bind(profileId,profileId,profileId,profileId,profileId,profileId,profileId,profileId,profileId,profileId).first();
+  const bots=await db.prepare(botReachSQL).bind(profileId).first();
+  const botFollowers=Math.floor(bots.bot_likes/100);
+  return {...real,bot_likes:bots.bot_likes,bot_reposts:bots.bot_reposts,bot_followers:botFollowers,followers:real.followers+botFollowers,likes:real.likes+bots.bot_likes,reposts:real.reposts+bots.bot_reposts,followers_twice:real.followers_twice+botFollowers,likes_twice:real.likes_twice+bots.bot_likes,reposts_twice:real.reposts_twice+bots.bot_reposts};
+ };
+
  if(method==='GET'&&path==='/api/x/feed'){
-  const rows=await db.prepare("SELECT p.id,p.body,p.reply_to,p.repost_of,p.created_at,a.id profile_id,a.handle,a.display_name,a.kind,a.verified,(SELECT COUNT(*) FROM x_likes l WHERE l.post_id=p.id) likes,(SELECT COUNT(*) FROM x_posts r WHERE r.reply_to=p.id) replies FROM x_posts p JOIN x_profiles a ON a.id=p.profile_id ORDER BY p.created_at DESC LIMIT 100").all();
+  const rows=await db.prepare("SELECT p.id,p.body,p.reply_to,p.repost_of,p.created_at,a.id profile_id,a.handle,a.display_name,a.kind,a.verified,(SELECT COUNT(*) FROM x_likes l WHERE l.post_id=p.id) likes+(SELECT COALESCE(min(1000000,b.bot_likes+max(0,CAST((julianday('now')-julianday(b.created_at))*24 AS INTEGER))*2500),0) FROM x_bot_reach b WHERE b.post_id=p.id) likes,(SELECT COUNT(*) FROM x_posts r WHERE r.reply_to=p.id) replies FROM x_posts p JOIN x_profiles a ON a.id=p.profile_id ORDER BY p.created_at DESC LIMIT 100").all();
   const own=await profileFor();
   return json({posts:rows.results,profile:own});
  }
@@ -26,7 +34,7 @@ if(path.startsWith('/api/x/')){
   if(!user)return json({error:'سجل الدخول أولاً'},401);
   const own=await profileFor();
   if(!own)return json({error:'أنشئ حساب إكس أولاً'},403);
-  const stats=await db.prepare("SELECT (SELECT COUNT(*) FROM x_follows f WHERE f.following_id=?) followers,(SELECT COUNT(*) FROM x_likes l JOIN x_posts p ON p.id=l.post_id WHERE p.profile_id=? AND l.profile_id<>?) likes,(SELECT COUNT(DISTINCT r.profile_id) FROM x_posts r JOIN x_posts p ON p.id=r.repost_of WHERE p.profile_id=? AND r.profile_id<>?) reposts,(SELECT COALESCE(SUM(CASE WHEN actor.kind='bot' THEN 1 ELSE 2 END),0) FROM x_follows f JOIN x_profiles actor ON actor.id=f.follower_id WHERE f.following_id=?) followers_twice,(SELECT COALESCE(SUM(CASE WHEN actor.kind='bot' THEN 1 ELSE 2 END),0) FROM x_likes l JOIN x_posts p ON p.id=l.post_id JOIN x_profiles actor ON actor.id=l.profile_id WHERE p.profile_id=? AND l.profile_id<>?) likes_twice,(SELECT COALESCE(SUM(CASE WHEN actor.kind='bot' THEN 1 ELSE 2 END),0) FROM (SELECT DISTINCT r.profile_id FROM x_posts r JOIN x_posts original ON original.id=r.repost_of WHERE original.profile_id=?) rr JOIN x_profiles actor ON actor.id=rr.profile_id WHERE rr.profile_id<>?) reposts_twice").bind(own.id,own.id,own.id,own.id,own.id,own.id,own.id,own.id,own.id,own.id).first();
+  const stats=await creatorStats(own.id);
   const eligible=own.kind==='person'&&stats.followers>=10&&stats.likes>=20&&stats.reposts>=5;
   const amount=eligible?Math.min(500,Math.floor((stats.followers_twice+stats.likes_twice*2+stats.reposts_twice*3)/2)):0;
   const period=Math.floor(Date.now()/259200000).toString();
@@ -42,7 +50,7 @@ if(path.startsWith('/api/x/')){
   if(!b||!validText(b.bank_account_id,10,80))return json({error:'اختر حسابك البنكي'},400);
   const account=await db.prepare('SELECT id FROM bank_accounts WHERE id=? AND user_id=?').bind(b.bank_account_id,user.id).first();
   if(!account)return json({error:'الحساب البنكي لا يخصك'},403);
-  const stats=await db.prepare("SELECT (SELECT COUNT(*) FROM x_follows f WHERE f.following_id=?) followers,(SELECT COUNT(*) FROM x_likes l JOIN x_posts p ON p.id=l.post_id WHERE p.profile_id=? AND l.profile_id<>?) likes,(SELECT COUNT(DISTINCT r.profile_id) FROM x_posts r JOIN x_posts p ON p.id=r.repost_of WHERE p.profile_id=? AND r.profile_id<>?) reposts,(SELECT COALESCE(SUM(CASE WHEN actor.kind='bot' THEN 1 ELSE 2 END),0) FROM x_follows f JOIN x_profiles actor ON actor.id=f.follower_id WHERE f.following_id=?) followers_twice,(SELECT COALESCE(SUM(CASE WHEN actor.kind='bot' THEN 1 ELSE 2 END),0) FROM x_likes l JOIN x_posts p ON p.id=l.post_id JOIN x_profiles actor ON actor.id=l.profile_id WHERE p.profile_id=? AND l.profile_id<>?) likes_twice,(SELECT COALESCE(SUM(CASE WHEN actor.kind='bot' THEN 1 ELSE 2 END),0) FROM (SELECT DISTINCT r.profile_id FROM x_posts r JOIN x_posts original ON original.id=r.repost_of WHERE original.profile_id=?) rr JOIN x_profiles actor ON actor.id=rr.profile_id WHERE rr.profile_id<>?) reposts_twice").bind(own.id,own.id,own.id,own.id,own.id,own.id,own.id,own.id,own.id,own.id).first();
+  const stats=await creatorStats(own.id);
   if(stats.followers<10||stats.likes<20||stats.reposts<5)return json({error:'لم تحقق شروط برنامج الشهرة بعد'},403);
   const amount=Math.min(500,Math.floor((stats.followers_twice+stats.likes_twice*2+stats.reposts_twice*3)/2));
   const period=Math.floor(Date.now()/259200000).toString();
