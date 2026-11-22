@@ -30,6 +30,25 @@ async function runSaliyahGovernment(db){
  await db.prepare("UPDATE saliyah_sim_citizens SET gender='male' WHERE id LIKE 'sim-employee-%' AND gender IS NULL").run();
  await db.prepare("UPDATE saliyah_sim_citizens SET name=(CASE CAST(substr(id,-4) AS INTEGER)%20 WHEN 0 THEN 'نورة' WHEN 2 THEN 'سارة' WHEN 4 THEN 'ريم' WHEN 6 THEN 'هيا' WHEN 8 THEN 'ليان' WHEN 10 THEN 'جود' WHEN 12 THEN 'لمى' WHEN 14 THEN 'شهد' WHEN 16 THEN 'غلا' ELSE 'دانة' END)||' بنت '||(CASE ((CAST(substr(id,-4) AS INTEGER)-1)/400) WHEN 0 THEN 'إبراهيم' WHEN 1 THEN 'صالح' WHEN 2 THEN 'عبدالرحمن' WHEN 3 THEN 'حمد' ELSE 'سعد' END)||' '||substr(name,instr(name,' ')+1) WHERE id LIKE 'sim-resident-%' AND gender='female' AND name NOT LIKE '% بنت %'").run();
  await db.prepare("UPDATE saliyah_sim_citizens SET name=replace(name,' بن محمد ',' ') WHERE gender='female' AND name LIKE '% بنت % بن محمد %'").run();
+ // Separate virtual banking ledger: never connect simulated balances to real bank_accounts.
+ await db.prepare("CREATE TABLE IF NOT EXISTS saliyah_sim_bank_accounts(id TEXT PRIMARY KEY,owner_type TEXT NOT NULL CHECK(owner_type IN ('citizen','company')),owner_id TEXT NOT NULL,account_number TEXT NOT NULL UNIQUE,bank_name TEXT NOT NULL,balance INTEGER NOT NULL DEFAULT 0 CHECK(balance>=0),status TEXT NOT NULL DEFAULT 'active',created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,UNIQUE(owner_type,owner_id))").run();
+ await db.prepare("CREATE TABLE IF NOT EXISTS saliyah_sim_bank_transactions(id TEXT PRIMARY KEY,account_id TEXT NOT NULL,kind TEXT NOT NULL,amount INTEGER NOT NULL,description TEXT NOT NULL,related_account_id TEXT,created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,FOREIGN KEY(account_id) REFERENCES saliyah_sim_bank_accounts(id))").run();
+ await db.prepare("INSERT OR IGNORE INTO saliyah_sim_bank_accounts(id,owner_type,owner_id,account_number,bank_name,balance) SELECT 'sim-bank-c-'||id,'citizen',id,'SC'||printf('%012d',CAST(substr(id,-4) AS INTEGER)+CASE WHEN id LIKE 'sim-employee-%' THEN 300000 ELSE 100000 END),'البنك الصالي',CASE WHEN CAST(substr(id,-4) AS INTEGER)%11=0 THEN 0 ELSE 800+CAST(substr(id,-4) AS INTEGER)%12000 END FROM saliyah_sim_citizens WHERE id LIKE 'sim-resident-%' OR id LIKE 'sim-employee-%'").run();
+ await db.prepare("INSERT OR IGNORE INTO saliyah_sim_bank_accounts(id,owner_type,owner_id,account_number,bank_name,balance) SELECT 'sim-bank-b-'||id,'company',id,'SB'||printf('%012d',CAST(substr(id,-5) AS INTEGER)+500000),'البنك الصالي للأعمال',MAX(0,capital) FROM saliyah_sim_companies WHERE status='approved'").run();
+ // One salary payment per simulated company/job/day, with a debit and matching credit.
+ const payrollDay=new Date().toISOString().slice(0,10);
+ const payroll=(await db.prepare("SELECT j.id job_id,j.salary,j.company_id,a.citizen_id,co.id payer,ci.id payee,co.balance available FROM saliyah_sim_jobs j JOIN saliyah_sim_job_applications a ON a.job_id=j.id AND a.status='hired' JOIN saliyah_sim_bank_accounts co ON co.owner_type='company' AND co.owner_id=j.company_id JOIN saliyah_sim_bank_accounts ci ON ci.owner_type='citizen' AND ci.owner_id=a.citizen_id WHERE j.salary>0 LIMIT 30").all()).results;
+ for(const job of payroll){
+  const amount=Math.max(0,Math.floor(Number(job.salary)||0));
+  if(!amount)continue;
+  const transferId='salary-'+payrollDay+'-'+job.job_id;
+  if(await db.prepare("SELECT 1 FROM saliyah_sim_bank_transactions WHERE id=?").bind(transferId+'-out').first())continue;
+  const debit=await db.prepare("UPDATE saliyah_sim_bank_accounts SET balance=balance-? WHERE id=? AND balance>=?").bind(amount,job.payer,amount).run();
+  if(!debit.meta?.changes)continue;
+  await db.prepare("UPDATE saliyah_sim_bank_accounts SET balance=balance+? WHERE id=?").bind(amount,job.payee).run();
+  await db.prepare("INSERT OR IGNORE INTO saliyah_sim_bank_transactions(id,account_id,kind,amount,description,related_account_id) VALUES(?,?,'salary_debit',?,?,?)").bind(transferId+'-out',job.payer,-amount,'راتب وظيفة افتراضية '+job.job_id,job.payee).run();
+  await db.prepare("INSERT OR IGNORE INTO saliyah_sim_bank_transactions(id,account_id,kind,amount,description,related_account_id) VALUES(?,?,'salary_credit',?,?,?)").bind(transferId+'-in',job.payee,amount,'راتب وظيفة افتراضية '+job.job_id,job.payer).run();
+ }
  // Identity requests are recorded first; simulated issuance occurs in a later scheduled cycle.
  await db.prepare("INSERT OR IGNORE INTO saliyah_sim_identities(id,citizen_id,status,issued_at,expires_at) SELECT 'sim-id-resident-'||substr(id,-4),id,'requested','', '' FROM saliyah_sim_citizens WHERE id LIKE 'sim-resident-%'").run();
  // Deterministic fictional eligibility: 20% incomplete/rejected, 40% eligible,
@@ -583,6 +602,16 @@ if(method==='POST'&&path==='/api/admin/simulation/projects/decision'){
  if(!updated.meta.changes)return json({error:'الطلب غير موجود أو تمت مراجعته'},409);
  await audit(db,user.id,'simulation_project_decision','saliyah_project',b.id,{decision:b.decision});
  return json({ok:true,status:b.decision});
+}
+if(method==='GET'&&path==='/api/admin/simulation/banking'){
+ if(!user||user.role!=='king')return json({error:'للملك فقط'},403);
+ const filter=u.searchParams.get('type')||'all';
+ const q=(u.searchParams.get('q')||'').trim().slice(0,80);
+ if(!['all','citizen','company'].includes(filter))return json({error:'نوع الحساب غير صحيح'},400);
+ const accounts=await db.prepare("SELECT a.id,a.account_number,a.bank_name,a.owner_type,a.owner_id,COALESCE(c.name,b.name,'مجهول') owner_name,a.balance,a.status,a.created_at FROM saliyah_sim_bank_accounts a LEFT JOIN saliyah_sim_citizens c ON a.owner_type='citizen' AND c.id=a.owner_id LEFT JOIN saliyah_sim_companies b ON a.owner_type='company' AND b.id=a.owner_id WHERE (?='all' OR a.owner_type=?) AND (?='' OR a.account_number LIKE ? OR c.name LIKE ? OR b.name LIKE ?) ORDER BY a.created_at DESC,a.id LIMIT 150").bind(filter,filter,q,'%'+q+'%','%'+q+'%','%'+q+'%').all();
+ const totals=await db.prepare("SELECT owner_type,COUNT(*) accounts,SUM(balance) balance FROM saliyah_sim_bank_accounts GROUP BY owner_type").all();
+ const transactions=await db.prepare("SELECT t.id,t.kind,t.amount,t.description,t.created_at,a.account_number,a.owner_type,COALESCE(c.name,b.name,'مجهول') owner_name FROM saliyah_sim_bank_transactions t JOIN saliyah_sim_bank_accounts a ON a.id=t.account_id LEFT JOIN saliyah_sim_citizens c ON a.owner_type='citizen' AND c.id=a.owner_id LEFT JOIN saliyah_sim_companies b ON a.owner_type='company' AND b.id=a.owner_id ORDER BY t.created_at DESC,t.id DESC LIMIT 100").all();
+ return json({accounts:accounts.results,totals:totals.results,transactions:transactions.results,virtual_currency:'هلل صالي',note:'حسابات المحاكاة منفصلة عن الحسابات البنكية الحقيقية'});
 }
 if(method==='GET'&&path==='/api/admin/simulation/citizens'){
  if(!user||user.role!=='king')return json({error:'للملك فقط'},403);
