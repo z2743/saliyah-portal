@@ -17,7 +17,7 @@ export default {async fetch(req,env){const u=new URL(req.url);if(!u.pathname.sta
 // is granted only for a ministry assignment recorded by the government.
 if(path.startsWith('/api/x/')){
  const profileFor=async()=>user?db.prepare('SELECT * FROM x_profiles WHERE user_id=?').bind(user.id).first():null;
- const botReachSQL="SELECT COALESCE(SUM(min(1000000,bot_likes+max(0,CAST((julianday('now')-julianday(created_at))*24 AS INTEGER))*2500)),0) bot_likes,COALESCE(SUM(min(1000000,bot_reposts+max(0,CAST((julianday('now')-julianday(created_at))*24 AS INTEGER))*150)),0) bot_reposts FROM x_bot_reach WHERE post_id IN (SELECT id FROM x_posts WHERE profile_id=?)";
+ const botReachSQL="SELECT COALESCE(SUM(min(1000000,CAST((max(0,julianday('now')-julianday(created_at))*max(0,julianday('now')-julianday(created_at))*1250)+(bot_likes*min(1,max(0,julianday('now')-julianday(created_at))/3)) AS INTEGER))),0) bot_likes,COALESCE(SUM(min(1000000,CAST((max(0,julianday('now')-julianday(created_at))*max(0,julianday('now')-julianday(created_at))*75)+(bot_reposts*min(1,max(0,julianday('now')-julianday(created_at))/3)) AS INTEGER))),0) bot_reposts FROM x_bot_reach WHERE post_id IN (SELECT id FROM x_posts WHERE profile_id=?)";
  const creatorStats=async profileId=>{
   const real=await db.prepare("SELECT (SELECT COUNT(*) FROM x_follows f WHERE f.following_id=?) followers,(SELECT COUNT(*) FROM x_likes l JOIN x_posts p ON p.id=l.post_id WHERE p.profile_id=? AND l.profile_id<>?) likes,(SELECT COUNT(DISTINCT r.profile_id) FROM x_posts r JOIN x_posts p ON p.id=r.repost_of WHERE p.profile_id=? AND r.profile_id<>?) reposts,(SELECT COALESCE(SUM(CASE WHEN actor.kind='bot' THEN 1 ELSE 2 END),0) FROM x_follows f JOIN x_profiles actor ON actor.id=f.follower_id WHERE f.following_id=?) followers_twice,(SELECT COALESCE(SUM(CASE WHEN actor.kind='bot' THEN 1 ELSE 2 END),0) FROM x_likes l JOIN x_posts p ON p.id=l.post_id JOIN x_profiles actor ON actor.id=l.profile_id WHERE p.profile_id=? AND l.profile_id<>?) likes_twice,(SELECT COALESCE(SUM(CASE WHEN actor.kind='bot' THEN 1 ELSE 2 END),0) FROM (SELECT DISTINCT r.profile_id FROM x_posts r JOIN x_posts original ON original.id=r.repost_of WHERE original.profile_id=?) rr JOIN x_profiles actor ON actor.id=rr.profile_id WHERE rr.profile_id<>?) reposts_twice").bind(profileId,profileId,profileId,profileId,profileId,profileId,profileId,profileId,profileId,profileId).first();
   const bots=await db.prepare(botReachSQL).bind(profileId).first();
@@ -29,6 +29,18 @@ if(path.startsWith('/api/x/')){
   const rows=await db.prepare("SELECT p.id,p.body,p.reply_to,p.repost_of,p.created_at,a.id profile_id,a.handle,a.display_name,a.kind,a.verified,(SELECT COUNT(*) FROM x_likes l WHERE l.post_id=p.id)+(SELECT COALESCE(min(1000000,b.bot_likes+max(0,CAST((julianday('now')-julianday(b.created_at))*24 AS INTEGER))*2500),0) FROM x_bot_reach b WHERE b.post_id=p.id) likes,(SELECT COUNT(*) FROM x_posts r WHERE r.reply_to=p.id) replies FROM x_posts p JOIN x_profiles a ON a.id=p.profile_id ORDER BY p.created_at DESC LIMIT 100").all();
   const own=await profileFor();
   return json({posts:rows.results,profile:own});
+ }
+ if(method==='GET'&&path==='/api/x/bot-comments'){
+  const id=u.searchParams.get('post_id')||'';
+  const p=await db.prepare('SELECT p.id,p.body,p.created_at,b.created_at started FROM x_posts p JOIN x_bot_reach b ON b.post_id=p.id WHERE p.id=?').bind(id).first();
+  if(!p)return json({error:'المنشور غير موجود أو لا توجد تفاعلات آلية'},404);
+  const ageDays=Math.max(0,(Date.now()-Date.parse(p.started.replace(' ','T')+'Z'))/86400000);
+  const count=Math.min(30,Math.floor(ageDays*1.8));
+  const names=['نواف 🤖','سارة 🤖','راكان 🤖','ليان 🤖','فهد 🤖','ريم 🤖','تركي 🤖','جود 🤖','عبدالله 🤖','شهد 🤖','ماجد 🤖','هيا 🤖'];
+  const comments=['طرح جميل 👏','اتفق معك 👍','موضوع يستحق النقاش','أول مرة أشوف هالكلام 👀','واصل النشر 🔥','مثير للاهتمام','وش رأي الباقين؟','أعجبني المنشور ❤️','ننتظر المزيد','مشاركة موفقة','فكرة حلوة','تفاعل قوي هنا 🔥'];
+  let hash=0;for(const c of p.id)hash=(Math.imul(hash,31)+c.charCodeAt(0))>>>0;
+  const items=Array.from({length:count},(_,i)=>({name:names[(hash+i*7)%names.length],body:comments[(hash+i*5)%comments.length],bot:true}));
+  return json({comments:items,simulated:true});
  }
  if(method==='GET'&&path==='/api/x/earnings'){
   if(!user)return json({error:'سجل الدخول أولاً'},401);
