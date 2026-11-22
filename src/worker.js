@@ -65,7 +65,7 @@ async function runSaliyahGovernment(db){
 
  }
  // Simulated property market, company shares, marriages and natural life cycles.
- const adults=(await db.prepare("SELECT id FROM saliyah_sim_citizens ORDER BY created_at LIMIT 100").all()).results;
+ const adults=(await db.prepare("SELECT c.id FROM saliyah_sim_citizens c WHERE c.occupation<>'متوفى' AND NOT EXISTS(SELECT 1 FROM saliyah_sim_life_events e WHERE e.citizen_id=c.id AND e.kind='death') ORDER BY c.created_at LIMIT 100").all()).results;
  const propertyId='property-'+Math.floor(hour/6),seller=adults[hour%Math.max(1,adults.length)]?.id;
  if(seller){
   await db.prepare("INSERT OR IGNORE INTO saliyah_sim_properties(id,owner_id,kind,location,price,status) VALUES(?,?,?,?,?,'listed')").bind(propertyId,seller,['شقة','فيلا','محل تجاري','أرض'][hour%4],hour%2?'السجادة':'المتجار',55000+(hour%9)*18000).run();
@@ -96,7 +96,8 @@ async function runSaliyahGovernment(db){
  }
  if(adults.length>=2&&hour%8===0){
   const a=adults[(hour*3)%adults.length],b=adults[(hour*3+1)%adults.length];
-  if(a.id!==b.id)await db.prepare("INSERT OR IGNORE INTO saliyah_sim_marriages(id,partner_a,partner_b,status) VALUES(?,?,?,'married')").bind('marriage-'+Math.floor(hour/8),a.id,b.id).run();
+  const existing=await db.prepare("SELECT id FROM saliyah_sim_marriages WHERE status='married' AND (partner_a IN (?,?) OR partner_b IN (?,?)) LIMIT 1").bind(a.id,b.id,a.id,b.id).first();
+  if(!existing&&a.id!==b.id)await db.prepare("INSERT OR IGNORE INTO saliyah_sim_marriages(id,partner_a,partner_b,status) VALUES(?,?,?,'married')").bind('marriage-'+Math.floor(hour/8),a.id,b.id).run();
  }
  // Simulated deaths never delete accounts, ownership or audit records.
  if(adults.length>20&&hour%24===0){
