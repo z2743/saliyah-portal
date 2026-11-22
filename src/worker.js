@@ -125,29 +125,38 @@ if(method==='POST'&&path==='/api/security/revoke-others'){
 }
 
 
-// Administrative enforcement case register: scoped ministries can create/review cases; execution requires royal approval.
+// Scoped administrative case workflow. Decisions are recorded, not executed against balances or documents.
 if(path.startsWith('/api/enforcement/')){
  if(!user)return json({error:'تسجيل الدخول مطلوب'},401);
- const allowed=user.role==='king'?[1,3,7]:(await db.prepare('SELECT ministry_id FROM ministry_accounts WHERE user_id=? AND ministry_id IN (1,3,7)').bind(user.id).all()).results.map(x=>x.ministry_id);
- if(!allowed.length)return json({error:'هذه الخدمة للملك ووزارات الداخلية والعدل والمالية فقط'},403);
+ const assigned=user.role==='king'?[1,3,7]:(await db.prepare('SELECT ministry_id FROM ministry_accounts WHERE user_id=? AND ministry_id IN (1,3,7)').bind(user.id).all()).results.map(x=>x.ministry_id);
+ if(!assigned.length)return json({error:'الخدمة للملك ووزارات الداخلية والعدل والمالية'},403);
  if(method==='GET'&&path==='/api/enforcement/cases'){
- const r=await db.prepare("SELECT e.*,u.username subject_username FROM enforcement_cases e JOIN users u ON u.id=e.subject_user_id ORDER BY e.created_at DESC LIMIT 100").all();
- return json({cases:r.results,ministries:allowed});
+  const r=await db.prepare("SELECT e.*,u.username subject_username FROM enforcement_cases e JOIN users u ON u.id=e.subject_user_id ORDER BY e.created_at DESC LIMIT 100").all();
+  return json({cases:r.results,ministries:assigned});
  }
  if(method==='POST'&&path==='/api/enforcement/cases'){
- const b=await input(req);if(!b||!validText(b.residency_number,5,80)||!Number.isSafeInteger(b.amount)||b.amount<=0||b.amount>100000000||!validText(b.reason,10,500)||!allowed.includes(Number(b.ministry_id)))return json({error:'راجع رقم الإقامة والمبلغ والسبب والوزارة المختصة'},400);
- const subject=await db.prepare("SELECT u.id,d.id document_id FROM documents d JOIN citizen_profiles p ON p.document_id=d.id JOIN users u ON u.id=p.user_id WHERE d.number=? AND d.type='residency'").bind(b.residency_number.trim()).first();
- if(!subject)return json({error:'الإقامة غير مرتبطة بحساب مستخدم'},404);
- const id=random();await db.prepare("INSERT INTO enforcement_cases(id,subject_user_id,document_id,residency_number,amount,reason,ministry_id,created_by,status) VALUES(?,?,?,?,?,?,?,?,'pending')").bind(id,subject.id,subject.document_id,b.residency_number.trim(),b.amount,b.reason.trim(),Number(b.ministry_id),user.id).run();
- await audit(db,user.id,'enforcement_case_opened','enforcement_case',id,{amount:b.amount,ministry_id:Number(b.ministry_id)});return json({id,status:'pending'},201);
+  const b=await input(req);
+  const target=String(b?.subject_identifier||'').trim();
+  const action=String(b?.action||'');
+  const amount=Number(b?.amount||0);
+  if(!validText(target,3,100)||!['debt','service_suspension','both'].includes(action)||!Number.isSafeInteger(amount)||amount<0||amount>100000000||((action==='debt'||action==='both')&&amount===0)||!validText(b?.reason,10,500)||!assigned.includes(Number(b?.ministry_id)))return json({error:'تحقق من اسم المستخدم أو رقم الوثيقة ونوع الإجراء والمبلغ والسبب والوزارة'},400);
+  const subject=await db.prepare("SELECT u.id, (SELECT d.id FROM documents d JOIN citizen_profiles p ON p.document_id=d.id WHERE p.user_id=u.id ORDER BY d.created_at DESC LIMIT 1) document_id,(SELECT d.number FROM documents d JOIN citizen_profiles p ON p.document_id=d.id WHERE p.user_id=u.id ORDER BY d.created_at DESC LIMIT 1) document_number FROM users u WHERE lower(u.username)=lower(?) OR EXISTS(SELECT 1 FROM citizen_profiles p JOIN documents d ON d.id=p.document_id WHERE p.user_id=u.id AND (d.number=? OR d.id=?)) LIMIT 1").bind(target,target,target).first();
+  if(!subject)return json({error:'لم يُعثر على مستخدم مرتبط بهذا الاسم أو رقم الوثيقة'},404);
+  if(subject.id===user.id)return json({error:'لا يمكن فتح قضية على حسابك'},403);
+  const id=random();
+  await db.prepare("INSERT INTO enforcement_cases(id,subject_user_id,document_id,residency_number,amount,reason,ministry_id,created_by,status,action) VALUES(?,?,?,?,?,?,?,?,'pending',?)").bind(id,subject.id,subject.document_id,subject.document_number||target,amount,b.reason.trim(),Number(b.ministry_id),user.id,action).run();
+  await audit(db,user.id,'enforcement_case_opened','enforcement_case',id,{amount,action,ministry_id:Number(b.ministry_id)});
+  return json({id,status:'pending'},201);
  }
  if(method==='POST'&&path==='/api/enforcement/decision'){
- if(user.role!=='king')return json({error:'الاعتماد النهائي للملك فقط'},403);
- const b=await input(req);if(!b||!validText(b.id,10,80)||!['approved','rejected'].includes(b.decision))return json({error:'قرار غير صالح'},400);
- const r=await db.prepare("UPDATE enforcement_cases SET status=?,decided_by=?,decided_at=CURRENT_TIMESTAMP WHERE id=? AND status='pending'").bind(b.decision,user.id,b.id).run();
- if(!r.meta.changes)return json({error:'القضية غير موجودة أو سبق البت فيها'},409);
- await audit(db,user.id,'enforcement_case_decision','enforcement_case',b.id,{decision:b.decision});return json({status:b.decision});
+  if(user.role!=='king')return json({error:'القرار النهائي للملك فقط'},403);
+  const b=await input(req);if(!b||!validText(b.id,10,80)||!['approved','rejected'].includes(b.decision))return json({error:'قرار غير صالح'},400);
+  const r=await db.prepare("UPDATE enforcement_cases SET status=?,decided_by=?,decided_at=CURRENT_TIMESTAMP WHERE id=? AND status='pending'").bind(b.decision,user.id,b.id).run();
+  if(!r.meta.changes)return json({error:'القضية غير موجودة أو صدر قرار سابق'},409);
+  await audit(db,user.id,'enforcement_case_decision','enforcement_case',b.id,{decision:b.decision});
+  return json({status:b.decision,note:'قرار إداري مسجل؛ لا يغيّر الرصيد أو حالة الوثائق تلقائيًا'});
  }
+ return json({error:'المسار غير متاح'},404);
 }
 
 const can=async permission=>user.role==='king'||!!(await db.prepare('SELECT 1 FROM staff_permissions WHERE user_id=? AND permission=?').bind(user.id,permission).first());
