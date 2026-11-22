@@ -39,6 +39,15 @@ class PortalIntegration(unittest.TestCase):
         with self.assertRaises(sqlite3.IntegrityError):
             self.db.execute("INSERT INTO x_creator_payouts(id,profile_id,user_id,period,followers,likes,reposts,amount,bank_account_id) VALUES('reward2','profile-a','a','100',1000,10000,500,2500,'a1')")
         self.assertEqual(self.balance('a1'),2600)
+    def test_bot_reach_can_exceed_one_million_without_negative_values(self):
+        self.db.execute("INSERT INTO x_profiles(id,user_id,handle,display_name) VALUES('large-creator','a','large-creator','Creator')")
+        self.db.execute("INSERT INTO x_posts(id,profile_id,body) VALUES('viral-post','large-creator','Viral')")
+        self.db.execute("UPDATE x_bot_reach SET bot_likes=2500000,bot_reposts=1700000 WHERE post_id='viral-post'")
+        counts=self.db.execute("SELECT bot_likes,bot_reposts FROM x_bot_reach WHERE post_id='viral-post'").fetchone()
+        self.assertEqual(counts,(2500000,1700000))
+        with self.assertRaises(sqlite3.IntegrityError):
+            self.db.execute("UPDATE x_bot_reach SET bot_likes=-1 WHERE post_id='viral-post'")
+        self.assertEqual(self.db.execute("SELECT bot_likes FROM x_bot_reach WHERE post_id='viral-post'").fetchone()[0],2500000)
     def test_bot_engagement_counts_as_half_real_engagement(self):
         self.db.execute("INSERT INTO x_profiles(id,user_id,handle,display_name,kind) VALUES('creator','a','creator-test','Creator','person'),('human','b','human-test','Human','person'),('bot',NULL,'bot-test','Bot','bot')")
         self.db.execute("INSERT INTO x_posts(id,profile_id,body) VALUES('post','creator','A test post')")
