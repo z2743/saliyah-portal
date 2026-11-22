@@ -12,6 +12,73 @@ const cookie=(req,t,max)=>`saliyah_session=${t}; HttpOnly; SameSite=Strict; Path
 async function audit(db,who,action,entity,id,details){await db.prepare('INSERT INTO audit_log (id,actor_id,action,entity_type,entity_id,details) VALUES (?,?,?,?,?,?)').bind(random(),who,action,entity,id,JSON.stringify(details||{})).run()}
 const ministries=[['الخارجية','كسلان بن زياد بن بندر العمري'],['الداخلية','قندس بن زياد بن بندر العمري'],['الدفاع','جدو بن جدون الجدي البطريقي'],['العدل','جدو بن جدون الجدي البطريقي'],['الطوارئ وإدارة الكوارث','جدو بن جدون الجدي البطريقي'],['الإعلام','جدو بن جدون الجدي البطريقي'],['شؤون المحافظات','جدو بن جدون الجدي البطريقي'],['المالية','أبو شخطه بن شخطون الشخطي الشيخطاني'],['الطاقة','أبو شخطه بن شخطون الشخطي الشيخطاني'],['التجارة','أبو شخطه بن شخطون الشخطي الشيخطاني'],['الصناعة','أبو شخطه بن شخطون الشخطي الشيخطاني'],['الاستثمار','جدو بن جدون الجدي البطريقي'],['التخطيط والتنمية','أبو شخطه بن شخطون الشخطي الشيخطاني'],['الثروة المعدنية','كوب بن زياد بن بندر العمري'],['الطاقة النووية','خرفون بن خروف الخرفي الخرفاني'],['الصحة','خرفون بن خروف الخرفي الخرفاني'],['التعليم','كوب بن زياد بن بندر العمري'],['الإسكان','أبو شخطه بن شخطون الشخطي الشيخطاني'],['الثقافة','جدو بن جدون الجدي البطريقي'],['السياحة','أبو شخطه بن شخطون الشخطي الشيخطاني'],['الرياضة','أبو شخطه بن شخطون الشخطي الشيخطاني'],['الموارد البشرية والتنمية الاجتماعية','خرفون بن خروف الخرفي الخرفاني'],['الأوقاف والشؤون الدينية','جدو بن جدون الجدي البطريقي'],['الشباب','خرفون بن خروف الخرفي الخرفاني'],['شؤون المستهلك','كوب بن زياد بن بندر العمري'],['الآثار والتراث','جدو بن جدون الجدي البطريقي'],['النقل والخدمات اللوجستية','خرفون بن خروف الخرفي الخرفاني'],['النقل البحري والموانئ','خرفون بن خروف الخرفي الخرفاني'],['الاتصالات وتقنية المعلومات','خرفون بن خروف الخرفي الخرفاني'],['اتصالات الفضاء','خرفون بن خروف الخرفي الخرفاني'],['البيئة والمياه والزراعة','أبو شخطه بن شخطون الشخطي الشيخطاني'],['الشؤون البلدية والقروية','خرفون بن خروف الخرفي الخرفاني'],['الأمن الغذائي','خرفون بن خروف الخرفي الخرفاني'],['الثروة الحيوانية والسمكية','كوب بن زياد بن بندر العمري'],['الإحصاء والتعداد','خرفون بن خروف الخرفي الخرفاني']].map(([name,minister],id)=>({id,name:'وزارة '+name,minister}));
 export default {async fetch(req,env){const u=new URL(req.url);if(!u.pathname.startsWith('/api/'))return env.ASSETS.fetch(req);try{if(!env.DB)return json({error:'Database binding missing'},503);const db=env.DB;const method=req.method;const path=u.pathname;const user=(path==='/api/auth/login'||path==='/api/setup/king'||path==='/api/setup/status'||path==='/api/setup/recover-owner'||path==='/api/auth/citizen/register')?null:await actor(req,db);if(method!=='GET'&&method!=='HEAD'){const origin=req.headers.get('origin');const site=req.headers.get('sec-fetch-site');if((origin&&origin!==u.origin)||(site&&site!=='same-origin'&&site!=='none'))return json({error:'مصدر الطلب غير مسموح'},403);}
+
+// X Al-Saliyah: profiles are bound to authenticated accounts; ministry verification
+// is granted only for a ministry assignment recorded by the government.
+if(path.startsWith('/api/x/')){
+ const profileFor=async()=>user?db.prepare('SELECT * FROM x_profiles WHERE user_id=?').bind(user.id).first():null;
+ if(method==='GET'&&path==='/api/x/feed'){
+  const rows=await db.prepare("SELECT p.id,p.body,p.reply_to,p.repost_of,p.created_at,a.id profile_id,a.handle,a.display_name,a.kind,a.verified,(SELECT COUNT(*) FROM x_likes l WHERE l.post_id=p.id) likes,(SELECT COUNT(*) FROM x_posts r WHERE r.reply_to=p.id) replies FROM x_posts p JOIN x_profiles a ON a.id=p.profile_id ORDER BY p.created_at DESC LIMIT 100").all();
+  const own=await profileFor();
+  return json({posts:rows.results,profile:own});
+ }
+ if(method==='GET'&&path==='/api/x/profile'){
+  const handle=u.searchParams.get('handle')||'';
+  const p=await db.prepare('SELECT id,handle,display_name,bio,kind,verified,created_at FROM x_profiles WHERE handle=?').bind(handle).first();
+  if(!p)return json({error:'الحساب غير موجود'},404);
+  const posts=await db.prepare('SELECT id,body,created_at,reply_to,repost_of FROM x_posts WHERE profile_id=? ORDER BY created_at DESC LIMIT 100').bind(p.id).all();
+  const followers=await db.prepare('SELECT COUNT(*) n FROM x_follows WHERE following_id=?').bind(p.id).first();
+  return json({profile:p,posts:posts.results,followers:followers.n});
+ }
+ if(!user)return json({error:'سجل الدخول لاستخدام إكس الصالية'},401);
+ if(method==='GET'&&path==='/api/x/ministries'){
+  const rows=await db.prepare('SELECT ministry_id FROM ministry_accounts WHERE user_id=?').bind(user.id).all();
+  return json({ministries:user.role==='king'?ministries:rows.results.map(x=>ministries[x.ministry_id]).filter(Boolean)});
+ }
+ if(method==='POST'&&path==='/api/x/account'){
+  const b=await input(req);if(!b)return json({error:'بيانات ناقصة'},400);
+  const existing=await profileFor();if(existing)return json({error:'لديك حساب بالفعل'},409);
+  const ministryId=b.ministry_id===undefined||b.ministry_id===null?null:Number(b.ministry_id);
+  const official=ministryId!==null;
+  if(official){
+   if(!Number.isInteger(ministryId)||!ministries[ministryId])return json({error:'وزارة غير صحيحة'},400);
+   if(user.role!=='king'){
+    const allowed=await db.prepare('SELECT ministry_id FROM ministry_accounts WHERE user_id=? AND ministry_id=?').bind(user.id,ministryId).first();
+    if(!allowed)return json({error:'لا تملك صلاحية تمثيل هذه الوزارة'},403);
+   }
+  }
+  const handle=official?'ministry_'+ministryId:String(b.handle||'').trim().toLowerCase();
+  const displayName=official?ministries[ministryId].name:String(b.display_name||'').trim();
+  if(!/^[a-z0-9_]{3,24}$/.test(handle)||!validText(displayName,2,60))return json({error:'اسم المستخدم 3–24 حرف إنجليزي أو رقم أو شرطة سفلية، والاسم الظاهر 2–60 حرفاً'},400);
+  try{await db.prepare('INSERT INTO x_profiles(id,user_id,handle,display_name,kind,ministry_id,verified) VALUES(?,?,?,?,?,?,?)').bind(random(),user.id,handle,displayName,official?'ministry':'person',ministryId,official?1:0).run();}
+  catch{return json({error:'اسم الحساب مستخدم أو لدى الوزارة حساب موثق بالفعل'},409)}
+  return json({ok:true,verified:official});
+ }
+ const own=await profileFor();if(!own)return json({error:'أنشئ حساب إكس الصالية أولاً'},403);
+ if(method==='POST'&&path==='/api/x/post'){
+  const b=await input(req);if(!b||!validText(b.body,1,500))return json({error:'المنشور يجب أن يكون بين 1 و500 حرف'},400);
+  let parent=null;if(b.reply_to){parent=await db.prepare('SELECT id FROM x_posts WHERE id=?').bind(String(b.reply_to)).first();if(!parent)return json({error:'المنشور الأصلي غير موجود'},404)}
+  let repost=null;if(b.repost_of){repost=await db.prepare('SELECT id FROM x_posts WHERE id=?').bind(String(b.repost_of)).first();if(!repost)return json({error:'المنشور المراد إعادة نشره غير موجود'},404)}
+  const id=random();await db.prepare('INSERT INTO x_posts(id,profile_id,body,reply_to,repost_of) VALUES(?,?,?,?,?)').bind(id,own.id,b.body.trim(),parent?.id||null,repost?.id||null).run();
+  return json({id,ok:true},201);
+ }
+ if(method==='POST'&&path==='/api/x/like'){
+  const b=await input(req);const p=await db.prepare('SELECT id FROM x_posts WHERE id=?').bind(String(b?.post_id||'')).first();if(!p)return json({error:'المنشور غير موجود'},404);
+  const existing=await db.prepare('SELECT post_id FROM x_likes WHERE profile_id=? AND post_id=?').bind(own.id,p.id).first();
+  if(existing)await db.prepare('DELETE FROM x_likes WHERE profile_id=? AND post_id=?').bind(own.id,p.id).run();
+  else await db.prepare('INSERT INTO x_likes(profile_id,post_id) VALUES(?,?)').bind(own.id,p.id).run();
+  return json({liked:!existing});
+ }
+ if(method==='POST'&&path==='/api/x/follow'){
+  const b=await input(req);const target=await db.prepare('SELECT id FROM x_profiles WHERE handle=?').bind(String(b?.handle||'')).first();
+  if(!target||target.id===own.id)return json({error:'حساب غير صالح للمتابعة'},400);
+  const existing=await db.prepare('SELECT following_id FROM x_follows WHERE follower_id=? AND following_id=?').bind(own.id,target.id).first();
+  if(existing)await db.prepare('DELETE FROM x_follows WHERE follower_id=? AND following_id=?').bind(own.id,target.id).run();
+  else await db.prepare('INSERT INTO x_follows(follower_id,following_id) VALUES(?,?)').bind(own.id,target.id).run();
+  return json({following:!existing});
+ }
+ return json({error:'مسار غير موجود'},404);
+}
 if(method==='GET'&&path==='/api/public') {const news=await db.prepare('SELECT id,title,body,kind,created_at FROM news ORDER BY created_at DESC LIMIT 12').all();return json({ministries,governorates:[{id:'sajjadah',name:'السجادة',governor:'قندس بن زياد بن بندر العمري',description:'العاصمة · مدينة السجادة'},{id:'mutajjar',name:'المتجار',governor:'كوب بن زياد بن بندر العمري',description:'محافظة صناعية وتجارية'},{id:'aqar',name:'عقار',governor:'خرفون بن خروف الخرفي الخرفاني',description:'الأراضي والعقارات'}],news:news.results});}
 if(method==='GET'&&path==='/api/setup/status'){const row=await db.prepare("SELECT COUNT(*) n FROM users WHERE role='king'").first();return json({needsSetup:row.n===0});}
 if(method==='POST'&&path==='/api/setup/king'){const b=await input(req);if(!env.SETUP_SECRET||!b||b.setup_secret!==env.SETUP_SECRET)return json({error:'رمز التهيئة غير صحيح أو لم يتم إعداده'},403);if(!b||!validText(b.username,3,40)||!validText(b.password,12,128))return json({error:'اسم مستخدم 3-40 حرف وكلمة مرور 12-128 حرف'},400);if(!/^[a-z0-9_]+$/i.test(b.username))return json({error:'اسم المستخدم أحرف إنجليزية وأرقام وشرطة سفلية فقط'},400);const row=await db.prepare('SELECT COUNT(*) n FROM users').first();if(row.n!==0)return json({error:'التهيئة مغلقة'},403);const salt=random(),id=random();try{await db.prepare("INSERT INTO users(id,username,password_hash,salt,role) VALUES (?,?,?,?, 'king')").bind(id,b.username.toLowerCase(),await derive(b.password,salt),salt).run()}catch(err){console.error('setup_king_insert_failed',err instanceof Error?err.message:String(err));return json({error:'تعذر إنشاء الحساب'},409)}await audit(db,id,'setup_king','user',id,{});return json({ok:true});}
