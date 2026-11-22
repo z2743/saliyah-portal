@@ -131,7 +131,7 @@ async function runSaliyahGovernment(db){
  const adults=(await db.prepare("SELECT c.id FROM saliyah_sim_citizens c WHERE c.occupation<>'متوفى' AND NOT EXISTS(SELECT 1 FROM saliyah_sim_life_events e WHERE e.citizen_id=c.id AND e.kind='death') ORDER BY c.created_at LIMIT 100").all()).results;
  const propertyId='property-'+Math.floor(hour/6),seller=adults[hour%Math.max(1,adults.length)]?.id;
  if(seller){
-  await db.prepare("INSERT OR IGNORE INTO saliyah_sim_properties(id,owner_id,kind,location,price,status) VALUES(?,?,?,?,?,'listed')").bind(propertyId,seller,['شقة','فيلا','محل تجاري','أرض'][hour%4],['شقة','فيلا','أرض'].includes(['شقة','فيلا','محل تجاري','أرض'][hour%4])?'عقار':'المتجار',55000+(hour%9)*18000).run();
+  await db.prepare("INSERT OR IGNORE INTO saliyah_sim_properties(id,owner_id,kind,location,price,status) VALUES(?,?,?,?,?,'listed')").bind(propertyId,seller,['شقة','فيلا','محل تجاري','أرض'][hour%4],['شقة','فيلا','أرض'].includes(['شقة','فيلا','محل تجاري','أرض'][hour%4])?(Math.floor(hour/6)%2===0?'السجادة':'عقار'):'المتجار',55000+(hour%9)*18000).run();
  }
  const listed=await db.prepare("SELECT id,owner_id,price FROM saliyah_sim_properties WHERE status='listed' ORDER BY created_at LIMIT 1").first();
  if(listed&&adults.length>1){
