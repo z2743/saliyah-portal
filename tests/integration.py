@@ -55,6 +55,11 @@ class PortalIntegration(unittest.TestCase):
         with self.assertRaises(sqlite3.IntegrityError):
             self.db.execute("UPDATE x_bot_bank_accounts SET balance=-1 WHERE profile_id='x-sim-bot-0001'")
         self.assertEqual(self.db.execute("SELECT balance FROM x_bot_bank_accounts WHERE profile_id='x-sim-bot-0001'").fetchone()[0],700)
+        ledger=self.db.execute("SELECT amount,balance_after FROM x_bot_bank_ledger WHERE profile_id='x-sim-bot-0001'").fetchall()
+        self.assertEqual(ledger,[(700,700)])
+        with self.assertRaises(sqlite3.IntegrityError):
+            self.db.execute("DELETE FROM x_bot_bank_ledger WHERE profile_id='x-sim-bot-0001'")
+
     def test_bot_reach_can_exceed_one_million_without_negative_values(self):
         self.db.execute("INSERT INTO x_profiles(id,user_id,handle,display_name) VALUES('large-creator','a','large-creator','Creator')")
         self.db.execute("INSERT INTO x_posts(id,profile_id,body) VALUES('viral-post','large-creator','Viral')")
