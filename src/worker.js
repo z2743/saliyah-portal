@@ -138,13 +138,13 @@ if(path.startsWith('/api/enforcement/')){
   const b=await input(req);
   const target=String(b?.subject_identifier||'').trim();
   const action=String(b?.action||'');
-  const amount=Number(b?.amount||0);
+  const amount=action==='service_suspension'?0:Number(b?.amount||0);
   if(!validText(target,3,100)||!['debt','service_suspension','both'].includes(action)||!Number.isSafeInteger(amount)||amount<0||amount>100000000||((action==='debt'||action==='both')&&amount===0)||!validText(b?.reason,10,500)||!assigned.includes(Number(b?.ministry_id)))return json({error:'تحقق من اسم المستخدم أو رقم الوثيقة ونوع الإجراء والمبلغ والسبب والوزارة'},400);
   const subject=await db.prepare("SELECT u.id, (SELECT d.id FROM documents d JOIN citizen_profiles p ON p.document_id=d.id WHERE p.user_id=u.id ORDER BY d.created_at DESC LIMIT 1) document_id,(SELECT d.number FROM documents d JOIN citizen_profiles p ON p.document_id=d.id WHERE p.user_id=u.id ORDER BY d.created_at DESC LIMIT 1) document_number FROM users u WHERE lower(u.username)=lower(?) OR EXISTS(SELECT 1 FROM citizen_profiles p JOIN documents d ON d.id=p.document_id WHERE p.user_id=u.id AND (d.number=? OR d.id=?)) LIMIT 1").bind(target,target,target).first();
   if(!subject)return json({error:'لم يُعثر على مستخدم مرتبط بهذا الاسم أو رقم الوثيقة'},404);
   if(subject.id===user.id)return json({error:'لا يمكن فتح قضية على حسابك'},403);
   const id=random();
-  await db.prepare("INSERT INTO enforcement_cases(id,subject_user_id,document_id,residency_number,amount,reason,ministry_id,created_by,status,action) VALUES(?,?,?,?,?,?,?,?,'pending',?)").bind(id,subject.id,subject.document_id,subject.document_number||target,amount,b.reason.trim(),Number(b.ministry_id),user.id,action).run();
+  try{await db.prepare("INSERT INTO enforcement_cases(id,subject_user_id,document_id,residency_number,amount,reason,ministry_id,created_by,status,action) VALUES(?,?,?,?,?,?,?,?,'pending',?)").bind(id,subject.id,subject.document_id,subject.document_number||target,amount,b.reason.trim(),Number(b.ministry_id),user.id,action).run();}catch{return json({error:'تعذر تسجيل المعاملة. تحقق من تطبيق ترحيلات قاعدة البيانات أو تواصل مع الإدارة'},409)}
   await audit(db,user.id,'enforcement_case_opened','enforcement_case',id,{amount,action,ministry_id:Number(b.ministry_id)});
   return json({id,status:'pending'},201);
  }
