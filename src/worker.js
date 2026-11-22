@@ -464,6 +464,13 @@ if(path.startsWith('/api/x/')){
   const rows=await db.prepare("SELECT p.id,p.body,p.created_at,a.handle,a.display_name,a.kind,a.verified FROM x_posts p JOIN x_profiles a ON a.id=p.profile_id WHERE p.reply_to=? ORDER BY p.created_at ASC LIMIT 100").bind(id).all();
   return json({comments:rows.results});
  }
+ if(method==='GET'&&path==='/api/x/bot-directory'){
+  const page=Math.max(1,Math.min(10000,Number.parseInt(u.searchParams.get('page')||'1',10)||1));
+  const size=30;
+  const total=await db.prepare("SELECT COUNT(*) n FROM x_profiles WHERE kind='bot'").first();
+  const bots=await db.prepare("SELECT id,handle,display_name,bio,created_at FROM x_profiles WHERE kind='bot' ORDER BY handle LIMIT ? OFFSET ?").bind(size,(page-1)*size).all();
+  return json({bots:bots.results,pagination:{page,page_size:size,total:Number(total.n),pages:Math.ceil(Number(total.n)/size)},simulated:true});
+ }
  if(method==='GET'&&path==='/api/x/bot-comments'){
   const id=u.searchParams.get('post_id')||'';
   const parent=await db.prepare('SELECT id FROM x_posts WHERE id=?').bind(id).first();
