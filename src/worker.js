@@ -514,7 +514,24 @@ if(path.startsWith('/api/x/')){
   const period=Math.floor(Date.now()/259200000).toString();
   const paid=await db.prepare('SELECT id,amount,created_at FROM x_creator_payouts WHERE profile_id=? AND period=?').bind(own.id,period).first();
   const history=await db.prepare('SELECT period,amount,created_at FROM x_creator_payouts WHERE profile_id=? ORDER BY created_at DESC LIMIT 12').bind(own.id).all();
-  return json({stats,eligible,amount,period,paid:!!paid,history:history.results,requirements:{followers:10,likes:20,reposts:5},period_cap:null,unlimited_earnings:true,period_days:3,kind:own.kind});
+  const auto=await db.prepare('SELECT bank_account_id,enabled FROM x_creator_payout_preferences WHERE profile_id=? AND user_id=?').bind(own.id,user.id).first();
+  return json({stats,eligible,amount,period,paid:!!paid,auto_payout:auto?{enabled:!!auto.enabled,bank_account_id:auto.bank_account_id}:{enabled:false},history:history.results,requirements:{followers:10,likes:20,reposts:5},period_cap:null,unlimited_earnings:true,period_days:3,kind:own.kind});
+ }
+ if(method==='POST'&&path==='/api/x/earnings/auto'){
+  if(!user)return json({error:'سجل الدخول أولاً'},401);
+  const own=await profileFor();
+  if(!own||own.kind!=='person')return json({error:'للحسابات الشخصية فقط'},403);
+  const b=await input(req);
+  if(!b||typeof b.enabled!=='boolean')return json({error:'حدد تفعيل الصرف التلقائي أو إيقافه'},400);
+  if(b.enabled){
+   if(!validText(b.bank_account_id,10,80))return json({error:'اختر حسابك البنكي'},400);
+   const account=await db.prepare('SELECT id FROM bank_accounts WHERE id=? AND user_id=?').bind(b.bank_account_id,user.id).first();
+   if(!account)return json({error:'الحساب البنكي لا يخصك'},403);
+   await db.prepare("INSERT INTO x_creator_payout_preferences(profile_id,user_id,bank_account_id,enabled) VALUES(?,?,?,1) ON CONFLICT(profile_id) DO UPDATE SET bank_account_id=excluded.bank_account_id,user_id=excluded.user_id,enabled=1,updated_at=CURRENT_TIMESTAMP").bind(own.id,user.id,account.id).run();
+  }else{
+   await db.prepare("UPDATE x_creator_payout_preferences SET enabled=0,updated_at=CURRENT_TIMESTAMP WHERE profile_id=? AND user_id=?").bind(own.id,user.id).run();
+  }
+  return json({ok:true,enabled:b.enabled});
  }
  if(method==='POST'&&path==='/api/x/earnings/claim'){
   if(!user)return json({error:'سجل الدخول أولاً'},401);
