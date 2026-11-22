@@ -128,12 +128,12 @@ if(method==='POST'&&path==='/api/security/revoke-others'){
 // Service suspension applies only to new optional transactions; login, viewing records,
 // complaints, courts, payments and account access remain available.
 if(user && method==='POST' && (path.startsWith('/api/absher/') || path.startsWith('/api/commerce/') || path.startsWith('/api/land/'))){
- const hold=await db.prepare("SELECT id FROM service_suspensions WHERE subject_user_id=? AND status='active' LIMIT 1").bind(user.id).first();
+ const hold=await db.prepare("SELECT id FROM service_suspensions_v2 WHERE subject_user_id=? AND status='active' LIMIT 1").bind(user.id).first();
  if(hold)return json({error:'بعض الخدمات الاختيارية موقوفة بقرار إداري. يمكنك مراجعة القرار وتقديم طلب رفع الإيقاف.',code:'SERVICE_SUSPENDED'},403);
 }
 if(method==='GET'&&path==='/api/enforcement/my-status'){
  if(!user)return json({error:'تسجيل الدخول مطلوب'},401);
- const r=await db.prepare("SELECT id,reason,created_at,ended_at,status FROM service_suspensions WHERE subject_user_id=? ORDER BY created_at DESC LIMIT 20").bind(user.id).all();
+ const r=await db.prepare("SELECT id,reason,created_at,ended_at,status FROM service_suspensions_v2 WHERE subject_user_id=? ORDER BY created_at DESC LIMIT 20").bind(user.id).all();
  return json({suspensions:r.results,active:r.results.some(x=>x.status==='active')});
 }
 // Scoped administrative case workflow. Decisions are recorded, not executed against balances or documents.
@@ -142,8 +142,8 @@ if(path.startsWith('/api/enforcement/')){
  const assigned=user.role==='king'?[1,3,7]:(await db.prepare('SELECT ministry_id FROM ministry_accounts WHERE user_id=? AND ministry_id IN (1,3,7)').bind(user.id).all()).results.map(x=>x.ministry_id);
  if(!assigned.length)return json({error:'الخدمة للملك ووزارات الداخلية والعدل والمالية'},403);
  if(method==='GET'&&path==='/api/enforcement/cases'){
-  const r=await db.prepare("SELECT e.*,u.username subject_username FROM enforcement_cases e JOIN users u ON u.id=e.subject_user_id ORDER BY e.created_at DESC LIMIT 100").all();
-  const h=await db.prepare("SELECT s.*,u.username subject_username FROM service_suspensions s JOIN users u ON u.id=s.subject_user_id ORDER BY s.created_at DESC LIMIT 100").all();
+  const r=await db.prepare("SELECT e.*,u.username subject_username FROM enforcement_cases_v2 e JOIN users u ON u.id=e.subject_user_id ORDER BY e.created_at DESC LIMIT 100").all();
+  const h=await db.prepare("SELECT s.*,u.username subject_username FROM service_suspensions_v2 s JOIN users u ON u.id=s.subject_user_id ORDER BY s.created_at DESC LIMIT 100").all();
   const cases=user.role==='king'?r.results:r.results.filter(x=>assigned.includes(x.ministry_id));
   const suspensions=user.role==='king'?h.results:h.results.filter(x=>assigned.includes(x.ministry_id));
   return json({cases,suspensions,ministries:assigned});
@@ -158,18 +158,18 @@ if(path.startsWith('/api/enforcement/')){
   if(!subject)return json({error:'لم يُعثر على مستخدم مرتبط بهذا الاسم أو رقم الوثيقة'},404);
   if(subject.id===user.id)return json({error:'لا يمكن فتح قضية على حسابك'},403);
   const id=random();
-  try{await db.prepare("INSERT INTO enforcement_cases(id,subject_user_id,document_id,residency_number,amount,reason,ministry_id,created_by,status,action) VALUES(?,?,?,?,?,?,?,?,'pending',?)").bind(id,subject.id,subject.document_id,subject.document_number||target,amount,b.reason.trim(),Number(b.ministry_id),user.id,action).run();}catch{return json({error:'تعذر تسجيل المعاملة. تحقق من تطبيق ترحيلات قاعدة البيانات أو تواصل مع الإدارة'},409)}
+  try{await db.prepare("INSERT INTO enforcement_cases_v2(id,subject_user_id,document_id,residency_number,amount,reason,ministry_id,created_by,status,action) VALUES(?,?,?,?,?,?,?,?,'pending',?)").bind(id,subject.id,subject.document_id,subject.document_number||target,amount,b.reason.trim(),Number(b.ministry_id),user.id,action).run();}catch{return json({error:'تعذر تسجيل المعاملة. تحقق من تطبيق ترحيلات قاعدة البيانات أو تواصل مع الإدارة'},409)}
   await audit(db,user.id,'enforcement_case_opened','enforcement_case',id,{amount,action,ministry_id:Number(b.ministry_id)});
   return json({id,status:'pending'},201);
  }
  if(method==='POST'&&path==='/api/enforcement/decision'){
   if(user.role!=='king')return json({error:'القرار النهائي للملك فقط'},403);
   const b=await input(req);if(!b||!validText(b.id,10,80)||!['approved','rejected'].includes(b.decision))return json({error:'قرار غير صالح'},400);
-  const c=await db.prepare("SELECT * FROM enforcement_cases WHERE id=? AND status='pending'").bind(b.id).first();
+  const c=await db.prepare("SELECT * FROM enforcement_cases_v2 WHERE id=? AND status='pending'").bind(b.id).first();
   if(!c)return json({error:'القضية غير موجودة أو صدر قرار سابق'},409);
-  const updates=[db.prepare("UPDATE enforcement_cases SET status=?,decided_by=?,decided_at=CURRENT_TIMESTAMP WHERE id=? AND status='pending'").bind(b.decision,user.id,b.id)];
+  const updates=[db.prepare("UPDATE enforcement_cases_v2 SET status=?,decided_by=?,decided_at=CURRENT_TIMESTAMP WHERE id=? AND status='pending'").bind(b.decision,user.id,b.id)];
   const suspend=b.decision==='approved'&&['service_suspension','both'].includes(c.action);
-  if(suspend)updates.push(db.prepare("INSERT INTO service_suspensions(id,case_id,subject_user_id,reason,status,created_by) VALUES(?,?,?,?,'active',?)").bind(random(),c.id,c.subject_user_id,c.reason,user.id));
+  if(suspend)updates.push(db.prepare("INSERT INTO service_suspensions_v2(id,case_id,subject_user_id,ministry_id,reason,status,created_by) VALUES(?,?,?,?,?,'active',?)").bind(random(),c.id,c.subject_user_id,c.ministry_id,c.reason,user.id));
   try{await db.batch(updates)}catch{return json({error:'تعذر اعتماد القرار. تحقق من جاهزية جداول الإيقاف'},409)}
   await audit(db,user.id,'enforcement_case_decision','enforcement_case',b.id,{decision:b.decision,suspension_activated:suspend});
   return json({status:b.decision,suspension_activated:suspend,note:suspend?'تم تفعيل إيقاف الخدمات الاختيارية المحددة':'تم تسجيل القرار'});
@@ -177,7 +177,7 @@ if(path.startsWith('/api/enforcement/')){
  if(method==='POST'&&path==='/api/enforcement/lift'){
   if(user.role!=='king')return json({error:'رفع الإيقاف للملك فقط'},403);
   const b=await input(req);if(!validText(b?.id,10,80)||!validText(b?.reason,5,500))return json({error:'حدد الإيقاف وسبب الرفع'},400);
-  const r=await db.prepare("UPDATE service_suspensions SET status='lifted',ended_at=CURRENT_TIMESTAMP,ended_by=?,lift_reason=? WHERE id=? AND status='active'").bind(user.id,b.reason.trim(),b.id).run();
+  const r=await db.prepare("UPDATE service_suspensions_v2 SET status='lifted',ended_at=CURRENT_TIMESTAMP,ended_by=?,lift_reason=? WHERE id=? AND status='active'").bind(user.id,b.reason.trim(),b.id).run();
   if(!r.meta.changes)return json({error:'الإيقاف غير موجود أو مرفوع مسبقًا'},409);
   await audit(db,user.id,'service_suspension_lifted','service_suspension',b.id,{reason:b.reason.trim()});
   return json({status:'lifted'});
@@ -208,9 +208,9 @@ if(method==='GET'&&path==='/api/admin/readiness'){
  };
  await structural('transfer_debit_credit','مشغل تحويل الأموال','SELECT COUNT(*) n FROM sqlite_master WHERE type=\'trigger\' AND name=\'bank_transfer_apply\'');
  await structural('transfer_guard','حماية التحويل من السحب الزائد','SELECT COUNT(*) n FROM sqlite_master WHERE type=\'trigger\' AND name=\'bank_transfer_validate\'');
- await structural('enforcement_actions','حقل أنواع إجراءات المديونيات','SELECT COUNT(*) n FROM pragma_table_info(\'enforcement_cases\') WHERE name=\'action\'');
- await structural('enforcement_zero_amount','دعم إيقاف الخدمات بدون مديونية',"SELECT COUNT(*) n FROM sqlite_master WHERE type='table' AND name='enforcement_cases' AND sql LIKE '%amount>=0%'");
- await structural('enforcement_optional_document','دعم المستخدمين دون وثيقة',"SELECT COUNT(*) n FROM pragma_table_info('enforcement_cases') WHERE name='document_id' AND [notnull]=0");
+ await structural('enforcement_actions','حقل أنواع إجراءات المديونيات','SELECT COUNT(*) n FROM pragma_table_info(\'enforcement_cases_v2\') WHERE name=\'action\'');
+ await structural('enforcement_zero_amount','دعم إيقاف الخدمات بدون مديونية',"SELECT COUNT(*) n FROM sqlite_master WHERE type='table' AND name='enforcement_cases_v2' AND sql LIKE '%amount>=0%'");
+ await structural('enforcement_optional_document','دعم المستخدمين دون وثيقة',"SELECT COUNT(*) n FROM pragma_table_info('enforcement_cases_v2') WHERE name='document_id' AND [notnull]=0");
  return json({checks,bindings:{database:true,assets:!!env.ASSETS,court_files:!!env.COURT_FILES},
   environment:'فحص بنيوي محدود؛ لا يثبت الأمان أو نجاح العمليات أو جاهزية الإطلاق',
   ready_for_public_launch:false});
