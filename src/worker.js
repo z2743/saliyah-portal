@@ -175,7 +175,7 @@ async function generateXBotActivity(db){
   await db.prepare('INSERT OR IGNORE INTO x_likes(profile_id,post_id) VALUES(?,?)').bind(bot,p.id).run();
  }
 }
-export default {async scheduled(event,env,ctx){ctx.waitUntil(Promise.all([generateXBotActivity(env.DB),runSaliyahGovernment(env.DB)]))},async fetch(req,env){const u=new URL(req.url);if(!u.pathname.startsWith('/api/'))return env.ASSETS.fetch(req);try{if(!env.DB)return json({error:'Database binding missing'},503);const db=env.DB;const method=req.method;const path=u.pathname;const user=(path==='/api/auth/login'||path==='/api/setup/king'||path==='/api/setup/status'||path==='/api/setup/recover-owner'||path==='/api/auth/citizen/register')?null:await actor(req,db);if(method!=='GET'&&method!=='HEAD'){const origin=req.headers.get('origin');const site=req.headers.get('sec-fetch-site');if((origin&&origin!==u.origin)||(site&&site!=='same-origin'&&site!=='none'))return json({error:'مصدر الطلب غير مسموح'},403);}
+export default {async scheduled(event,env,ctx){ctx.waitUntil(Promise.allSettled([generateXBotActivity(env.DB),runSaliyahGovernment(env.DB)]))},async fetch(req,env){const u=new URL(req.url);if(!u.pathname.startsWith('/api/'))return env.ASSETS.fetch(req);try{if(!env.DB)return json({error:'Database binding missing'},503);const db=env.DB;const method=req.method;const path=u.pathname;const user=(path==='/api/auth/login'||path==='/api/setup/king'||path==='/api/setup/status'||path==='/api/setup/recover-owner'||path==='/api/auth/citizen/register')?null:await actor(req,db);if(method!=='GET'&&method!=='HEAD'){const origin=req.headers.get('origin');const site=req.headers.get('sec-fetch-site');if((origin&&origin!==u.origin)||(site&&site!=='same-origin'&&site!=='none'))return json({error:'مصدر الطلب غير مسموح'},403);}
 
 // X Al-Saliyah: profiles are bound to authenticated accounts; ministry verification
 // is granted only for a ministry assignment recorded by the government.
@@ -377,6 +377,15 @@ if(method==='GET'&&path==='/api/simulation/security'){
   db.prepare("SELECT t.id,t.judge,t.verdict,t.status,t.created_at,i.allegation FROM saliyah_sim_trials t JOIN saliyah_sim_incidents i ON i.id=t.incident_id ORDER BY t.created_at DESC LIMIT 50").all()
  ]);
  return json({simulation:true,border_events:borders.results,police_incidents:incidents.results,trials:trials.results});
+}
+if(method==='POST'&&path==='/api/admin/simulation/run'){
+ if(!user||user.role!=='king')return json({error:'للملك فقط'},403);
+ const now=Math.floor(Date.now()/3600000);
+ const previous=await db.prepare("SELECT value FROM saliyah_sim_settings WHERE key='last_manual_run'").first();
+ if(previous&&Number(previous.value)===now)return json({error:'تم تشغيل المحاكاة يدويًا هذه الساعة، انتظر الساعة التالية'},429);
+ await db.prepare("INSERT INTO saliyah_sim_settings(key,value) VALUES('last_manual_run',?) ON CONFLICT(key) DO UPDATE SET value=excluded.value").bind(String(now)).run();
+ try{await runSaliyahGovernment(db);await audit(db,user.id,'simulation_manual_run','simulation',String(now),{hour:now});return json({ok:true,hour:now});}
+ catch(e){return json({error:'تعذر إكمال دورة المحاكاة',detail:String(e.message||e).slice(0,180)},500)}
 }
 if(method==='GET'&&path==='/api/admin/simulation/companies'){
  if(!user||user.role!=='king')return json({error:'للملك فقط'},403);
