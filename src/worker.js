@@ -52,6 +52,9 @@ async function runSaliyahGovernment(db){
    db.prepare("UPDATE saliyah_sim_companies SET payroll_weeks=? WHERE id=?").bind(nextWeeks,company.id)
   ]);
  }
+ // Guard against overdrafts at the database layer. A rejected debit aborts
+ // the entire D1 batch, so the matching credit cannot be recorded alone.
+ await db.prepare("CREATE TRIGGER IF NOT EXISTS saliyah_sim_salary_funds_guard BEFORE INSERT ON saliyah_sim_bank_transactions WHEN NEW.kind='salary_debit' AND (NEW.amount>=0 OR NOT EXISTS(SELECT 1 FROM saliyah_sim_bank_accounts WHERE id=NEW.account_id AND balance>=-NEW.amount)) BEGIN SELECT RAISE(ABORT,'insufficient simulated salary funds'); END").run();
  // Weekly pay cycle starts on Monday, every second Monday for fortnightly companies.
  // D1 batch makes debit, credit and journal writes atomic; IDs prevent duplicates.
  const payrollWeek=(()=>{const d=new Date();const day=(d.getUTCDay()+6)%7;d.setUTCDate(d.getUTCDate()-day);return d.toISOString().slice(0,10)})();
@@ -60,7 +63,7 @@ async function runSaliyahGovernment(db){
   // Weekly salary; pay two weeks when the company selects a fortnightly cycle.
   const weeks=Number(job.payroll_weeks)===2?2:1;
   const amount=Math.floor(Number(job.salary)||0)*weeks;
-  if(amount<=0||Number(job.available)<amount)continue;
+  if(!Number.isSafeInteger(amount)||amount<=0||Number(job.available)<amount)continue;
   const weekIndex=Math.floor(Date.parse(payrollWeek+'T00:00:00Z')/604800000);
   if(weeks===2&&weekIndex%2!==0)continue;
   const transferId='salary-week-'+payrollWeek+'-'+job.job_id;
