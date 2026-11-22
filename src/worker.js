@@ -39,6 +39,13 @@ if(path.startsWith('/api/x/')){
   for(let i=0;i<binary.length;i++)bytes[i]=binary.charCodeAt(i);
   return new Response(bytes,{headers:{'content-type':media.mime_type,'cache-control':'public, max-age=3600','x-content-type-options':'nosniff','content-security-policy':"default-src 'none'; sandbox"}});
  }
+ if(method==='GET'&&path==='/api/x/comments'){
+  const id=u.searchParams.get('post_id')||'';
+  const parent=await db.prepare('SELECT id FROM x_posts WHERE id=?').bind(id).first();
+  if(!parent)return json({error:'المنشور غير موجود'},404);
+  const rows=await db.prepare("SELECT p.id,p.body,p.created_at,a.handle,a.display_name,a.kind,a.verified FROM x_posts p JOIN x_profiles a ON a.id=p.profile_id WHERE p.reply_to=? ORDER BY p.created_at ASC LIMIT 100").bind(id).all();
+  return json({comments:rows.results});
+ }
  if(method==='GET'&&path==='/api/x/bot-comments'){
   const id=u.searchParams.get('post_id')||'';
   const p=await db.prepare('SELECT p.id,p.body,p.created_at,b.created_at started FROM x_posts p JOIN x_bot_reach b ON b.post_id=p.id WHERE p.id=?').bind(id).first();
