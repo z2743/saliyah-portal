@@ -26,7 +26,7 @@ if(path.startsWith('/api/x/')){
  };
 
  if(method==='GET'&&path==='/api/x/feed'){
-  const rows=await db.prepare("SELECT p.id,p.body,p.reply_to,p.repost_of,p.created_at,a.id profile_id,a.handle,a.display_name,a.kind,a.verified,(SELECT COUNT(*) FROM x_likes l WHERE l.post_id=p.id)+(SELECT COALESCE(min(1000000,b.bot_likes+max(0,CAST((julianday('now')-julianday(b.created_at))*24 AS INTEGER))*2500),0) FROM x_bot_reach b WHERE b.post_id=p.id) likes,(SELECT COUNT(*) FROM x_posts r WHERE r.reply_to=p.id) replies FROM x_posts p JOIN x_profiles a ON a.id=p.profile_id ORDER BY p.created_at DESC LIMIT 100").all();
+  const rows=await db.prepare("SELECT p.id,p.body,p.reply_to,p.repost_of,p.created_at,a.id profile_id,a.handle,a.display_name,a.kind,a.verified,(SELECT COUNT(*) FROM x_likes l WHERE l.post_id=p.id)+(SELECT COALESCE(min(1000000,CAST((max(0,julianday('now')-julianday(b.created_at))*max(0,julianday('now')-julianday(b.created_at))*1250)+(b.bot_likes*min(1,max(0,julianday('now')-julianday(b.created_at))/3)) AS INTEGER)),0) FROM x_bot_reach b WHERE b.post_id=p.id) likes,(SELECT COUNT(*) FROM x_posts r WHERE r.reply_to=p.id) replies FROM x_posts p JOIN x_profiles a ON a.id=p.profile_id ORDER BY p.created_at DESC LIMIT 100").all();
   const own=await profileFor();
   return json({posts:rows.results,profile:own});
  }
