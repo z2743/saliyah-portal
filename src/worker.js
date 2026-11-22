@@ -332,7 +332,11 @@ async function checkSimulationHealth(db){
   ['orphan_job_applications',"SELECT COUNT(*) n FROM saliyah_sim_job_applications a LEFT JOIN saliyah_sim_citizens c ON c.id=a.citizen_id LEFT JOIN saliyah_sim_jobs j ON j.id=a.job_id WHERE c.id IS NULL OR j.id IS NULL"],
   ['duplicate_hires',"SELECT COUNT(*) n FROM (SELECT job_id FROM saliyah_sim_job_applications WHERE status='hired' GROUP BY job_id HAVING COUNT(*)>1)"],
   ['orphan_children',"SELECT COUNT(*) n FROM saliyah_sim_children c LEFT JOIN saliyah_sim_marriages m ON m.id=c.marriage_id WHERE m.id IS NULL"],
-  ['orphan_posts',"SELECT COUNT(*) n FROM x_posts p LEFT JOIN x_profiles x ON x.id=p.profile_id WHERE x.id IS NULL"]
+  ['orphan_posts',"SELECT COUNT(*) n FROM x_posts p LEFT JOIN x_profiles x ON x.id=p.profile_id WHERE x.id IS NULL"],
+  ['orphan_sim_bank_accounts',"SELECT COUNT(*) n FROM saliyah_sim_bank_accounts a LEFT JOIN saliyah_sim_citizens c ON a.owner_type='citizen' AND a.owner_id=c.id LEFT JOIN saliyah_sim_companies b ON a.owner_type='company' AND a.owner_id=b.id WHERE (a.owner_type='citizen' AND c.id IS NULL) OR (a.owner_type='company' AND b.id IS NULL)"],
+  ['orphan_sim_bank_transactions',"SELECT COUNT(*) n FROM saliyah_sim_bank_transactions t LEFT JOIN saliyah_sim_bank_accounts a ON a.id=t.account_id WHERE a.id IS NULL"],
+  ['unbalanced_sim_payroll',"SELECT COUNT(*) n FROM (SELECT substr(id,1,length(id)-4) ref,SUM(amount) amount,COUNT(*) entries FROM saliyah_sim_bank_transactions WHERE kind IN ('salary_debit','salary_credit') GROUP BY substr(id,1,length(id)-4) HAVING amount<>0 OR entries<>2)"],
+  ['negative_sim_balances',"SELECT COUNT(*) n FROM saliyah_sim_bank_accounts WHERE balance<0"]
  ];
  const problems={};
  for(const [name,sql] of checks){const row=await db.prepare(sql).first();if(Number(row?.n||0)>0)problems[name]=Number(row.n)}
