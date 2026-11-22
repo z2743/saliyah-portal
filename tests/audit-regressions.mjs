@@ -1,0 +1,14 @@
+import assert from 'node:assert/strict';
+import {readFileSync,readdirSync} from 'node:fs';
+const read=p=>readFileSync(new URL('../'+p,import.meta.url),'utf8');
+const worker=read('src/worker.js');
+const sql=read('migrations/0061_single_debt_collection_trigger.sql');
+const payout=read('migrations/0062_uncapped_creator_payouts.sql');
+assert.match(sql,/DROP TRIGGER IF EXISTS debt_collect_on_credit/);
+assert.match(payout,/amount INTEGER NOT NULL CHECK\(amount>=0\)/);
+assert.doesNotMatch(payout,/amount BETWEEN 0 AND 500/);
+assert.match(worker,/ORDER BY random\(\) LIMIT 500/);
+assert.match(worker,/date\(a\.created_at\)<=date\(\?\)/);
+const migrations=readdirSync(new URL('../migrations/',import.meta.url)).filter(n=>n.endsWith('.sql'));
+assert.equal(migrations.length,new Set(migrations).size);
+console.log('PASS audit regression source checks');
