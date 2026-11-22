@@ -330,7 +330,7 @@ if(path.startsWith('/api/justice24/')){
  const judge=await can('justice');
  if(method==='GET'&&path==='/api/justice24/orders'){
   const caseId=u.searchParams.get('case_id');if(!validText(caseId,10,80))return json({error:'معرّف القضية غير صالح'},400);
-  const allowed=await db.prepare(`SELECT 1 FROM court_cases c WHERE c.id=? AND (?=1 OR c.plaintiff_id=? OR c.defendant_id=? OR EXISTS(SELECT 1 FROM court_counsel cc WHERE cc.case_id=c.id AND cc.lawyer_id=? AND cc.status='accepted'))`).bind(caseId,judge?1:0,user.id,user.id,user.id).first();
+  const allowed=await db.prepare(`SELECT 1 FROM court_cases c WHERE c.id=? AND (?=1 OR c.plaintiff_id=? OR c.defendant_id=? OR EXISTS(SELECT 1 FROM court_counsel cc WHERE cc.case_id=c.id AND cc.lawyer_id=? AND cc.status='accepted' AND EXISTS(SELECT 1 FROM court_lawyers cl WHERE cl.user_id=cc.lawyer_id AND cl.status='active')))`).bind(caseId,judge?1:0,user.id,user.id,user.id).first();
   if(!allowed)return json({error:'القضية غير موجودة أو غير مصرح بها'},404);
   const execution=await db.prepare('SELECT id,status,instructions,last_note,created_at FROM judgment_executions WHERE case_id=?').bind(caseId).first();
   const orders=await db.prepare('SELECT o.id,o.action,o.reason,o.created_at,u.username issuer FROM court_execution_orders o JOIN users u ON u.id=o.issued_by WHERE o.case_id=? ORDER BY o.created_at DESC,o.id DESC LIMIT 200').bind(caseId).all();
@@ -349,7 +349,7 @@ if(path.startsWith('/api/justice24/')){
 // Phase 23: independent appeal chamber and immutable rulings for fictional cases.
 if(path.startsWith('/api/justice23/')){
  const chamber=await can('appeals');
- const permitted=async caseId=>!!(await db.prepare(`SELECT 1 FROM court_cases c WHERE c.id=? AND (?=1 OR c.plaintiff_id=? OR c.defendant_id=? OR EXISTS(SELECT 1 FROM court_counsel cc WHERE cc.case_id=c.id AND cc.lawyer_id=? AND cc.status='accepted'))`).bind(caseId,chamber?1:0,user.id,user.id,user.id).first());
+ const permitted=async caseId=>!!(await db.prepare(`SELECT 1 FROM court_cases c WHERE c.id=? AND (?=1 OR c.plaintiff_id=? OR c.defendant_id=? OR EXISTS(SELECT 1 FROM court_counsel cc WHERE cc.case_id=c.id AND cc.lawyer_id=? AND cc.status='accepted' AND EXISTS(SELECT 1 FROM court_lawyers cl WHERE cl.user_id=cc.lawyer_id AND cl.status='active')))`).bind(caseId,chamber?1:0,user.id,user.id,user.id).first());
  if(method==='GET'&&path==='/api/justice23/docket'){
   const caseId=u.searchParams.get('case_id');if(!validText(caseId,10,80)||!await permitted(caseId))return json({error:'القضية غير موجودة أو غير مصرح بها'},404);
   const appeals=await db.prepare(`SELECT a.id,a.status,a.reason,a.created_at,a.appellant_id,u.username appellant FROM court_appeals a JOIN users u ON u.id=a.appellant_id WHERE a.case_id=? ORDER BY a.created_at DESC`).bind(caseId).all();
@@ -382,7 +382,7 @@ if(path.startsWith('/api/justice23/')){
 if(method==='GET'&&path==='/api/justice22/timeline'){
  const caseId=u.searchParams.get('case_id');if(!validText(caseId,10,80))return json({error:'معرف القضية غير صالح'},400);
  const judge=await can('justice');
- const c=await db.prepare(`SELECT c.id,c.reference,c.title,c.status,c.created_at,c.updated_at FROM court_cases c WHERE c.id=? AND (?=1 OR c.plaintiff_id=? OR c.defendant_id=? OR EXISTS(SELECT 1 FROM court_counsel cc WHERE cc.case_id=c.id AND cc.lawyer_id=? AND cc.status='accepted'))`).bind(caseId,judge?1:0,user.id,user.id,user.id).first();
+ const c=await db.prepare(`SELECT c.id,c.reference,c.title,c.status,c.created_at,c.updated_at FROM court_cases c WHERE c.id=? AND (?=1 OR c.plaintiff_id=? OR c.defendant_id=? OR EXISTS(SELECT 1 FROM court_counsel cc WHERE cc.case_id=c.id AND cc.lawyer_id=? AND cc.status='accepted' AND EXISTS(SELECT 1 FROM court_lawyers cl WHERE cl.user_id=cc.lawyer_id AND cl.status='active')))`).bind(caseId,judge?1:0,user.id,user.id,user.id).first();
  if(!c)return json({error:'القضية غير موجودة أو غير مصرح بها'},404);
  const sql=`SELECT 'case' source,id,'تسجيل إجراء قضائي' title,event_type||' — '||details detail,created_at FROM court_events WHERE case_id=?
  UNION ALL SELECT 'hearing',id,'جلسة قضائية',location||' — '||COALESCE(notes,''),created_at FROM court_hearings WHERE case_id=?
@@ -401,7 +401,7 @@ if(method==='GET'&&path==='/api/justice22/timeline'){
 // Phase 42: private small case attachments stored in D1, without R2.
 if(path.startsWith('/api/justice21/')){
  const judge=await can('justice');
- const permitted=async id=>!!(await db.prepare(`SELECT 1 FROM court_cases c WHERE c.id=? AND (?=1 OR c.plaintiff_id=? OR c.defendant_id=? OR EXISTS(SELECT 1 FROM court_counsel cc WHERE cc.case_id=c.id AND cc.lawyer_id=? AND cc.status='accepted'))`).bind(id,judge?1:0,user.id,user.id,user.id).first());
+ const permitted=async id=>!!(await db.prepare(`SELECT 1 FROM court_cases c WHERE c.id=? AND (?=1 OR c.plaintiff_id=? OR c.defendant_id=? OR EXISTS(SELECT 1 FROM court_counsel cc WHERE cc.case_id=c.id AND cc.lawyer_id=? AND cc.status='accepted' AND EXISTS(SELECT 1 FROM court_lawyers cl WHERE cl.user_id=cc.lawyer_id AND cl.status='active')))`).bind(id,judge?1:0,user.id,user.id,user.id).first());
  if(method==='GET'&&path==='/api/justice21/files'){
   const caseId=u.searchParams.get('case_id');if(!validText(caseId,10,80)||!await permitted(caseId))return json({error:'القضية غير موجودة أو غير مصرح بها'},404);
   const r=await db.prepare('SELECT id,title,filename,mime_type,byte_size,sha256,created_at FROM court_attachments WHERE case_id=? ORDER BY created_at DESC LIMIT 100').bind(caseId).all();return json({files:r.results});
@@ -444,7 +444,7 @@ if(path.startsWith('/api/justice20/')){
  const judge=await can('justice');
  if(method==='GET'&&path==='/api/justice20/addenda'){
   const caseId=u.searchParams.get('case_id');if(!validText(caseId,10,80))return json({error:'معرف القضية غير صالح'},400);
-  const allowed=await db.prepare(`SELECT 1 FROM court_cases c WHERE c.id=? AND (?=1 OR c.plaintiff_id=? OR c.defendant_id=? OR EXISTS(SELECT 1 FROM court_counsel cc WHERE cc.case_id=c.id AND cc.lawyer_id=? AND cc.status='accepted'))`).bind(caseId,judge?1:0,user.id,user.id,user.id).first();
+  const allowed=await db.prepare(`SELECT 1 FROM court_cases c WHERE c.id=? AND (?=1 OR c.plaintiff_id=? OR c.defendant_id=? OR EXISTS(SELECT 1 FROM court_counsel cc WHERE cc.case_id=c.id AND cc.lawyer_id=? AND cc.status='accepted' AND EXISTS(SELECT 1 FROM court_lawyers cl WHERE cl.user_id=cc.lawyer_id AND cl.status='active')))`).bind(caseId,judge?1:0,user.id,user.id,user.id).first();
   if(!allowed)return json({error:'القضية غير موجودة أو غير مصرح بها'},404);
   const rows=await db.prepare(`SELECT a.id,a.minute_id,a.reason,a.correction,a.created_at,u.username author FROM court_minutes_addenda a JOIN court_hearing_minutes m ON m.id=a.minute_id JOIN court_hearings h ON h.id=m.hearing_id JOIN users u ON u.id=a.created_by WHERE h.case_id=? ORDER BY a.created_at,a.id LIMIT 200`).bind(caseId).all();
   return json({addenda:rows.results,can_manage:judge});
@@ -462,7 +462,7 @@ if(path.startsWith('/api/justice20/')){
 // Phase 19: hearing minutes with court-only creation and case-scoped reads.
 if(path.startsWith('/api/justice19/')){
  const judge=await can('justice');
- const permitted=async id=>!!(await db.prepare(`SELECT 1 FROM court_cases c WHERE c.id=? AND (?=1 OR c.plaintiff_id=? OR c.defendant_id=? OR EXISTS(SELECT 1 FROM court_counsel cc WHERE cc.case_id=c.id AND cc.lawyer_id=? AND cc.status='accepted'))`).bind(id,judge?1:0,user.id,user.id,user.id).first());
+ const permitted=async id=>!!(await db.prepare(`SELECT 1 FROM court_cases c WHERE c.id=? AND (?=1 OR c.plaintiff_id=? OR c.defendant_id=? OR EXISTS(SELECT 1 FROM court_counsel cc WHERE cc.case_id=c.id AND cc.lawyer_id=? AND cc.status='accepted' AND EXISTS(SELECT 1 FROM court_lawyers cl WHERE cl.user_id=cc.lawyer_id AND cl.status='active')))`).bind(id,judge?1:0,user.id,user.id,user.id).first());
  if(method==='GET'&&path==='/api/justice19/minutes'){
   const caseId=u.searchParams.get('case_id');if(!validText(caseId,10,80)||!await permitted(caseId))return json({error:'القضية غير موجودة أو غير مصرح بها'},404);
   const r=await db.prepare(`SELECT m.id,m.hearing_id,m.summary,m.attendees,m.next_steps,m.created_at,h.starts_at,h.location,a.username author FROM court_hearing_minutes m JOIN court_hearings h ON h.id=m.hearing_id JOIN users a ON a.id=m.created_by WHERE h.case_id=? ORDER BY h.starts_at DESC LIMIT 100`).bind(caseId).all();
@@ -481,7 +481,7 @@ if(path.startsWith('/api/justice19/')){
 // Phase 18: written court submissions; access checked per case on every request.
 if(path.startsWith('/api/justice18/')){
  const judge=await can('justice');
- const permitted=async id=>db.prepare(`SELECT c.id FROM court_cases c WHERE c.id=? AND (?=1 OR c.plaintiff_id=? OR c.defendant_id=? OR EXISTS (SELECT 1 FROM court_counsel cc WHERE cc.case_id=c.id AND cc.lawyer_id=? AND cc.status='accepted'))`).bind(id,judge?1:0,user.id,user.id,user.id).first();
+ const permitted=async id=>db.prepare(`SELECT c.id FROM court_cases c WHERE c.id=? AND (?=1 OR c.plaintiff_id=? OR c.defendant_id=? OR EXISTS (SELECT 1 FROM court_counsel cc WHERE cc.case_id=c.id AND cc.lawyer_id=? AND cc.status='accepted' AND EXISTS(SELECT 1 FROM court_lawyers cl WHERE cl.user_id=cc.lawyer_id AND cl.status='active')))`).bind(id,judge?1:0,user.id,user.id,user.id).first();
  if(method==='GET'&&path==='/api/justice18/submissions'){
   const id=u.searchParams.get('case_id');if(!validText(id,10,80)||!await permitted(id))return json({error:'القضية غير موجودة أو غير مصرح بها'},404);
   const r=await db.prepare('SELECT s.id,s.kind,s.title,s.body,s.status,s.review_note,s.created_at,s.reviewed_at,a.username author FROM court_submissions s JOIN users a ON a.id=s.author_id WHERE s.case_id=? ORDER BY s.created_at DESC LIMIT 100').bind(id).all();return json({submissions:r.results,can_review:judge});
@@ -504,7 +504,7 @@ if(path.startsWith('/api/justice18/')){
 // Phase 17: prosecution, evidence descriptions and execution orders.
 if(path.startsWith('/api/justice17/')){
  const judge=await can('justice'),officer=await can('police');
- const caseAccess=async id=>judge||!!(await db.prepare(`SELECT 1 FROM court_cases c WHERE c.id=? AND (c.plaintiff_id=? OR c.defendant_id=? OR EXISTS(SELECT 1 FROM court_counsel cc WHERE cc.case_id=c.id AND cc.lawyer_id=? AND cc.status='accepted'))`).bind(id,user.id,user.id,user.id).first());
+ const caseAccess=async id=>judge||!!(await db.prepare(`SELECT 1 FROM court_cases c WHERE c.id=? AND (c.plaintiff_id=? OR c.defendant_id=? OR EXISTS(SELECT 1 FROM court_counsel cc WHERE cc.case_id=c.id AND cc.lawyer_id=? AND cc.status='accepted' AND EXISTS(SELECT 1 FROM court_lawyers cl WHERE cl.user_id=cc.lawyer_id AND cl.status='active')))`).bind(id,user.id,user.id,user.id).first());
  if(method==='GET'&&path==='/api/justice17/referrals'){
   if(!judge&&!officer)return json({error:'صلاحية الشرطة أو القضاء مطلوبة'},403);
   const r=await db.prepare('SELECT r.*,p.reference report_reference,p.title report_title FROM prosecution_referrals r JOIN police_reports p ON p.id=r.report_id ORDER BY r.created_at DESC LIMIT 100').all();return json({referrals:r.results,judge,officer});
@@ -531,7 +531,7 @@ if(path.startsWith('/api/justice17/')){
   const id=random();await db.prepare('INSERT INTO justice_evidence(id,case_id,submitted_by,title,description) VALUES(?,?,?,?,?)').bind(id,b.case_id,user.id,b.title.trim(),b.description.trim()).run();await audit(db,user.id,'court_evidence_note','court_case',b.case_id,{evidence_id:id});return json({id},201);
  }
  if(method==='GET'&&path==='/api/justice17/executions'){
-  const r=judge?await db.prepare('SELECT e.*,c.reference FROM judgment_executions e JOIN court_cases c ON c.id=e.case_id ORDER BY e.created_at DESC LIMIT 100').all():await db.prepare(`SELECT e.*,c.reference FROM judgment_executions e JOIN court_cases c ON c.id=e.case_id WHERE c.plaintiff_id=? OR c.defendant_id=? OR EXISTS(SELECT 1 FROM court_counsel cc WHERE cc.case_id=c.id AND cc.lawyer_id=? AND cc.status='accepted') ORDER BY e.created_at DESC LIMIT 100`).bind(user.id,user.id,user.id).all();return json({executions:r.results,can_manage:judge});
+  const r=judge?await db.prepare('SELECT e.*,c.reference FROM judgment_executions e JOIN court_cases c ON c.id=e.case_id ORDER BY e.created_at DESC LIMIT 100').all():await db.prepare(`SELECT e.*,c.reference FROM judgment_executions e JOIN court_cases c ON c.id=e.case_id WHERE c.plaintiff_id=? OR c.defendant_id=? OR EXISTS(SELECT 1 FROM court_counsel cc WHERE cc.case_id=c.id AND cc.lawyer_id=? AND cc.status='accepted' AND EXISTS(SELECT 1 FROM court_lawyers cl WHERE cl.user_id=cc.lawyer_id AND cl.status='active')) ORDER BY e.created_at DESC LIMIT 100`).bind(user.id,user.id,user.id).all();return json({executions:r.results,can_manage:judge});
  }
  if(method==='POST'&&path==='/api/justice17/executions'){
   if(!judge)return json({error:'صلاحية القضاء مطلوبة'},403);const b=await input(req);if(!b||!validText(b.case_id,10,80)||!validText(b.instructions,10,3000))return json({error:'بيانات التنفيذ ناقصة'},400);
@@ -577,11 +577,11 @@ if(path.startsWith('/api/justice16/')){
 // Phase 15: court case access is enforced on the server; no public docket.
 if(path.startsWith('/api/courts/')){
  const judge=await can('justice');
- const involved=async id=>db.prepare(`SELECT c.* FROM court_cases c WHERE c.id=? AND (c.plaintiff_id=? OR c.defendant_id=? OR EXISTS (SELECT 1 FROM court_counsel cc WHERE cc.case_id=c.id AND cc.lawyer_id=? AND cc.status='accepted'))`).bind(id,user.id,user.id,user.id).first();
+ const involved=async id=>db.prepare(`SELECT c.* FROM court_cases c WHERE c.id=? AND (c.plaintiff_id=? OR c.defendant_id=? OR EXISTS (SELECT 1 FROM court_counsel cc WHERE cc.case_id=c.id AND cc.lawyer_id=? AND cc.status='accepted' AND EXISTS(SELECT 1 FROM court_lawyers cl WHERE cl.user_id=cc.lawyer_id AND cl.status='active')))`).bind(id,user.id,user.id,user.id).first();
  const permitted=async id=>judge?db.prepare('SELECT * FROM court_cases WHERE id=?').bind(id).first():involved(id);
  const event=async(id,type,details)=>db.prepare('INSERT INTO court_events(id,case_id,actor_id,event_type,details) VALUES(?,?,?,?,?)').bind(random(),id,user.id,type,details).run();
  if(method==='GET'&&path==='/api/courts/list'){
-  const r=judge?await db.prepare('SELECT c.id,c.reference,c.title,c.kind,c.status,c.created_at FROM court_cases c ORDER BY c.created_at DESC LIMIT 100').all():await db.prepare(`SELECT DISTINCT c.id,c.reference,c.title,c.kind,c.status,c.created_at FROM court_cases c LEFT JOIN court_counsel cc ON cc.case_id=c.id AND cc.lawyer_id=? AND cc.status='accepted' WHERE c.plaintiff_id=? OR c.defendant_id=? OR cc.lawyer_id=? ORDER BY c.created_at DESC LIMIT 100`).bind(user.id,user.id,user.id,user.id).all();
+  const r=judge?await db.prepare('SELECT c.id,c.reference,c.title,c.kind,c.status,c.created_at FROM court_cases c ORDER BY c.created_at DESC LIMIT 100').all():await db.prepare(`SELECT DISTINCT c.id,c.reference,c.title,c.kind,c.status,c.created_at FROM court_cases c LEFT JOIN court_counsel cc ON cc.case_id=c.id AND cc.lawyer_id=? AND cc.status='accepted' AND EXISTS(SELECT 1 FROM court_lawyers cl WHERE cl.user_id=cc.lawyer_id AND cl.status='active') WHERE c.plaintiff_id=? OR c.defendant_id=? OR cc.lawyer_id=? ORDER BY c.created_at DESC LIMIT 100`).bind(user.id,user.id,user.id,user.id).all();
   const lawyers=await db.prepare("SELECT user_id,display_name FROM court_lawyers WHERE status='active' ORDER BY display_name LIMIT 100").all();
   const mine=await db.prepare('SELECT status,license_number FROM court_lawyers WHERE user_id=?').bind(user.id).first();
   return json({cases:r.results,lawyers:lawyers.results,my_lawyer:mine,can_manage:judge});
@@ -628,7 +628,7 @@ if(path.startsWith('/api/courts/')){
  }
  if(method==='POST'&&path==='/api/courts/manage'){
   if(!judge)return json({error:'غير مخول'},403);const b=await input(req);if(!b||!validText(b.case_id,10,80)||!['review','scheduled','heard','judged','closed'].includes(b.status)||!validText(b.note,3,3000))return json({error:'القرار أو الملاحظات غير صالحة'},400);
-  const c=await db.prepare('SELECT status FROM court_cases WHERE id=?').bind(b.case_id).first();if(!c)return json({error:'القضية غير موجودة'},404);
+  const c=await db.prepare('SELECT status FROM court_cases WHERE id=?').bind(b.case_id).first();if(!c)return json({error:'القضية غير موجودة'},404);const transitions={filed:['review','closed'],review:['scheduled','closed'],scheduled:['heard','closed'],heard:['judged','scheduled','closed'],judged:['closed'],closed:[]};if(!transitions[c.status]?.includes(b.status))return json({error:'انتقال حالة القضية غير مسموح؛ اتبع مراحل النظر والحكم'},409);
   if(b.status==='judged'&&!validText(b.judgment,10,5000))return json({error:'نص الحكم مطلوب'},400);
   const r=await db.prepare("UPDATE court_cases SET status=?,judgment=CASE WHEN ?='judged' THEN ? ELSE judgment END,updated_at=CURRENT_TIMESTAMP WHERE id=? AND status=?").bind(b.status,b.status,b.status==='judged'?b.judgment.trim():null,b.case_id,c.status).run();if(!r.meta.changes)return json({error:'تغيرت حالة القضية؛ أعد التحميل'},409);
   await event(b.case_id,b.status,b.note.trim());await audit(db,user.id,'court_decision','court_case',b.case_id,{from:c.status,to:b.status});return json({ok:true});
