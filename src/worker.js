@@ -43,23 +43,27 @@ if(method==='POST'&&path==='/api/auth/login'){let loginStage='input';try{const b
  loginStage='session_creation';await db.prepare('DELETE FROM login_throttles WHERE login_key=?').bind(loginKey).run();const token=random()+random(),expires=new Date(Date.now()+8*3600*1000).toISOString().replace('T',' ').slice(0,19);await db.prepare('INSERT INTO sessions(token_hash,user_id,expires_at) VALUES(?,?,?)').bind(await hash(token),found.id,expires).run();loginStage='audit';await audit(db,found.id,'login','session',null,{});return json({ok:true,role:found.role},200,{'set-cookie':cookie(req,token,28800)});}catch(err){console.error('login_failure_stage',loginStage,err instanceof Error?err.message:String(err));return json({error:'خطأ داخلي في الخادم',stage:loginStage,code:err instanceof Error?err.name:'RuntimeError'},500);}}
 if(method==='POST'&&path==='/api/auth/logout'){const t=(req.headers.get('cookie')||'').match(/saliyah_session=([a-f0-9-]+)/)?.[1];if(t)await db.prepare('DELETE FROM sessions WHERE token_hash=?').bind(await hash(t)).run();return json({ok:true},200,{'set-cookie':cookie(req,'',0)});}
 // Ministry accounts are isolated by ministry ID. No cross-ministry service permissions.
+if(method==='GET'&&path==='/api/admin/ministries/roster'){
+ if(!user||user.role!=='king')return json({error:'للملك فقط'},403);
+ const ministers=[...new Set(ministries.map(m=>m.minister))];
+ const rows=(await db.prepare('SELECT m.ministry_id,u.username FROM ministry_accounts m JOIN users u ON u.id=m.user_id').all()).results;
+ return json({ministers:ministers.map((name,i)=>({id:i,name,username:['kaslan_alomari','qondos_alomari','jeddo_albatreeqi','abu_shakhta','koob_alomari','kharfoon_alkharafi'][i],ministries:ministries.filter(m=>m.minister===name).map(m=>m.name),created:rows.some(r=>ministries[r.ministry_id]?.minister===name)}))});
+}
 if(method==='POST'&&path==='/api/admin/ministries/provision'){
  if(!user||user.role!=='king')return json({error:'للملك فقط'},403);
- const created=[];
+ const b=await input(req);
  const ministers=[...new Set(ministries.map(m=>m.minister))];
- for(let i=0;i<ministers.length;i++){
-  const owned=ministries.filter(m=>m.minister===ministers[i]);
-  const existing=await db.prepare('SELECT m.user_id,u.username FROM ministry_accounts m JOIN users u ON u.id=m.user_id WHERE m.ministry_id=?').bind(owned[0].id).first();
-  let id=existing?.user_id,username=existing?.username,password=null;
-  if(!id){username=["kaslan_alomari","qondos_alomari","jeddo_albatreeqi","abu_shakhta","koob_alomari","kharfoon_alkharafi"][i];password=crypto.randomUUID().replace(/-/g,'')+crypto.randomUUID().replace(/-/g,'').slice(0,8);id=random();const salt=random();await db.prepare("INSERT INTO users(id,username,password_hash,salt,role) VALUES(?,?,?,?,'employee')").bind(id,username,await derive(password,salt),salt).run();}
-  for(const m of owned){
-   const assigned=await db.prepare('SELECT user_id FROM ministry_accounts WHERE ministry_id=?').bind(m.id).first();
-   if(assigned&&assigned.user_id!==id)continue;
-   if(!assigned)await db.prepare('INSERT INTO ministry_accounts(ministry_id,user_id) VALUES(?,?)').bind(m.id,id).run();
-  }
-  if(password){created.push({minister:ministers[i],ministries:owned.map(m=>m.name),username,password});await audit(db,user.id,'provision_minister','user',id,{ministries:owned.map(m=>m.id)});}
- }
- return json({created,count:created.length,note:'حساب واحد لكل وزير وصلاحيات وزاراته فقط؛ احفظ كلمات المرور الآن'});
+ if(!b||!Number.isInteger(b.minister_id)||b.minister_id<0||b.minister_id>=ministers.length||typeof b.password!=='string'||b.password.length<12||b.password.length>128)return json({error:'اختر الوزير وكلمة مرور من 12 إلى 128 حرفًا'},400);
+ const owned=ministries.filter(m=>m.minister===ministers[b.minister_id]);
+ const username=['kaslan_alomari','qondos_alomari','jeddo_albatreeqi','abu_shakhta','koob_alomari','kharfoon_alkharafi'][b.minister_id];
+ const existing=await db.prepare('SELECT m.user_id FROM ministry_accounts m WHERE m.ministry_id=?').bind(owned[0].id).first();
+ if(existing)return json({error:'حساب هذا الوزير موجود بالفعل؛ لا يمكن استبدال كلمة مروره من شاشة الإنشاء'},409);
+ if(await db.prepare('SELECT id FROM users WHERE username=?').bind(username).first())return json({error:'اسم المستخدم موجود بالفعل'},409);
+ const id=random(),salt=random();
+ await db.prepare("INSERT INTO users(id,username,password_hash,salt,role) VALUES(?,?,?,?,'employee')").bind(id,username,await derive(b.password,salt),salt).run();
+ for(const m of owned)await db.prepare('INSERT INTO ministry_accounts(ministry_id,user_id) VALUES(?,?)').bind(m.id,id).run();
+ await audit(db,user.id,'provision_minister','user',id,{ministries:owned.map(m=>m.id)});
+ return json({created:true,minister:ministers[b.minister_id],username,ministries:owned.map(m=>m.name)});
 }
 if(method==='GET'&&path==='/api/ministries/accounts'){
  if(!user||user.role!=='king')return json({error:'للملك فقط'},403);
