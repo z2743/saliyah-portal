@@ -58,7 +58,7 @@ async function runSaliyahGovernment(db){
  // Weekly pay cycle starts on Monday, every second Monday for fortnightly companies.
  // D1 batch makes debit, credit and journal writes atomic; IDs prevent duplicates.
  const payrollWeek=(()=>{const d=new Date();const day=(d.getUTCDay()+6)%7;d.setUTCDate(d.getUTCDate()-day);return d.toISOString().slice(0,10)})();
- const payroll=(await db.prepare("SELECT j.id job_id,j.salary,j.company_id,c.payroll_weeks,a.citizen_id,co.id payer,ci.id payee,co.balance available FROM saliyah_sim_jobs j JOIN saliyah_sim_companies c ON c.id=j.company_id JOIN saliyah_sim_job_applications a ON a.job_id=j.id AND a.status='hired' JOIN saliyah_sim_bank_accounts co ON co.owner_type='company' AND co.owner_id=j.company_id JOIN saliyah_sim_bank_accounts ci ON ci.owner_type='citizen' AND ci.owner_id=a.citizen_id WHERE j.salary>0 ORDER BY j.id LIMIT 500").all()).results;
+ const payroll=(await db.prepare("SELECT j.id job_id,j.salary,j.company_id,c.payroll_weeks,a.citizen_id,co.id payer,ci.id payee,co.balance available FROM saliyah_sim_jobs j JOIN saliyah_sim_companies c ON c.id=j.company_id JOIN saliyah_sim_job_applications a ON a.job_id=j.id AND a.status='hired' JOIN saliyah_sim_bank_accounts co ON co.owner_type='company' AND co.owner_id=j.company_id JOIN saliyah_sim_bank_accounts ci ON ci.owner_type='citizen' AND ci.owner_id=a.citizen_id WHERE j.salary>0 ORDER BY random() LIMIT 500").all()).results;
  for(const job of payroll){
   // Weekly salary; pay two weeks when the company selects a fortnightly cycle.
   const weeks=Number(job.payroll_weeks)===2?2:1;
