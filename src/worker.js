@@ -484,6 +484,12 @@ if(path.startsWith('/api/x/')){
   const rows=await db.prepare("SELECT p.id,p.body,p.created_at,a.handle,a.display_name,a.kind,a.verified FROM x_posts p JOIN x_profiles a ON a.id=p.profile_id WHERE p.reply_to=? ORDER BY p.created_at ASC LIMIT 100").bind(id).all();
   return json({comments:rows.results});
  }
+ if(method==='GET'&&path==='/api/admin/x/bot-bank-ledger'){
+  if(!user||user.role!=='king')return json({error:'للملك فقط'},403);
+  const q=(u.searchParams.get('account_number')||'').trim().slice(0,80);
+  const rows=await db.prepare("SELECT l.id,l.account_number,p.display_name,p.handle,l.amount,l.balance_after,l.created_at FROM x_bot_bank_ledger l JOIN x_profiles p ON p.id=l.profile_id WHERE (?='' OR l.account_number=?) ORDER BY l.id DESC LIMIT 100").bind(q,q).all();
+  return json({transactions:rows.results,simulated:true});
+ }
  if(method==='GET'&&path==='/api/admin/x/bot-bank-accounts'){
   if(!user||user.role!=='king')return json({error:'للملك فقط'},403);
   const page=Math.max(1,Math.min(10000,Number.parseInt(u.searchParams.get('page')||'1',10)||1));
