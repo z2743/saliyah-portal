@@ -38,6 +38,12 @@ async function runSaliyahGovernment(db){
  ];
  const slotCompany=Math.floor(hour/8),venture=ventures[slotCompany%ventures.length],companyId='sim-company-'+slotCompany;
  await db.prepare("INSERT OR IGNORE INTO saliyah_sim_companies(id,founder_id,name,activity,location,description,capital,status) VALUES(?,?,?,?,?,?,?,'pending_human')").bind(companyId,'citizen-'+(hour*3),...venture).run();
+ // Employers can automatically process fictional applicants for approved companies only.
+ const pendingApplications=(await db.prepare("SELECT a.id,a.citizen_id,a.job_id FROM saliyah_sim_job_applications a JOIN saliyah_sim_jobs j ON j.id=a.job_id JOIN saliyah_sim_companies c ON c.id=j.company_id WHERE a.status='applied' AND c.status='approved' ORDER BY a.created_at LIMIT 15").all()).results;
+ for(const a of pendingApplications){
+  await db.prepare("UPDATE saliyah_sim_job_applications SET status='hired',decided_at=CURRENT_TIMESTAMP WHERE id=? AND status='applied'").bind(a.id).run();
+  await db.prepare("UPDATE saliyah_sim_citizens SET occupation='موظف' WHERE id=?").bind(a.citizen_id).run();
+ }
  // Once a human approves a fictional business, it can hire simulated workers autonomously.
  const approved=(await db.prepare("SELECT id FROM saliyah_sim_companies WHERE status='approved' ORDER BY created_at DESC LIMIT 15").all()).results;
  for(const c of approved){
@@ -49,6 +55,14 @@ async function runSaliyahGovernment(db){
  for(let i=0;i<3;i++){
   const seq=hour*3+i, id='citizen-'+seq, name=citizens[seq%citizens.length]+' الصالي';
   await db.prepare("INSERT OR IGNORE INTO saliyah_sim_citizens(id,name,occupation,created_at) VALUES(?,?,?,CURRENT_TIMESTAMP)").bind(id,name,['باحث عن عمل','طالب','تاجر','موظف'][seq%4]).run();
+  // Automated low-risk fictional identity record; no real citizen document is issued.
+  await db.prepare("INSERT OR IGNORE INTO saliyah_sim_identities(id,citizen_id,status,issued_at,expires_at) VALUES(?,?,'issued',CURRENT_TIMESTAMP,datetime('now','+14 days'))").bind('sim-id-'+seq,id).run();
+  const openJob=await db.prepare("SELECT id FROM saliyah_sim_jobs WHERE status='open' ORDER BY created_at DESC LIMIT 1").first();
+  if(openJob){
+   const applicationId='sim-application-'+seq;
+   await db.prepare("INSERT OR IGNORE INTO saliyah_sim_job_applications(id,citizen_id,job_id,status) VALUES(?,?,?,'applied')").bind(applicationId,id,openJob.id).run();
+  }
+
  }
 }
 // Clearly labelled simulated activity: bot accounts never impersonate ministries or publish real decrees.
