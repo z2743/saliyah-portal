@@ -156,8 +156,8 @@ async function generateXBotActivity(db){
  'هل تفضلون منشورات قصيرة أو شروحات طويلة عن خدمات الموقع؟'
  ];
  // Create a large, clearly marked fictional population in one batch, rather than one request per bot.
- await db.prepare("WITH RECURSIVE seq(n) AS (SELECT 1 UNION ALL SELECT n+1 FROM seq WHERE n<2000) INSERT OR IGNORE INTO x_profiles(id,user_id,handle,display_name,bio,kind,verified) SELECT 'x-sim-bot-'+printf('%04d',n),NULL,'saliyah_bot_'+printf('%04d',n),'مواطن صالي آلي '+n+' 🤖','حساب محاكاة آلي؛ ليس شخصًا حقيقيًا أو جهة رسمية','bot',0 FROM seq").run();
- const botIds=Array.from({length:2000},(_,i)=>'x-sim-bot-'+String(i+1).padStart(4,'0'));
+ await db.prepare("WITH RECURSIVE seq(n) AS (SELECT 1 UNION ALL SELECT n+1 FROM seq WHERE n<1999) INSERT OR IGNORE INTO x_profiles(id,user_id,handle,display_name,bio,kind,verified) SELECT 'x-sim-bot-'+printf('%04d',n),NULL,'saliyah_bot_'+printf('%04d',n),'مواطن صالي آلي '+n+' 🤖','حساب محاكاة آلي؛ ليس شخصًا حقيقيًا أو جهة رسمية','bot',0 FROM seq").run();
+ const botIds=Array.from({length:1999},(_,i)=>'x-sim-bot-'+String(i+1).padStart(4,'0'));
  const now=Math.floor(Date.now()/3600000);
  // Idempotent per hour, safe if the scheduled job is retried.
  for(let i=0;i<36;i++){
