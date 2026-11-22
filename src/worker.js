@@ -58,28 +58,36 @@ async function runSaliyahGovernment(db){
  // Weekly pay cycle starts on Monday, every second Monday for fortnightly companies.
  // D1 batch makes debit, credit and journal writes atomic; IDs prevent duplicates.
  const payrollWeek=(()=>{const d=new Date();const day=(d.getUTCDay()+6)%7;d.setUTCDate(d.getUTCDate()-day);return d.toISOString().slice(0,10)})();
- const payroll=(await db.prepare("SELECT j.id job_id,j.salary,j.company_id,c.payroll_weeks,a.citizen_id,co.id payer,ci.id payee,co.balance available FROM saliyah_sim_jobs j JOIN saliyah_sim_companies c ON c.id=j.company_id JOIN saliyah_sim_job_applications a ON a.job_id=j.id AND a.status='hired' JOIN saliyah_sim_bank_accounts co ON co.owner_type='company' AND co.owner_id=j.company_id JOIN saliyah_sim_bank_accounts ci ON ci.owner_type='citizen' AND ci.owner_id=a.citizen_id WHERE j.salary>0 ORDER BY random() LIMIT 500").all()).results;
+ // Backfill up to eight completed weekly periods, including missed payroll runs.
+ // Payment IDs remain deterministic per employee and period to avoid double payments.
+ const payroll=(await db.prepare("SELECT j.id job_id,j.salary,j.company_id,c.payroll_weeks,a.citizen_id,a.created_at hired_at,co.id payer,ci.id payee FROM saliyah_sim_jobs j JOIN saliyah_sim_companies c ON c.id=j.company_id JOIN saliyah_sim_job_applications a ON a.job_id=j.id AND a.status='hired' JOIN saliyah_sim_bank_accounts co ON co.owner_type='company' AND co.owner_id=j.company_id JOIN saliyah_sim_bank_accounts ci ON ci.owner_type='citizen' AND ci.owner_id=a.citizen_id WHERE j.salary>0 AND c.status='approved' ORDER BY random() LIMIT 500").all()).results;
  for(const job of payroll){
-  // Weekly salary; pay two weeks when the company selects a fortnightly cycle.
   const weeks=Number(job.payroll_weeks)===2?2:1;
   const amount=Math.floor(Number(job.salary)||0)*weeks;
-  if(!Number.isSafeInteger(amount)||amount<=0||Number(job.available)<amount)continue;
-  const weekIndex=Math.floor(Date.parse(payrollWeek+'T00:00:00Z')/604800000);
-  if(weeks===2&&weekIndex%2!==0)continue;
-  const transferId='salary-week-'+payrollWeek+'-'+job.job_id;
-  if(await db.prepare("SELECT 1 FROM saliyah_sim_bank_transactions WHERE id=?").bind(transferId+'-out').first())continue;
-  try{
-   await db.batch([
-    db.prepare("INSERT INTO saliyah_sim_bank_transactions(id,account_id,kind,amount,description,related_account_id) VALUES(?,?,'salary_debit',?,?,?)").bind(transferId+'-out',job.payer,-amount,'راتب '+(weeks===2?'كل أسبوعين':'أسبوعي')+' افتراضي '+payrollWeek,job.payee),
-    db.prepare("UPDATE saliyah_sim_bank_accounts SET balance=balance-? WHERE id=? AND balance>=?").bind(amount,job.payer,amount),
-    db.prepare("UPDATE saliyah_sim_bank_accounts SET balance=balance+? WHERE id=?").bind(amount,job.payee),
-    db.prepare("INSERT INTO saliyah_sim_bank_transactions(id,account_id,kind,amount,description,related_account_id) VALUES(?,?,'salary_credit',?,?,?)").bind(transferId+'-in',job.payee,amount,'راتب '+(weeks===2?'كل أسبوعين':'أسبوعي')+' افتراضي '+payrollWeek,job.payer)
-   ]);
-  }catch(e){console.error('simulated_payroll_failed',transferId,String(e));}
+  if(!Number.isSafeInteger(amount)||amount<=0)continue;
+  for(let offset=8;offset>=1;offset--){
+   const date=new Date(payrollWeek+'T00:00:00Z');
+   date.setUTCDate(date.getUTCDate()-offset*7);
+   const period=date.toISOString().slice(0,10);
+   const weekIndex=Math.floor(date.getTime()/604800000);
+   if(weeks===2&&weekIndex%2!==0)continue;
+   const hired=Date.parse(job.hired_at);
+   if(Number.isFinite(hired)&&hired>date.getTime())continue;
+   const transferId='salary-week-'+period+'-'+job.job_id;
+   if(await db.prepare("SELECT 1 FROM saliyah_sim_bank_transactions WHERE id=?").bind(transferId+'-in').first())continue;
+   try{
+    await db.batch([
+     db.prepare("INSERT INTO saliyah_sim_bank_transactions(id,account_id,kind,amount,description,related_account_id) SELECT ?,?,'salary_debit',?,?,? WHERE EXISTS(SELECT 1 FROM saliyah_sim_bank_accounts WHERE id=? AND balance>=?)").bind(transferId+'-out',job.payer,-amount,'راتب افتراضي '+period,job.payee,job.payer,amount),
+     db.prepare("UPDATE saliyah_sim_bank_accounts SET balance=balance-? WHERE id=? AND balance>=?").bind(amount,job.payer,amount),
+     db.prepare("UPDATE saliyah_sim_bank_accounts SET balance=balance+? WHERE id=? AND EXISTS(SELECT 1 FROM saliyah_sim_bank_transactions WHERE id=?)").bind(amount,job.payee,transferId+'-out'),
+     db.prepare("INSERT INTO saliyah_sim_bank_transactions(id,account_id,kind,amount,description,related_account_id) SELECT ?,?,'salary_credit',?,?,? WHERE EXISTS(SELECT 1 FROM saliyah_sim_bank_transactions WHERE id=?)").bind(transferId+'-in',job.payee,amount,'راتب افتراضي '+period,job.payer,transferId+'-out')
+    ]);
+   }catch(e){console.error('simulated_payroll_failed',transferId,String(e));break;}
+  }
  }
- // Automatic labor complaints for overdue fictional wages, one case per employee and period.
+ // Automatic labor claims only for a completed, unpaid period after employment.
  await db.prepare("CREATE TABLE IF NOT EXISTS saliyah_sim_labor_cases(id TEXT PRIMARY KEY,job_id TEXT NOT NULL,company_id TEXT NOT NULL,citizen_id TEXT NOT NULL,period_start TEXT NOT NULL,amount INTEGER NOT NULL CHECK(amount>0),reason TEXT NOT NULL,status TEXT NOT NULL DEFAULT 'pending' CHECK(status IN ('pending','under_review','resolved','rejected')),filed_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,resolved_at TEXT,UNIQUE(job_id,citizen_id,period_start))").run();
- const dueWeek=(()=>{const d=new Date();d.setUTCDate(d.getUTCDate()-(d.getUTCDay()+6)%7-7);return d.toISOString().slice(0,10)})();
+ const dueWeek=(()=>{const d=new Date(payrollWeek+'T00:00:00Z');d.setUTCDate(d.getUTCDate()-7);return d.toISOString().slice(0,10)})();
  const dueIndex=Math.floor(Date.parse(dueWeek+'T00:00:00Z')/604800000);
  await db.prepare("INSERT OR IGNORE INTO saliyah_sim_labor_cases(id,job_id,company_id,citizen_id,period_start,amount,reason) SELECT 'labor-'||?||'-'||j.id||'-'||a.citizen_id,j.id,j.company_id,a.citizen_id,?,j.salary*CASE WHEN c.payroll_weeks=2 THEN 2 ELSE 1 END,'عدم استلام الراتب المستحق' FROM saliyah_sim_jobs j JOIN saliyah_sim_companies c ON c.id=j.company_id JOIN saliyah_sim_job_applications a ON a.job_id=j.id AND a.status='hired' WHERE c.status='approved' AND j.salary>0 AND date(a.created_at)<=date(?) AND (c.payroll_weeks=1 OR ?%2=0) AND NOT EXISTS(SELECT 1 FROM saliyah_sim_bank_transactions t WHERE t.id='salary-week-'||?||'-'||j.id||'-in')").bind(dueWeek,dueWeek,dueWeek,dueIndex,dueWeek).run();
  // Virtual legal profession: counsel for both sides and a separate court clerk.
