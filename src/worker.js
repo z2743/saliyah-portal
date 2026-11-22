@@ -48,13 +48,19 @@ if(path.startsWith('/api/x/')){
    }
   }
   const handle=official?'ministry_'+ministryId:String(b.handle||'').trim().toLowerCase();
+  if(!official && (/^ministry_\\d+$/.test(handle)||['king','government','official','chatgpt_saliyah'].includes(handle)))return json({error:'اسم الحساب محجوز للحسابات الرسمية'},403);
   const displayName=official?ministries[ministryId].name:String(b.display_name||'').trim();
+  if(!official && (/وزارة|هيئة حكومية|الديوان الملكي|الملك|الحكومة الصالية/.test(displayName)))return json({error:'الأسماء الحكومية محجوزة للحسابات الرسمية'},403);
   if(!/^[a-z0-9_]{3,24}$/.test(handle)||!validText(displayName,2,60))return json({error:'اسم المستخدم 3–24 حرف إنجليزي أو رقم أو شرطة سفلية، والاسم الظاهر 2–60 حرفاً'},400);
   try{await db.prepare('INSERT INTO x_profiles(id,user_id,handle,display_name,kind,ministry_id,verified) VALUES(?,?,?,?,?,?,?)').bind(random(),user.id,handle,displayName,official?'ministry':'person',ministryId,official?1:0).run();}
   catch{return json({error:'اسم الحساب مستخدم أو لدى الوزارة حساب موثق بالفعل'},409)}
   return json({ok:true,verified:official});
  }
  const own=await profileFor();if(!own)return json({error:'أنشئ حساب إكس الصالية أولاً'},403);
+ if(own.kind==='ministry' && user.role!=='king'){
+  const assigned=await db.prepare('SELECT ministry_id FROM ministry_accounts WHERE user_id=? AND ministry_id=?').bind(user.id,own.ministry_id).first();
+  if(!assigned)return json({error:'انتهت صلاحية إدارة الحساب الوزاري'},403);
+ }
  if(method==='POST'&&path==='/api/x/post'){
   const b=await input(req);if(!b||!validText(b.body,1,500))return json({error:'المنشور يجب أن يكون بين 1 و500 حرف'},400);
   let parent=null;if(b.reply_to){parent=await db.prepare('SELECT id FROM x_posts WHERE id=?').bind(String(b.reply_to)).first();if(!parent)return json({error:'المنشور الأصلي غير موجود'},404)}
