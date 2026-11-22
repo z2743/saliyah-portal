@@ -262,12 +262,14 @@ async function generateXBotActivity(db){
   ['هل التحويلات البنكية متاحة لجميع الحسابات؟','ياليت توضحون رسوم الخدمة وحدود التحويل.','هل الدفع يتم بالهلل الصالي من التطبيق؟'],
   ['وين موقع العقار وكم سعره؟','هل العقار في السجادة أو محافظة عقار؟','هل فيه تفاصيل عن المساحة وطريقة الشراء؟'],
   ['وش شروط التقديم على الوظيفة؟','هل التوظيف مفتوح لجميع المواطنين؟','كم الراتب وكيف أقدم؟'],
-  ['مبروك الخبر، متى يبدأ التنفيذ؟','هل فيه تفاصيل أكثر عن القرار؟','ننتظر التحديثات الرسمية عن الموضوع.']
+  ['مبروك الخبر، متى يبدأ التنفيذ؟','هل فيه تفاصيل أكثر عن القرار؟','ننتظر التحديثات الرسمية عن الموضوع.'],
+  ['أتمنى تطبيق يوضح حالة الطرق والزحام.','ياليت توفر الوزارة خدمة متابعة النقل العام ومواعيده.','أقترح خدمة إلكترونية لتجديد تصاريح النقل.']
  ];
  const followups=['شكرًا للتوضيح، بانتظار التفاصيل.','ممتاز، ياليت تنشرون الخطوات كاملة.','واضح، لكن متى يبدأ التطبيق؟'];
  const topicFor=body=>{
   const t=String(body||'');
   if(/فتحنا الحساب|حساب جديد|انضممنا|أول منشور|تابعونا/.test(t))return 0;
+  if(/وزارة النقل|نقل عام|مواصلات|طرق|سيارات|مرور|تاكسي/.test(t))return 7;
   if(/مدرس|جامع|تعليم|طلاب|دراس/.test(t))return 2;
   if(/بنك|تحويل|هلل|ريال|مصرف|دفع/.test(t))return 3;
   if(/عقار|شقة|فيلا|أرض|إيجار/.test(t))return 4;
@@ -285,7 +287,7 @@ async function generateXBotActivity(db){
   if(score(p.id,now+':comment:'+i)%100>=chance)continue;
   const bot=botIds[score(p.id,now+':commenter:'+i)%botIds.length];
   if(bot===p.profile_id)continue;
-  const theme=topicFor(p.body);if(theme<0)continue;
+  const theme=topicFor(p.body);if(theme<0||/إعادة نشر/.test(p.body))continue;
   const body=replies[theme][score(bot,p.id+':reply')%replies[theme].length];
   const replyId='sim-reply-'+now+'-'+i;
   await db.prepare("INSERT OR IGNORE INTO x_posts(id,profile_id,body,reply_to) VALUES(?,?,?,?)").bind(replyId,bot,body,p.id).run();
