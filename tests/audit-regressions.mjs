@@ -26,7 +26,7 @@ assert.match(worker,/runXCreatorAutoPayouts/);
 assert.match(worker,/\['x_rewards',runXCreatorAutoPayouts\]/);
 assert.match(worker,/INSERT OR IGNORE INTO x_creator_payouts/);
 assert.match(worker,/x_creator_payout_preferences/);
-assert.match(read('wrangler.toml'),/crons = \["0 \* \* \* \*"\]/);
+assert.match(read('wrangler.toml'),/crons = \["\*\/30 \* \* \* \*"\]/);
 assert.match(worker,/path==='\/api\/x\/earnings\/auto'/);
 assert.match(ui,/xBotProfile/);
 assert.match(ui,/x\/profile\?handle=/);
