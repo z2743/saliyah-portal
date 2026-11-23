@@ -432,7 +432,7 @@ export default {
    // Keep social activity every 30 minutes, but avoid exhausting the D1 free-tier reads.
    const jobs=[['x_bots',generateXBotActivity]];
    if(!halfHour && hour%6===0)jobs.push(['x_rewards',runXCreatorAutoPayouts]);
-   if(!halfHour && hour===0)jobs.push(['government',runSaliyahGovernment]);
+   if(!halfHour && hour%4===0)jobs.push(['government',runSaliyahGovernment]);
    for(const [name,fn] of jobs){
     try{
      await fn(env.DB);
@@ -447,7 +447,7 @@ export default {
      }catch(logError){console.error('simulation_log_failed',logError)}
     }
    }
-   if(!halfHour && hour===0)try{
+   if(!halfHour && hour%4===0)try{
     const health=await checkSimulationHealth(env.DB);
     await env.DB.prepare("DELETE FROM saliyah_sim_settings WHERE key='simulation_health_error'").run();
     console.log('simulation_health',JSON.stringify(health));
