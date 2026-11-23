@@ -11,5 +11,25 @@ database_name = "saliyah-db"
 database_id = "28aff870-726b-4840-aa9e-a88a23c639d9"
 migrations_dir = "migrations"
 
+[[d1_databases]]
+binding = "ARCHIVE_DB"
+database_name = "alsaliyah-"
+database_id = "05902f92-4693-44fc-bb91-602e3d0f1bff"
+
+[[d1_databases]]
+binding = "AVIATION_DB"
+database_name = "saliyah-aviation"
+database_id = "f4139db4-a293-47ce-9043-1ca5446d5684"
+
+[[d1_databases]]
+binding = "SIMULATION_DB"
+database_name = "saliyah-simulation"
+database_id = "f9b6937a-5e3a-4539-ab45-5b9708982239"
+
+[[d1_databases]]
+binding = "FINANCE_DB"
+database_name = "saliyah-finance"
+database_id = "60cf2c18-1a4c-4cd2-bd03-2f050c6b5390"
+
 [triggers]
 crons = ["*/30 * * * *"]
