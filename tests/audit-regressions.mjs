@@ -24,7 +24,7 @@ assert.match(ui,/المبلغ بالريال الصالي/);
 assert.match(ui,/xAutoPay/);
 assert.match(worker,/runXCreatorAutoPayouts/);
 assert.match(worker,/const jobs=\[\['x_bots',generateXBotActivity\]\]/);
-assert.match(worker,/if\(!halfHour && hour===0\)try\{/);
+assert.match(worker,/if\(!halfHour && hour%4===0\)try\{/);
 assert.match(worker,/\['x_rewards',runXCreatorAutoPayouts\]/);
 assert.match(worker,/INSERT OR IGNORE INTO x_creator_payouts/);
 assert.match(worker,/x_creator_payout_preferences/);
