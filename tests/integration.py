@@ -18,6 +18,81 @@ class PortalIntegration(unittest.TestCase):
         self.db.close()
     def balance(self, account):
         return self.db.execute('SELECT balance FROM bank_accounts WHERE id=?',(account,)).fetchone()[0]
+    def test_debt_collection_remits_to_king_once(self):
+        self.db.execute("INSERT INTO bank_accounts(id,user_id,bank,balance) VALUES('king-national','king','national',0)")
+        self.db.execute("INSERT INTO enforcement_cases_v2(id,subject_user_id,residency_number,amount,reason,ministry_id,created_by,status,action) VALUES('enf-debt','a','alice',40,'Debt test',1,'king','approved','debt')")
+        self.db.execute("INSERT INTO debt_claims(id,case_id,subject_user_id,original_amount,remaining_amount,created_by) VALUES('claim1','enf-debt','a',40,40,'king')")
+        self.db.execute("UPDATE bank_accounts SET balance=balance+25 WHERE id='a1'")
+        self.assertEqual(self.balance('a1'),100)
+        self.assertEqual(self.balance('king-national'),25)
+        self.assertEqual(self.db.execute("SELECT remaining_amount FROM debt_claims WHERE id='claim1'").fetchone()[0],15)
+        self.assertEqual(self.db.execute("SELECT COUNT(*) FROM debt_collections WHERE claim_id='claim1'").fetchone()[0],1)
+        self.db.execute("UPDATE bank_accounts SET balance=balance+25 WHERE id='a1'")
+        self.assertEqual(self.balance('a1'),110)
+        self.assertEqual(self.balance('king-national'),40)
+        self.assertEqual(self.db.execute("SELECT status FROM debt_claims WHERE id='claim1'").fetchone()[0],'paid')
+        self.assertEqual(self.db.execute("SELECT COUNT(*) FROM debt_collections WHERE claim_id='claim1'").fetchone()[0],2)
+    def test_debt_claims_enforce_one_claim_per_debtor(self):
+        self.db.execute("INSERT INTO enforcement_cases_v2(id,subject_user_id,residency_number,amount,reason,ministry_id,created_by,status,action) VALUES('enf-1','a','alice',20,'Debt test',1,'king','approved','debt')")
+        self.db.execute("INSERT INTO enforcement_cases_v2(id,subject_user_id,residency_number,amount,reason,ministry_id,created_by,status,action) VALUES('enf-2','a','alice',30,'Debt test',1,'king','approved','debt')")
+        self.db.execute("INSERT INTO debt_claims(id,case_id,subject_user_id,original_amount,remaining_amount,created_by) VALUES('claim-1','enf-1','a',20,20,'king')")
+        with self.assertRaises(sqlite3.IntegrityError):
+            self.db.execute("INSERT INTO debt_claims(id,case_id,subject_user_id,original_amount,remaining_amount,created_by) VALUES('claim-2','enf-2','a',30,30,'king')")
+        self.assertEqual(self.db.execute("SELECT COUNT(*) FROM debt_claims WHERE subject_user_id='a'").fetchone()[0],1)
+    def test_uncapped_creator_reward_credits_once(self):
+        self.db.execute("INSERT INTO x_profiles(id,user_id,handle,display_name) VALUES('profile-a','a','alice-test','Alice')")
+        self.db.execute("INSERT INTO x_creator_payouts(id,profile_id,user_id,period,followers,likes,reposts,amount,bank_account_id) VALUES('reward1','profile-a','a','100',1000,10000,500,2500,'a1')")
+        self.assertEqual(self.balance('a1'),2600)
+        with self.assertRaises(sqlite3.IntegrityError):
+            self.db.execute("INSERT INTO x_creator_payouts(id,profile_id,user_id,period,followers,likes,reposts,amount,bank_account_id) VALUES('reward2','profile-a','a','100',1000,10000,500,2500,'a1')")
+        self.assertEqual(self.balance('a1'),2600)
+    def test_bot_bank_accounts_are_isolated_and_seeded(self):
+        self.db.execute("INSERT INTO x_profiles(id,user_id,handle,display_name,kind) VALUES('x-sim-bot-0001',NULL,'bot-one','Bot One','bot')")
+        row=self.db.execute("SELECT account_number,balance FROM x_bot_bank_accounts WHERE profile_id='x-sim-bot-0001'").fetchone()
+        self.assertEqual(row,('XBOT-x-sim-bot-0001',0))
+        self.db.execute("UPDATE x_bot_bank_accounts SET balance=700 WHERE profile_id='x-sim-bot-0001'")
+        self.assertEqual(self.balance('a1'),100)
+        with self.assertRaises(sqlite3.IntegrityError):
+            self.db.execute("UPDATE x_bot_bank_accounts SET balance=-1 WHERE profile_id='x-sim-bot-0001'")
+        self.assertEqual(self.db.execute("SELECT balance FROM x_bot_bank_accounts WHERE profile_id='x-sim-bot-0001'").fetchone()[0],700)
+        ledger=self.db.execute("SELECT amount,balance_after FROM x_bot_bank_ledger WHERE profile_id='x-sim-bot-0001'").fetchall()
+        self.assertEqual(ledger,[(700,700)])
+        with self.assertRaises(sqlite3.IntegrityError):
+            self.db.execute("DELETE FROM x_bot_bank_ledger WHERE profile_id='x-sim-bot-0001'")
+
+    def test_bot_reach_can_exceed_one_million_without_negative_values(self):
+        self.db.execute("INSERT INTO x_profiles(id,user_id,handle,display_name) VALUES('large-creator','a','large-creator','Creator')")
+        self.db.execute("INSERT INTO x_posts(id,profile_id,body) VALUES('viral-post','large-creator','Viral')")
+        self.db.execute("UPDATE x_bot_reach SET bot_likes=2500000,bot_reposts=1700000 WHERE post_id='viral-post'")
+        counts=self.db.execute("SELECT bot_likes,bot_reposts FROM x_bot_reach WHERE post_id='viral-post'").fetchone()
+        self.assertEqual(counts,(2500000,1700000))
+        with self.assertRaises(sqlite3.IntegrityError):
+            self.db.execute("UPDATE x_bot_reach SET bot_likes=-1 WHERE post_id='viral-post'")
+        self.assertEqual(self.db.execute("SELECT bot_likes FROM x_bot_reach WHERE post_id='viral-post'").fetchone()[0],2500000)
+    def test_bot_engagement_counts_as_half_real_engagement(self):
+        self.db.execute("INSERT INTO x_profiles(id,user_id,handle,display_name,kind) VALUES('creator','a','creator-test','Creator','person'),('human','b','human-test','Human','person'),('bot',NULL,'bot-test','Bot','bot')")
+        self.db.execute("INSERT INTO x_posts(id,profile_id,body) VALUES('post','creator','A test post')")
+        self.db.execute("INSERT INTO x_follows(follower_id,following_id) VALUES('human','creator'),('bot','creator')")
+        self.db.execute("INSERT INTO x_likes(profile_id,post_id) VALUES('human','post'),('bot','post')")
+        result=self.db.execute("SELECT SUM(CASE WHEN p.kind='bot' THEN 1 ELSE 2 END) FROM x_likes l JOIN x_profiles p ON p.id=l.profile_id WHERE l.post_id='post'").fetchone()[0]
+        self.assertEqual(result,3)
+        follows=self.db.execute("SELECT SUM(CASE WHEN p.kind='bot' THEN 1 ELSE 2 END) FROM x_follows f JOIN x_profiles p ON p.id=f.follower_id WHERE f.following_id='creator'").fetchone()[0]
+        self.assertEqual(follows,3)
+    def test_auto_payout_preference_rejects_other_users_bank(self):
+        self.db.execute("INSERT INTO x_profiles(id,user_id,handle,display_name) VALUES('creator-a','a','creator-a','Creator')")
+        with self.assertRaises(sqlite3.IntegrityError):
+            self.db.execute("INSERT INTO x_creator_payout_preferences(profile_id,user_id,bank_account_id) VALUES('creator-a','a','b1')")
+        self.db.execute("INSERT INTO x_creator_payout_preferences(profile_id,user_id,bank_account_id) VALUES('creator-a','a','a1')")
+        self.assertEqual(self.db.execute("SELECT enabled FROM x_creator_payout_preferences WHERE profile_id='creator-a'").fetchone()[0],1)
+        with self.assertRaises(sqlite3.IntegrityError):
+            self.db.execute("UPDATE x_creator_payout_preferences SET bank_account_id='b1' WHERE profile_id='creator-a'")
+        self.assertEqual(self.db.execute("SELECT bank_account_id FROM x_creator_payout_preferences WHERE profile_id='creator-a'").fetchone()[0],'a1')
+    def test_creator_payout_rejects_other_users_account(self):
+        self.db.execute("INSERT INTO x_profiles(id,user_id,handle,display_name) VALUES('profile-a','a','alice-test','Alice')")
+        with self.assertRaises(sqlite3.IntegrityError):
+            self.db.execute("INSERT INTO x_creator_payouts(id,profile_id,user_id,period,followers,likes,reposts,amount,bank_account_id) VALUES('reward-invalid','profile-a','a','200',10,20,5,100,'b1')")
+        self.assertEqual(self.balance('b1'),10)
+        self.assertEqual(self.db.execute("SELECT COUNT(*) FROM x_creator_payouts WHERE id='reward-invalid'").fetchone()[0],0)
     def test_migrations_are_complete(self):
         self.assertGreaterEqual(len(self.migrations), 35)
         self.assertEqual(self.db.execute('PRAGMA foreign_key_check').fetchall(), [])
@@ -51,15 +126,15 @@ class PortalIntegration(unittest.TestCase):
         with self.assertRaises(sqlite3.IntegrityError):
             self.db.execute("INSERT INTO bank_adjustments(id,account_id,actor_id,mode,amount,previous_balance,new_balance,reason) VALUES('adj','a1','king','add',10,100,200,'تصحيح إداري')")
     def test_suspension_request_without_debt(self):
-        self.db.execute("INSERT INTO enforcement_cases(id,subject_user_id,document_id,residency_number,amount,reason,ministry_id,created_by,action) VALUES('case1','a',NULL,'alice',0,'طلب مراجعة إيقاف خدمات',1,'king','service_suspension')")
-        row=self.db.execute("SELECT action,amount,status FROM enforcement_cases WHERE id='case1'").fetchone()
+        self.db.execute("INSERT INTO enforcement_cases_v2(id,subject_user_id,document_id,residency_number,amount,reason,ministry_id,created_by,action) VALUES('case1','a',NULL,'alice',0,'طلب مراجعة إيقاف خدمات',1,'king','service_suspension')")
+        row=self.db.execute("SELECT action,amount,status FROM enforcement_cases_v2 WHERE id='case1'").fetchone()
         self.assertEqual(row,('service_suspension',0,'pending'))
     def test_enforcement_rejects_zero_debt(self):
         with self.assertRaises(sqlite3.IntegrityError):
-            self.db.execute("INSERT INTO enforcement_cases(id,subject_user_id,document_id,residency_number,amount,reason,ministry_id,created_by,action) VALUES('case2','a',NULL,'alice',0,'مطالبة مالية غير صالحة',7,'king','debt')")
+            self.db.execute("INSERT INTO enforcement_cases_v2(id,subject_user_id,document_id,residency_number,amount,reason,ministry_id,created_by,action) VALUES('case2','a',NULL,'alice',0,'مطالبة مالية غير صالحة',7,'king','debt')")
     def test_enforcement_supports_user_without_document(self):
-        self.db.execute("INSERT INTO enforcement_cases(id,subject_user_id,document_id,residency_number,amount,reason,ministry_id,created_by,action) VALUES('case3','b',NULL,'bob',25,'طلب مالي تجريبي',7,'king','debt')")
-        self.assertEqual(self.db.execute("SELECT subject_user_id FROM enforcement_cases WHERE id='case3'").fetchone()[0],'b')
+        self.db.execute("INSERT INTO enforcement_cases_v2(id,subject_user_id,document_id,residency_number,amount,reason,ministry_id,created_by,action) VALUES('case3','b',NULL,'bob',25,'طلب مالي تجريبي',7,'king','debt')")
+        self.assertEqual(self.db.execute("SELECT subject_user_id FROM enforcement_cases_v2 WHERE id='case3'").fetchone()[0],'b')
     def test_site_routes_exist(self):
         js=(ROOT/'public'/'app.js').read_text(encoding='utf-8')
         for route in ('readiness','security','courts','health','municipality','land','commerce','company-staff','service-desk'):

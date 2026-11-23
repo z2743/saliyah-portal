@@ -41,7 +41,7 @@ async function runSaliyahGovernment(db){
  // A choice is reconsidered once every four weeks, not every scheduled run.
  await db.prepare("CREATE TABLE IF NOT EXISTS saliyah_sim_company_payroll_decisions(id TEXT PRIMARY KEY,company_id TEXT NOT NULL,founder_id TEXT NOT NULL,previous_weeks INTEGER NOT NULL,new_weeks INTEGER NOT NULL,reason TEXT NOT NULL,decided_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP)").run();
  const managementPeriod=Math.floor(Date.now()/2419200000);
- const companiesToManage=(await db.prepare("SELECT c.id,c.founder_id,c.payroll_weeks,c.capital,COUNT(j.id) staff_jobs FROM saliyah_sim_companies c LEFT JOIN saliyah_sim_jobs j ON j.company_id=c.id WHERE c.status='approved' AND c.founder_id IN (SELECT id FROM saliyah_sim_citizens) GROUP BY c.id LIMIT 100").all()).results;
+ const companiesToManage=(await db.prepare("SELECT c.id,c.founder_id,c.payroll_weeks,c.capital,COUNT(j.id) staff_jobs FROM saliyah_sim_companies c LEFT JOIN saliyah_sim_jobs j ON j.company_id=c.id WHERE c.status='approved' AND c.founder_id IN (SELECT id FROM saliyah_sim_citizens) GROUP BY c.id ORDER BY c.id LIMIT 100 OFFSET ?").bind((hour%Math.max(1,Math.ceil(Number((await db.prepare("SELECT COUNT(*) n FROM saliyah_sim_companies WHERE status='approved' AND founder_id IN (SELECT id FROM saliyah_sim_citizens)").first()).n)/100)))*100).all()).results;
  for(const company of companiesToManage){
   const decisionId='sim-payroll-choice-'+managementPeriod+'-'+company.id;
   if(await db.prepare("SELECT 1 FROM saliyah_sim_company_payroll_decisions WHERE id=?").bind(decisionId).first())continue;
@@ -52,27 +52,55 @@ async function runSaliyahGovernment(db){
    db.prepare("UPDATE saliyah_sim_companies SET payroll_weeks=? WHERE id=?").bind(nextWeeks,company.id)
   ]);
  }
+ // Guard against overdrafts at the database layer. A rejected debit aborts
+ // the entire D1 batch, so the matching credit cannot be recorded alone.
+ await db.prepare("CREATE TRIGGER IF NOT EXISTS saliyah_sim_salary_funds_guard BEFORE INSERT ON saliyah_sim_bank_transactions WHEN NEW.kind='salary_debit' AND (NEW.amount>=0 OR NOT EXISTS(SELECT 1 FROM saliyah_sim_bank_accounts WHERE id=NEW.account_id AND balance>=-NEW.amount)) BEGIN SELECT RAISE(ABORT,'insufficient simulated salary funds'); END").run();
  // Weekly pay cycle starts on Monday, every second Monday for fortnightly companies.
  // D1 batch makes debit, credit and journal writes atomic; IDs prevent duplicates.
  const payrollWeek=(()=>{const d=new Date();const day=(d.getUTCDay()+6)%7;d.setUTCDate(d.getUTCDate()-day);return d.toISOString().slice(0,10)})();
- const payroll=(await db.prepare("SELECT j.id job_id,j.salary,j.company_id,c.payroll_weeks,a.citizen_id,co.id payer,ci.id payee,co.balance available FROM saliyah_sim_jobs j JOIN saliyah_sim_companies c ON c.id=j.company_id JOIN saliyah_sim_job_applications a ON a.job_id=j.id AND a.status='hired' JOIN saliyah_sim_bank_accounts co ON co.owner_type='company' AND co.owner_id=j.company_id JOIN saliyah_sim_bank_accounts ci ON ci.owner_type='citizen' AND ci.owner_id=a.citizen_id WHERE j.salary>0 LIMIT 30").all()).results;
+ // Backfill up to eight completed weekly periods, including missed payroll runs.
+ // Payment IDs remain deterministic per employee and period to avoid double payments.
+ const payroll=(await db.prepare("SELECT j.id job_id,j.salary,j.company_id,c.payroll_weeks,a.citizen_id,a.created_at hired_at,co.id payer,ci.id payee FROM saliyah_sim_jobs j JOIN saliyah_sim_companies c ON c.id=j.company_id JOIN saliyah_sim_job_applications a ON a.job_id=j.id AND a.status='hired' JOIN saliyah_sim_bank_accounts co ON co.owner_type='company' AND co.owner_id=j.company_id JOIN saliyah_sim_bank_accounts ci ON ci.owner_type='citizen' AND ci.owner_id=a.citizen_id WHERE j.salary>0 AND c.status='approved' ORDER BY j.id,a.citizen_id LIMIT 500 OFFSET ?").bind((hour%Math.max(1,Math.ceil(Number((await db.prepare("SELECT COUNT(*) n FROM saliyah_sim_jobs j JOIN saliyah_sim_companies c ON c.id=j.company_id JOIN saliyah_sim_job_applications a ON a.job_id=j.id AND a.status='hired' JOIN saliyah_sim_bank_accounts co ON co.owner_type='company' AND co.owner_id=j.company_id JOIN saliyah_sim_bank_accounts ci ON ci.owner_type='citizen' AND ci.owner_id=a.citizen_id WHERE j.salary>0 AND c.status='approved'").first()).n)/500)))*500).all()).results;
  for(const job of payroll){
-  const amount=Math.floor(Number(job.salary)||0);
-  if(amount<=0||Number(job.available)<amount)continue;
   const weeks=Number(job.payroll_weeks)===2?2:1;
-  const weekIndex=Math.floor(Date.parse(payrollWeek+'T00:00:00Z')/604800000);
-  if(weeks===2&&weekIndex%2!==0)continue;
-  const transferId='salary-week-'+payrollWeek+'-'+job.job_id;
-  if(await db.prepare("SELECT 1 FROM saliyah_sim_bank_transactions WHERE id=?").bind(transferId+'-out').first())continue;
-  try{
-   await db.batch([
-    db.prepare("INSERT INTO saliyah_sim_bank_transactions(id,account_id,kind,amount,description,related_account_id) VALUES(?,?,'salary_debit',?,?,?)").bind(transferId+'-out',job.payer,-amount,'راتب '+(weeks===2?'كل أسبوعين':'أسبوعي')+' افتراضي '+payrollWeek,job.payee),
-    db.prepare("UPDATE saliyah_sim_bank_accounts SET balance=balance-? WHERE id=? AND balance>=?").bind(amount,job.payer,amount),
-    db.prepare("UPDATE saliyah_sim_bank_accounts SET balance=balance+? WHERE id=?").bind(amount,job.payee),
-    db.prepare("INSERT INTO saliyah_sim_bank_transactions(id,account_id,kind,amount,description,related_account_id) VALUES(?,?,'salary_credit',?,?,?)").bind(transferId+'-in',job.payee,amount,'راتب '+(weeks===2?'كل أسبوعين':'أسبوعي')+' افتراضي '+payrollWeek,job.payer)
-   ]);
-  }catch(e){console.error('simulated_payroll_failed',transferId,String(e));}
+  const amount=Math.floor(Number(job.salary)||0)*weeks;
+  if(!Number.isSafeInteger(amount)||amount<=0)continue;
+  for(let offset=8;offset>=1;offset--){
+   const date=new Date(payrollWeek+'T00:00:00Z');
+   date.setUTCDate(date.getUTCDate()-offset*7);
+   const period=date.toISOString().slice(0,10);
+   const weekIndex=Math.floor(date.getTime()/604800000);
+   if(weeks===2&&weekIndex%2!==0)continue;
+   const hired=Date.parse(job.hired_at);
+   if(Number.isFinite(hired)&&hired>date.getTime())continue;
+   const transferId='salary-week-'+period+'-'+job.job_id;
+   if(await db.prepare("SELECT 1 FROM saliyah_sim_bank_transactions WHERE id=?").bind(transferId+'-in').first())continue;
+   try{
+    await db.batch([
+     db.prepare("INSERT INTO saliyah_sim_bank_transactions(id,account_id,kind,amount,description,related_account_id) SELECT ?,?,'salary_debit',?,?,? WHERE EXISTS(SELECT 1 FROM saliyah_sim_bank_accounts WHERE id=? AND balance>=?)").bind(transferId+'-out',job.payer,-amount,'راتب افتراضي '+period,job.payee,job.payer,amount),
+     db.prepare("UPDATE saliyah_sim_bank_accounts SET balance=balance-? WHERE id=? AND balance>=?").bind(amount,job.payer,amount),
+     db.prepare("UPDATE saliyah_sim_bank_accounts SET balance=balance+? WHERE id=? AND EXISTS(SELECT 1 FROM saliyah_sim_bank_transactions WHERE id=?)").bind(amount,job.payee,transferId+'-out'),
+     db.prepare("INSERT INTO saliyah_sim_bank_transactions(id,account_id,kind,amount,description,related_account_id) SELECT ?,?,'salary_credit',?,?,? WHERE EXISTS(SELECT 1 FROM saliyah_sim_bank_transactions WHERE id=?)").bind(transferId+'-in',job.payee,amount,'راتب افتراضي '+period,job.payer,transferId+'-out')
+    ]);
+   }catch(e){console.error('simulated_payroll_failed',transferId,String(e));break;}
+  }
  }
+ // Automatic labor claims only for a completed, unpaid period after employment.
+ await db.prepare("CREATE TABLE IF NOT EXISTS saliyah_sim_labor_cases(id TEXT PRIMARY KEY,job_id TEXT NOT NULL,company_id TEXT NOT NULL,citizen_id TEXT NOT NULL,period_start TEXT NOT NULL,amount INTEGER NOT NULL CHECK(amount>0),reason TEXT NOT NULL,status TEXT NOT NULL DEFAULT 'pending' CHECK(status IN ('pending','under_review','resolved','rejected')),filed_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,resolved_at TEXT,UNIQUE(job_id,citizen_id,period_start))").run();
+ const dueWeek=(()=>{const d=new Date(payrollWeek+'T00:00:00Z');d.setUTCDate(d.getUTCDate()-7);return d.toISOString().slice(0,10)})();
+ const dueIndex=Math.floor(Date.parse(dueWeek+'T00:00:00Z')/604800000);
+ await db.prepare("INSERT OR IGNORE INTO saliyah_sim_labor_cases(id,job_id,company_id,citizen_id,period_start,amount,reason) SELECT 'labor-'||?||'-'||j.id||'-'||a.citizen_id,j.id,j.company_id,a.citizen_id,?,j.salary*CASE WHEN c.payroll_weeks=2 THEN 2 ELSE 1 END,'عدم استلام الراتب المستحق' FROM saliyah_sim_jobs j JOIN saliyah_sim_companies c ON c.id=j.company_id JOIN saliyah_sim_job_applications a ON a.job_id=j.id AND a.status='hired' WHERE c.status='approved' AND j.salary>0 AND date(a.created_at)<=date(?) AND (c.payroll_weeks=1 OR ?%2=0) AND NOT EXISTS(SELECT 1 FROM saliyah_sim_bank_transactions t WHERE t.id='salary-week-'||?||'-'||j.id||'-in')").bind(dueWeek,dueWeek,dueWeek,dueIndex,dueWeek).run();
+ // Virtual legal profession: counsel for both sides and a separate court clerk.
+ await db.prepare("CREATE TABLE IF NOT EXISTS saliyah_sim_legal_bots(id TEXT PRIMARY KEY,name TEXT NOT NULL,role TEXT NOT NULL CHECK(role IN ('lawyer','court_clerk')),active INTEGER NOT NULL DEFAULT 1)").run();
+ await db.prepare("WITH RECURSIVE seq(n) AS (SELECT 1 UNION ALL SELECT n+1 FROM seq WHERE n<40) INSERT OR IGNORE INTO saliyah_sim_legal_bots(id,name,role) SELECT 'sim-lawyer-'||printf('%03d',n),'المحامي الصالي الآلي '||n,'lawyer' FROM seq").run();
+ await db.prepare("INSERT OR IGNORE INTO saliyah_sim_legal_bots(id,name,role) VALUES('sim-court-clerk-001','كاتب المحكمة الآلي','court_clerk')").run();
+ await db.prepare("CREATE TABLE IF NOT EXISTS saliyah_sim_labor_representation(case_id TEXT NOT NULL,side TEXT NOT NULL CHECK(side IN ('employee','company')),lawyer_id TEXT NOT NULL,assigned_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,PRIMARY KEY(case_id,side),FOREIGN KEY(case_id) REFERENCES saliyah_sim_labor_cases(id),FOREIGN KEY(lawyer_id) REFERENCES saliyah_sim_legal_bots(id))").run();
+ await db.prepare("CREATE TABLE IF NOT EXISTS saliyah_sim_labor_filings(id TEXT PRIMARY KEY,case_id TEXT NOT NULL,author_bot_id TEXT NOT NULL,side TEXT NOT NULL CHECK(side IN ('employee','company','court')),filing_type TEXT NOT NULL,body TEXT NOT NULL,created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,UNIQUE(case_id,side,filing_type),FOREIGN KEY(case_id) REFERENCES saliyah_sim_labor_cases(id))").run();
+ await db.prepare("INSERT OR IGNORE INTO saliyah_sim_labor_representation(case_id,side,lawyer_id) SELECT id,'employee','sim-lawyer-'||printf('%03d',1+(abs(length(id)*17+unicode(substr(id,-1)))%20)) FROM saliyah_sim_labor_cases WHERE status IN ('pending','under_review')").run();
+ await db.prepare("INSERT OR IGNORE INTO saliyah_sim_labor_representation(case_id,side,lawyer_id) SELECT id,'company','sim-lawyer-'||printf('%03d',21+(abs(length(id)*13+unicode(substr(id,-1)))%20)) FROM saliyah_sim_labor_cases WHERE status IN ('pending','under_review')").run();
+ await db.prepare("INSERT OR IGNORE INTO saliyah_sim_labor_filings(id,case_id,author_bot_id,side,filing_type,body) SELECT 'labor-claim-'||l.id,l.id,r.lawyer_id,'employee','claim','أطلب مراجعة الراتب المستحق بمبلغ '||l.amount||' ريال صالي والتحقق من سجل الإيداعات.' FROM saliyah_sim_labor_cases l JOIN saliyah_sim_labor_representation r ON r.case_id=l.id AND r.side='employee' WHERE l.status IN ('pending','under_review')").run();
+ await db.prepare("INSERT OR IGNORE INTO saliyah_sim_labor_filings(id,case_id,author_bot_id,side,filing_type,body) SELECT 'labor-defense-'||l.id,l.id,r.lawyer_id,'company','response','تطلب الشركة فحص كشف الحساب وسجل الصرف قبل إصدار أي قرار.' FROM saliyah_sim_labor_cases l JOIN saliyah_sim_labor_representation r ON r.case_id=l.id AND r.side='company' WHERE l.status IN ('pending','under_review')").run();
+ await db.prepare("INSERT OR IGNORE INTO saliyah_sim_labor_filings(id,case_id,author_bot_id,side,filing_type,body) SELECT 'labor-docket-'||l.id,l.id,'sim-court-clerk-001','court','docket','تم قيد الدعوى وتسجيل مذكرات الطرفين، والقرار بانتظار المراجعة.' FROM saliyah_sim_labor_cases l WHERE l.status IN ('pending','under_review')").run();
  // Identity requests are recorded first; simulated issuance occurs in a later scheduled cycle.
  await db.prepare("INSERT OR IGNORE INTO saliyah_sim_identities(id,citizen_id,status,issued_at,expires_at) SELECT 'sim-id-resident-'||substr(id,-4),id,'requested','', '' FROM saliyah_sim_citizens WHERE id LIKE 'sim-resident-%'").run();
  // Deterministic fictional eligibility: 20% incomplete/rejected, 40% eligible,
@@ -242,6 +270,26 @@ async function runSaliyahGovernment(db){
  }
 }
 // Clearly labelled simulated activity: bot accounts never impersonate ministries or publish real decrees.
+async function runXCreatorAutoPayouts(db){
+ const period=Math.floor(Date.now()/259200000).toString();
+ // Up to 100 eligible opted-in creators per run; repeat cron runs process the remaining creators.
+ const count=await db.prepare("SELECT COUNT(*) n FROM x_creator_payout_preferences p JOIN x_profiles x ON x.id=p.profile_id AND x.user_id=p.user_id AND x.kind='person' JOIN bank_accounts a ON a.id=p.bank_account_id AND a.user_id=p.user_id WHERE p.enabled=1 AND NOT EXISTS(SELECT 1 FROM x_creator_payouts r WHERE r.profile_id=p.profile_id AND r.period=?)").bind(period).first();
+ const pages=Math.max(1,Math.ceil(Number(count.n)/100));
+ const offset=(Math.floor(Date.now()/3600000)%pages)*100;
+ const prefs=(await db.prepare("SELECT p.profile_id,p.user_id,p.bank_account_id FROM x_creator_payout_preferences p JOIN x_profiles x ON x.id=p.profile_id AND x.user_id=p.user_id AND x.kind='person' JOIN bank_accounts a ON a.id=p.bank_account_id AND a.user_id=p.user_id WHERE p.enabled=1 AND NOT EXISTS(SELECT 1 FROM x_creator_payouts r WHERE r.profile_id=p.profile_id AND r.period=?) ORDER BY p.profile_id LIMIT 100 OFFSET ?").bind(period,offset).all()).results;
+ for(const p of prefs){
+  try{
+   const real=await db.prepare("SELECT (SELECT COUNT(*) FROM x_follows WHERE following_id=?) followers,(SELECT COUNT(*) FROM x_likes l JOIN x_posts post ON post.id=l.post_id WHERE post.profile_id=? AND l.profile_id<>?) likes,(SELECT COUNT(DISTINCT r.profile_id) FROM x_posts r JOIN x_posts post ON post.id=r.repost_of WHERE post.profile_id=? AND r.profile_id<>?) reposts,(SELECT COALESCE(SUM(CASE WHEN actor.kind='bot' THEN 1 ELSE 2 END),0) FROM x_follows f JOIN x_profiles actor ON actor.id=f.follower_id WHERE f.following_id=?) fw,(SELECT COALESCE(SUM(CASE WHEN actor.kind='bot' THEN 1 ELSE 2 END),0) FROM x_likes l JOIN x_posts post ON post.id=l.post_id JOIN x_profiles actor ON actor.id=l.profile_id WHERE post.profile_id=? AND l.profile_id<>?) lw,(SELECT COALESCE(SUM(CASE WHEN actor.kind='bot' THEN 1 ELSE 2 END),0) FROM (SELECT DISTINCT r.profile_id FROM x_posts r JOIN x_posts post ON post.id=r.repost_of WHERE post.profile_id=?) rr JOIN x_profiles actor ON actor.id=rr.profile_id WHERE rr.profile_id<>?) rw").bind(p.profile_id,p.profile_id,p.profile_id,p.profile_id,p.profile_id,p.profile_id,p.profile_id,p.profile_id,p.profile_id,p.profile_id).first();
+   const bot=await db.prepare("SELECT COALESCE(SUM(CAST((max(0,julianday('now')-julianday(created_at))*max(0,julianday('now')-julianday(created_at))*1250)+(bot_likes*min(1,max(0,julianday('now')-julianday(created_at))/3)) AS INTEGER)),0) likes,COALESCE(SUM(CAST((max(0,julianday('now')-julianday(created_at))*max(0,julianday('now')-julianday(created_at))*75)+(bot_reposts*min(1,max(0,julianday('now')-julianday(created_at))/3)) AS INTEGER)),0) reposts FROM x_bot_reach WHERE post_id IN (SELECT id FROM x_posts WHERE profile_id=?)").bind(p.profile_id).first();
+   const followers=Number(real.followers)+Math.floor(Number(bot.likes)/100);
+   const likes=Number(real.likes)+Number(bot.likes),reposts=Number(real.reposts)+Number(bot.reposts);
+   if(followers<10||likes<20||reposts<5)continue;
+   const amount=Math.floor((Number(real.fw)+Math.floor(Number(bot.likes)/100)+2*(Number(real.lw)+Number(bot.likes))+3*(Number(real.rw)+Number(bot.reposts)))/2);
+   if(!Number.isSafeInteger(amount)||amount<=0)continue;
+   await db.prepare("INSERT OR IGNORE INTO x_creator_payouts(id,profile_id,user_id,period,followers,likes,reposts,amount,bank_account_id) SELECT ?,?,?,?,?,?,?,?,? WHERE EXISTS(SELECT 1 FROM x_creator_payout_preferences WHERE profile_id=? AND user_id=? AND bank_account_id=? AND enabled=1)").bind(crypto.randomUUID(),p.profile_id,p.user_id,period,followers,likes,reposts,amount,p.bank_account_id,p.profile_id,p.user_id,p.bank_account_id).run();
+  }catch(error){console.error('x_auto_payout_failed',p.profile_id,String(error));}
+ }
+}
 async function generateXBotActivity(db){
  const names=['نواف','سارة','راكان','ليان','فهد','ريم','تركي','جود','ماجد','هيا','بدر','دانة','سلطان','نورة','مشعل','لمى','عبدالله','شهد','فيصل','غلا','خالد','أريج','عمر','رغد','سلمان','مها','يوسف','رنا','طلال','عبير'];
  const topics=[
@@ -249,7 +297,7 @@ async function generateXBotActivity(db){
  'تذكير من حساب آلي: تابعوا الأخبار الحكومية من الحسابات الرسمية الموثقة فقط.',
  'سؤال للنقاش: وش الخدمة اللي تتمنون إضافتها للبنوك الصالية؟ 🏦',
  'تجربة محاكاة: لو صار عندنا قرار صالي جديد عن الخدمات الإلكترونية، وش أول شيء تتمنونه؟',
- 'الريال الصالي هو العملة الأساسية، وكل ريال صالي يساوي 100 هلل صالي 💰 وش رأيكم بطريقة الدفع؟',
+ 'الريال الصالي هو العملة المستخدمة في الخدمات 💰 وش رأيكم بطريقة الدفع؟',
  'هل تفضلون إنجاز خدمات الأحوال من الجوال أو زيارة الفرع؟ 📱',
  'يا أهل الصالية، وش أكثر ميزة تستخدمونها في الموقع؟',
  'منشور آلي للنقاش: كيف نخلي منصة إكس الصالية أكثر فائدة للجميع؟',
@@ -274,9 +322,9 @@ async function generateXBotActivity(db){
  // Names are initialized only for new placeholder profiles; do not rewrite 1,999 rows every hour.
  const unnamed=(await db.prepare("SELECT id FROM x_profiles WHERE kind='bot' AND display_name LIKE 'مواطن صالي آلي %' LIMIT 100").all()).results;
  if(unnamed.length){const statements=unnamed.map(p=>{const i=Math.max(0,Number(p.id.slice(-4))-1);const name=firstNames[(i*7+Math.floor(i/30))%firstNames.length]+' '+familyNames[(i*11+Math.floor(i/16))%familyNames.length]+' 🤖';return db.prepare("UPDATE x_profiles SET display_name=? WHERE id=? AND kind='bot'").bind(name,p.id)});await db.batch(statements)}
- const now=Math.floor(Date.now()/3600000);
- // Idempotent per hour, safe if the scheduled job is retried.
- for(let i=0;i<36;i++){
+ const now=Math.floor(Date.now()/1800000);
+ // Idempotent per half-hour; maintain the same approximate hourly activity volume.
+ for(let i=0;i<18;i++){
   const id='sim-'+now+'-'+i;
   const profile=botIds[(now*7+i*11)%botIds.length];
   const body=topics[(now*3+i*7)%topics.length];
@@ -286,7 +334,7 @@ async function generateXBotActivity(db){
  // The distribution rotates over time, so fame is neither universal nor permanent.
  const posts=(await db.prepare("SELECT id,profile_id FROM x_posts WHERE reply_to IS NULL ORDER BY created_at DESC LIMIT 180").all()).results;
  const score=(id,salt)=>{let h=2166136261;for(const ch of String(id)+':'+salt){h=Math.imul(h^ch.charCodeAt(0),16777619)}return h>>>0};
- for(let i=0;i<360&&posts.length;i++){
+ for(let i=0;i<180&&posts.length;i++){
   const candidate=posts[score(now+':'+i,'pick')%posts.length];
   const wave=score(candidate.id,Math.floor(now/24));
   const tier=wave%100;
@@ -302,16 +350,25 @@ async function generateXBotActivity(db){
   ['بالتوفيق في الحساب الجديد، وش نوع المحتوى اللي بتنشرونه؟','حياكم في إكس الصالية، ننتظر أول أخباركم.','بداية موفقة، تابعنا الحساب وننتظر الجديد.'],
   ['أتمنى تكون إجراءات الخدمة واضحة وسريعة.','هل الخدمة متاحة إلكترونيًا أو لازم زيارة الفرع؟','الأهم توضيح المتطلبات والرسوم قبل التقديم.'],
   ['تطوير التعليم مهم، هل فيه تفاصيل عن التسجيل؟','أتمنى توفرون تخصصات وفرص تدريب للطلاب.','متى تبدأ الدراسة وكيف طريقة التقديم؟'],
-  ['هل التحويلات البنكية متاحة لجميع الحسابات؟','ياليت توضحون رسوم الخدمة وحدود التحويل.','هل الدفع يتم بالهلل الصالي من التطبيق؟'],
+  ['هل التحويلات البنكية متاحة لجميع الحسابات؟','ياليت توضحون رسوم الخدمة وحدود التحويل.','هل الدفع يتم بالريال الصالي من التطبيق؟'],
   ['وين موقع العقار وكم سعره؟','هل العقار في السجادة أو محافظة عقار؟','هل فيه تفاصيل عن المساحة وطريقة الشراء؟'],
   ['وش شروط التقديم على الوظيفة؟','هل التوظيف مفتوح لجميع المواطنين؟','كم الراتب وكيف أقدم؟'],
   ['مبروك الخبر، متى يبدأ التنفيذ؟','هل فيه تفاصيل أكثر عن القرار؟','ننتظر التحديثات الرسمية عن الموضوع.'],
   ['أتمنى تطبيق يوضح حالة الطرق والزحام.','ياليت توفر الوزارة خدمة متابعة النقل العام ومواعيده.','أقترح خدمة إلكترونية لتجديد تصاريح النقل.']
  ];
- const followups=['شكرًا للتوضيح، بانتظار التفاصيل.','ممتاز، ياليت تنشرون الخطوات كاملة.','واضح، لكن متى يبدأ التطبيق؟'];
+ const followups=[
+  ['وش المواضيع اللي ناوين تركزون عليها بالحساب؟','بنتابع منشوراتكم الجديدة.','حياكم، ننتظر أول تحديث منكم.'],
+  ['هل فيه رابط رسمي لطلب الخدمة؟','كم يستغرق إنجاز المعاملة؟','هل تتوفر الخدمة داخل أبشر الصالية؟'],
+  ['هل التسجيل متاح للطلاب حاليًا؟','هل فيه رسوم أو شروط للقبول؟','وين نلقى الجدول الدراسي؟'],
+  ['هل يظهر التحويل في كشف الحساب مباشرة؟','هل يمكن اختيار الحساب قبل الدفع؟','هل فيه توضيح للرسوم بالريال الصالي؟'],
+  ['هل العقار متاح للشراء الآن؟','هل السعر يشمل جميع الرسوم؟','وين ألقى تفاصيل المساحة؟'],
+  ['هل الوظيفة بدوام كامل؟','هل الراتب أسبوعي أو كل أسبوعين؟','وين رابط التقديم؟'],
+  ['هل صدر بيان رسمي بالتفاصيل؟','متى يبدأ تنفيذ القرار؟','هل فيه موعد محدد للمشروع؟'],
+  ['هل فيه خريطة لمسارات النقل؟','هل الخدمة تشمل المحافظات؟','كيف نعرف مواعيد الرحلات؟']
+ ];
  const topicFor=body=>{
   const t=String(body||'');
-  if(/فتحنا الحساب|حساب جديد|انضممنا|أول منشور|تابعونا/.test(t))return 0;
+  if(/فتحنا الحساب|حساب جديد|انضممنا|أول منشور/.test(t)&&!/بنك|تحويل|ريال|عقار|وظيف|تعليم|وزارة النقل|جواز|هوية/.test(t))return 0;
   if(/وزارة النقل|نقل عام|مواصلات|طرق|سيارات|مرور|تاكسي/.test(t))return 7;
   if(/مدرس|جامع|تعليم|طلاب|دراس/.test(t))return 2;
   if(/بنك|تحويل|هلل|ريال|مصرف|دفع/.test(t))return 3;
@@ -323,7 +380,7 @@ async function generateXBotActivity(db){
  };
  const discussionPosts=(await db.prepare("SELECT id,profile_id,body FROM x_posts WHERE reply_to IS NULL ORDER BY created_at DESC LIMIT 120").all()).results;
  let made=0;
- for(let i=0;i<120&&discussionPosts.length;i++){
+ for(let i=0;i<60&&discussionPosts.length;i++){
   const p=discussionPosts[score(now+':discussion:'+i,'target')%discussionPosts.length];
   const reach=score(p.id,Math.floor(now/24))%100;
   const chance=reach<70?5:reach<95?35:90;
@@ -339,7 +396,7 @@ async function generateXBotActivity(db){
   if(score(p.id,now+':thread:'+i)%100<35){
    const secondBot=botIds[score(p.id,now+':second:'+i)%botIds.length];
    if(secondBot!==bot){
-    const second=followups[score(secondBot,p.id)%followups.length];
+    const second=followups[theme][score(secondBot,p.id)%followups[theme].length];
     await db.prepare("INSERT OR IGNORE INTO x_posts(id,profile_id,body,reply_to) VALUES(?,?,?,?)").bind('sim-thread-'+now+'-'+i,secondBot,second,replyId).run();
    }
   }
@@ -367,7 +424,10 @@ async function checkSimulationHealth(db){
 export default {
  async scheduled(event,env,ctx){
   ctx.waitUntil((async()=>{
-   for(const [name,fn] of [['government',runSaliyahGovernment],['x_bots',generateXBotActivity]]){
+   // Keep X activity fresh every 30 minutes; expensive government and payout scans run hourly.
+   const halfHour=new Date(event.scheduledTime||Date.now()).getUTCMinutes()===30;
+   const jobs=halfHour?[['x_bots',generateXBotActivity]]:[['government',runSaliyahGovernment],['x_bots',generateXBotActivity],['x_rewards',runXCreatorAutoPayouts]];
+   for(const [name,fn] of jobs){
     try{
      await fn(env.DB);
      await env.DB.prepare("INSERT INTO saliyah_sim_settings(key,value) VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value").bind('last_'+name+'_success',new Date().toISOString()).run();
@@ -381,7 +441,7 @@ export default {
      }catch(logError){console.error('simulation_log_failed',logError)}
     }
    }
-   try{
+   if(!halfHour)try{
     const health=await checkSimulationHealth(env.DB);
     await env.DB.prepare("DELETE FROM saliyah_sim_settings WHERE key='simulation_health_error'").run();
     console.log('simulation_health',JSON.stringify(health));
@@ -427,17 +487,34 @@ if(path.startsWith('/api/x/')){
   const rows=await db.prepare("SELECT p.id,p.body,p.created_at,a.handle,a.display_name,a.kind,a.verified FROM x_posts p JOIN x_profiles a ON a.id=p.profile_id WHERE p.reply_to=? ORDER BY p.created_at ASC LIMIT 100").bind(id).all();
   return json({comments:rows.results});
  }
+ if(method==='GET'&&path==='/api/admin/x/bot-bank-ledger'){
+  if(!user||user.role!=='king')return json({error:'للملك فقط'},403);
+  const q=(u.searchParams.get('account_number')||'').trim().slice(0,80);
+  const rows=await db.prepare("SELECT l.id,l.account_number,p.display_name,p.handle,l.amount,l.balance_after,l.created_at FROM x_bot_bank_ledger l JOIN x_profiles p ON p.id=l.profile_id WHERE (?='' OR l.account_number=?) ORDER BY l.id DESC LIMIT 100").bind(q,q).all();
+  return json({transactions:rows.results,simulated:true});
+ }
+ if(method==='GET'&&path==='/api/admin/x/bot-bank-accounts'){
+  if(!user||user.role!=='king')return json({error:'للملك فقط'},403);
+  const page=Math.max(1,Math.min(10000,Number.parseInt(u.searchParams.get('page')||'1',10)||1));
+  const size=100;
+  const q=(u.searchParams.get('q')||'').trim().slice(0,80);
+  const count=await db.prepare("SELECT COUNT(*) n FROM x_bot_bank_accounts a JOIN x_profiles p ON p.id=a.profile_id WHERE p.kind='bot' AND (?='' OR p.handle LIKE ? OR p.display_name LIKE ? OR a.account_number LIKE ?)").bind(q,'%'+q+'%','%'+q+'%','%'+q+'%').first();
+  const rows=await db.prepare("SELECT p.handle,p.display_name,a.account_number,a.bank_name,a.balance,a.created_at FROM x_bot_bank_accounts a JOIN x_profiles p ON p.id=a.profile_id WHERE p.kind='bot' AND (?='' OR p.handle LIKE ? OR p.display_name LIKE ? OR a.account_number LIKE ?) ORDER BY p.handle LIMIT ? OFFSET ?").bind(q,'%'+q+'%','%'+q+'%','%'+q+'%',size,(page-1)*size).all();
+  return json({accounts:rows.results,pagination:{page,page_size:size,total:Number(count.n),pages:Math.ceil(Number(count.n)/size)},simulated:true});
+ }
+ if(method==='GET'&&path==='/api/x/bot-directory'){
+  const page=Math.max(1,Math.min(10000,Number.parseInt(u.searchParams.get('page')||'1',10)||1));
+  const size=30;
+  const total=await db.prepare("SELECT COUNT(*) n FROM x_profiles WHERE kind='bot'").first();
+  const bots=await db.prepare("SELECT id,handle,display_name,bio,created_at FROM x_profiles WHERE kind='bot' ORDER BY handle LIMIT ? OFFSET ?").bind(size,(page-1)*size).all();
+  return json({bots:bots.results,pagination:{page,page_size:size,total:Number(total.n),pages:Math.ceil(Number(total.n)/size)},simulated:true});
+ }
  if(method==='GET'&&path==='/api/x/bot-comments'){
   const id=u.searchParams.get('post_id')||'';
-  const p=await db.prepare('SELECT p.id,p.body,p.created_at,b.created_at started FROM x_posts p JOIN x_bot_reach b ON b.post_id=p.id WHERE p.id=?').bind(id).first();
-  if(!p)return json({error:'المنشور غير موجود أو لا توجد تفاعلات آلية'},404);
-  const ageDays=Math.max(0,(Date.now()-Date.parse(p.started.replace(' ','T')+'Z'))/86400000);
-  const count=Math.min(30,Math.floor(ageDays*1.8));
-  const names=['نواف 🤖','سارة 🤖','راكان 🤖','ليان 🤖','فهد 🤖','ريم 🤖','تركي 🤖','جود 🤖','عبدالله 🤖','شهد 🤖','ماجد 🤖','هيا 🤖'];
-  const comments=['طرح جميل 👏','اتفق معك 👍','موضوع يستحق النقاش','أول مرة أشوف هالكلام 👀','واصل النشر 🔥','مثير للاهتمام','وش رأي الباقين؟','أعجبني المنشور ❤️','ننتظر المزيد','مشاركة موفقة','فكرة حلوة','تفاعل قوي هنا 🔥'];
-  let hash=0;for(const c of p.id)hash=(Math.imul(hash,31)+c.charCodeAt(0))>>>0;
-  const items=Array.from({length:count},(_,i)=>({name:names[(hash+i*7)%names.length],body:comments[(hash+i*5)%comments.length],bot:true}));
-  return json({comments:items,simulated:true});
+  const parent=await db.prepare('SELECT id FROM x_posts WHERE id=?').bind(id).first();
+  if(!parent)return json({error:'المنشور غير موجود'},404);
+  const rows=await db.prepare("SELECT p.id,p.body,p.created_at,a.id profile_id,a.handle,a.display_name,a.kind,a.verified FROM x_posts p JOIN x_profiles a ON a.id=p.profile_id WHERE a.kind='bot' AND p.id IN (WITH RECURSIVE thread(id) AS (SELECT id FROM x_posts WHERE reply_to=? UNION ALL SELECT child.id FROM x_posts child JOIN thread t ON child.reply_to=t.id) SELECT id FROM thread) ORDER BY p.created_at ASC LIMIT 100").bind(id).all();
+  return json({comments:rows.results,simulated:true});
  }
  if(method==='GET'&&path==='/api/x/earnings'){
   if(!user)return json({error:'سجل الدخول أولاً'},401);
@@ -449,7 +526,24 @@ if(path.startsWith('/api/x/')){
   const period=Math.floor(Date.now()/259200000).toString();
   const paid=await db.prepare('SELECT id,amount,created_at FROM x_creator_payouts WHERE profile_id=? AND period=?').bind(own.id,period).first();
   const history=await db.prepare('SELECT period,amount,created_at FROM x_creator_payouts WHERE profile_id=? ORDER BY created_at DESC LIMIT 12').bind(own.id).all();
-  return json({stats,eligible,amount,period,paid:!!paid,history:history.results,requirements:{followers:10,likes:20,reposts:5},period_cap:null,unlimited_earnings:true,period_days:3,kind:own.kind});
+  const auto=await db.prepare('SELECT bank_account_id,enabled FROM x_creator_payout_preferences WHERE profile_id=? AND user_id=?').bind(own.id,user.id).first();
+  return json({stats,eligible,amount,period,paid:!!paid,auto_payout:auto?{enabled:!!auto.enabled,bank_account_id:auto.bank_account_id}:{enabled:false},history:history.results,requirements:{followers:10,likes:20,reposts:5},period_cap:null,unlimited_earnings:true,period_days:3,kind:own.kind});
+ }
+ if(method==='POST'&&path==='/api/x/earnings/auto'){
+  if(!user)return json({error:'سجل الدخول أولاً'},401);
+  const own=await profileFor();
+  if(!own||own.kind!=='person')return json({error:'للحسابات الشخصية فقط'},403);
+  const b=await input(req);
+  if(!b||typeof b.enabled!=='boolean')return json({error:'حدد تفعيل الصرف التلقائي أو إيقافه'},400);
+  if(b.enabled){
+   if(!validText(b.bank_account_id,10,80))return json({error:'اختر حسابك البنكي'},400);
+   const account=await db.prepare('SELECT id FROM bank_accounts WHERE id=? AND user_id=?').bind(b.bank_account_id,user.id).first();
+   if(!account)return json({error:'الحساب البنكي لا يخصك'},403);
+   await db.prepare("INSERT INTO x_creator_payout_preferences(profile_id,user_id,bank_account_id,enabled) VALUES(?,?,?,1) ON CONFLICT(profile_id) DO UPDATE SET bank_account_id=excluded.bank_account_id,user_id=excluded.user_id,enabled=1,updated_at=CURRENT_TIMESTAMP").bind(own.id,user.id,account.id).run();
+  }else{
+   await db.prepare("UPDATE x_creator_payout_preferences SET enabled=0,updated_at=CURRENT_TIMESTAMP WHERE profile_id=? AND user_id=?").bind(own.id,user.id).run();
+  }
+  return json({ok:true,enabled:b.enabled});
  }
  if(method==='POST'&&path==='/api/x/earnings/claim'){
   if(!user)return json({error:'سجل الدخول أولاً'},401);
@@ -466,6 +560,7 @@ if(path.startsWith('/api/x/')){
   const id=random();
   try{await db.prepare('INSERT INTO x_creator_payouts(id,profile_id,user_id,period,followers,likes,reposts,amount,bank_account_id) VALUES(?,?,?,?,?,?,?,?,?)').bind(id,own.id,user.id,period,stats.followers,stats.likes,stats.reposts,amount,account.id).run();}
   catch{return json({error:'تم صرف مكافأة هذه الدورة مسبقاً أو تعذر إتمام التحويل'},409)}
+  await db.prepare("INSERT INTO x_creator_payout_preferences(profile_id,user_id,bank_account_id,enabled) VALUES(?,?,?,1) ON CONFLICT(profile_id) DO UPDATE SET bank_account_id=excluded.bank_account_id,user_id=excluded.user_id,enabled=1,updated_at=CURRENT_TIMESTAMP").bind(own.id,user.id,account.id).run();
   await audit(db,user.id,'x_creator_reward','x_creator_payout',id,{amount,period});
   return json({ok:true,amount,period});
  }
@@ -631,16 +726,35 @@ if(method==='POST'&&path==='/api/admin/simulation/projects/decision'){
  await audit(db,user.id,'simulation_project_decision','saliyah_project',b.id,{decision:b.decision});
  return json({ok:true,status:b.decision});
 }
+if(method==='GET'&&path==='/api/admin/simulation/labor-cases'){
+ if(!user||user.role!=='king')return json({error:'للملك فقط'},403);
+ const rows=await db.prepare("SELECT l.*,c.name company_name,z.name employee_name,j.title job_title FROM saliyah_sim_labor_cases l JOIN saliyah_sim_companies c ON c.id=l.company_id JOIN saliyah_sim_citizens z ON z.id=l.citizen_id JOIN saliyah_sim_jobs j ON j.id=l.job_id ORDER BY l.filed_at DESC,l.id DESC LIMIT 200").all();
+ const representation=await db.prepare("SELECT r.case_id,r.side,b.id lawyer_id,b.name lawyer_name FROM saliyah_sim_labor_representation r JOIN saliyah_sim_legal_bots b ON b.id=r.lawyer_id ORDER BY r.case_id,r.side LIMIT 400").all();
+ const filings=await db.prepare("SELECT f.id,f.case_id,f.side,f.filing_type,f.body,f.created_at,b.name author_name FROM saliyah_sim_labor_filings f JOIN saliyah_sim_legal_bots b ON b.id=f.author_bot_id ORDER BY f.created_at DESC LIMIT 600").all();
+ return json({cases:rows.results,representation:representation.results,filings:filings.results,currency:'ريال صالي'});
+}
+if(method==='POST'&&path==='/api/admin/simulation/labor-cases/decision'){
+ if(!user||user.role!=='king')return json({error:'للملك فقط'},403);
+ const b=await input(req);
+ if(!b||typeof b.id!=='string'||!['under_review','resolved','rejected'].includes(b.status))return json({error:'بيانات القرار غير صالحة'},400);
+ const updated=await db.prepare("UPDATE saliyah_sim_labor_cases SET status=?,resolved_at=CASE WHEN ?='under_review' THEN NULL ELSE CURRENT_TIMESTAMP END WHERE id=? AND status IN ('pending','under_review')").bind(b.status,b.status,b.id).run();
+ if(!updated.meta.changes)return json({error:'القضية غير موجودة أو أُغلقت'},409);
+ await audit(db,user.id,'simulation_labor_case_decision','saliyah_sim_labor_case',b.id,{status:b.status});return json({ok:true,status:b.status});
+}
 if(method==='GET'&&path==='/api/admin/simulation/banking'){
  if(!user||user.role!=='king')return json({error:'للملك فقط'},403);
  const filter=u.searchParams.get('type')||'all';
  const q=(u.searchParams.get('q')||'').trim().slice(0,80);
  if(!['all','citizen','company'].includes(filter))return json({error:'نوع الحساب غير صحيح'},400);
- const accounts=await db.prepare("SELECT a.id,a.account_number,a.bank_name,a.owner_type,a.owner_id,COALESCE(c.name,b.name,'مجهول') owner_name,a.balance,a.status,a.created_at FROM saliyah_sim_bank_accounts a LEFT JOIN saliyah_sim_citizens c ON a.owner_type='citizen' AND c.id=a.owner_id LEFT JOIN saliyah_sim_companies b ON a.owner_type='company' AND b.id=a.owner_id WHERE (?='all' OR a.owner_type=?) AND (?='' OR a.account_number LIKE ? OR c.name LIKE ? OR b.name LIKE ?) ORDER BY a.created_at DESC,a.id LIMIT 150").bind(filter,filter,q,'%'+q+'%','%'+q+'%','%'+q+'%').all();
+ const page=Math.max(1,Math.min(10000,Number.parseInt(u.searchParams.get('page')||'1',10)||1));
+ const pageSize=150;
+ const offset=(page-1)*pageSize;
+ const accounts=await db.prepare("SELECT a.id,a.account_number,a.bank_name,a.owner_type,a.owner_id,COALESCE(c.name,b.name,'مجهول') owner_name,a.balance,a.status,a.created_at FROM saliyah_sim_bank_accounts a LEFT JOIN saliyah_sim_citizens c ON a.owner_type='citizen' AND c.id=a.owner_id LEFT JOIN saliyah_sim_companies b ON a.owner_type='company' AND b.id=a.owner_id WHERE (?='all' OR a.owner_type=?) AND (?='' OR a.account_number LIKE ? OR c.name LIKE ? OR b.name LIKE ?) ORDER BY a.created_at DESC,a.id LIMIT ? OFFSET ?").bind(filter,filter,q,'%'+q+'%','%'+q+'%','%'+q+'%',pageSize,offset).all();
+ const accountCount=await db.prepare("SELECT COUNT(*) n FROM saliyah_sim_bank_accounts a LEFT JOIN saliyah_sim_citizens c ON a.owner_type='citizen' AND c.id=a.owner_id LEFT JOIN saliyah_sim_companies b ON a.owner_type='company' AND b.id=a.owner_id WHERE (?='all' OR a.owner_type=?) AND (?='' OR a.account_number LIKE ? OR c.name LIKE ? OR b.name LIKE ?)").bind(filter,filter,q,'%'+q+'%','%'+q+'%','%'+q+'%').first();
  const companies=await db.prepare("SELECT id,name,payroll_weeks FROM saliyah_sim_companies WHERE status='approved' ORDER BY name LIMIT 150").all();
  const totals=await db.prepare("SELECT owner_type,COUNT(*) accounts,SUM(balance) balance FROM saliyah_sim_bank_accounts GROUP BY owner_type").all();
  const transactions=await db.prepare("SELECT t.id,t.kind,t.amount,t.description,t.created_at,a.account_number,a.owner_type,COALESCE(c.name,b.name,'مجهول') owner_name FROM saliyah_sim_bank_transactions t JOIN saliyah_sim_bank_accounts a ON a.id=t.account_id LEFT JOIN saliyah_sim_citizens c ON a.owner_type='citizen' AND c.id=a.owner_id LEFT JOIN saliyah_sim_companies b ON a.owner_type='company' AND b.id=a.owner_id ORDER BY t.created_at DESC,t.id DESC LIMIT 100").all();
- return json({accounts:accounts.results,companies:companies.results,totals:totals.results,transactions:transactions.results,virtual_currency:'ريال صالي',note:'حسابات المحاكاة منفصلة عن الحسابات البنكية الحقيقية'});
+ return json({accounts:accounts.results,pagination:{page,page_size:pageSize,total:Number(accountCount.n),pages:Math.ceil(Number(accountCount.n)/pageSize)},companies:companies.results,totals:totals.results,transactions:transactions.results,virtual_currency:'ريال صالي',note:'حسابات المحاكاة منفصلة عن الحسابات البنكية الحقيقية'});
 }
 if(method==='GET'&&path==='/api/admin/simulation/citizens'){
  if(!user||user.role!=='king')return json({error:'للملك فقط'},403);
@@ -855,6 +969,10 @@ if(method==='GET'&&path==='/api/admin/readiness'){
  await structural('enforcement_actions','حقل أنواع إجراءات المديونيات','SELECT COUNT(*) n FROM pragma_table_info(\'enforcement_cases_v2\') WHERE name=\'action\'');
  await structural('enforcement_zero_amount','دعم إيقاف الخدمات بدون مديونية',"SELECT COUNT(*) n FROM sqlite_master WHERE type='table' AND name='enforcement_cases_v2' AND sql LIKE '%amount>=0%'");
  await structural('enforcement_optional_document','دعم المستخدمين دون وثيقة',"SELECT COUNT(*) n FROM pragma_table_info('enforcement_cases_v2') WHERE name='document_id' AND [notnull]=0");
+ await structural('x_auto_payout_preferences','تفضيلات الصرف التلقائي لإكس الصالية',"SELECT COUNT(*) n FROM sqlite_master WHERE type='table' AND name='x_creator_payout_preferences'");
+ await structural('x_bot_bank_accounts','الحسابات البنكية الافتراضية للبوتات',"SELECT COUNT(*) n FROM sqlite_master WHERE type='table' AND name='x_bot_bank_accounts'");
+ await structural('x_bot_bank_ledger','سجل الحركات البنكية للبوتات',"SELECT COUNT(*) n FROM sqlite_master WHERE type='table' AND name='x_bot_bank_ledger'");
+ await structural('x_auto_payout_account_guard','حماية ملكية حساب أرباح إكس',"SELECT COUNT(*) n FROM sqlite_master WHERE type='trigger' AND name='x_creator_payout_preference_ownership'");
  return json({checks,bindings:{database:true,assets:!!env.ASSETS,court_files:!!env.COURT_FILES},
   environment:'فحص بنيوي محدود؛ لا يثبت الأمان أو نجاح العمليات أو جاهزية الإطلاق',
   ready_for_public_launch:false});
