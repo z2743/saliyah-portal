@@ -17,7 +17,7 @@ const fictionalFamilyNames=['العتيبي','القحطاني','الشمري','
 const fictionalBotName=n=>fictionalFirstNames[(n*7+3)%fictionalFirstNames.length]+' '+fictionalFamilyNames[(n*11+5)%fictionalFamilyNames.length];
 // Ministers are fictional bot personas with human-style names; the automated flag stays visible.
 const botMinisters=ministries.filter(m=>m.id!==0&&m.id!==1).map(m=>({...m,minister:fictionalBotName(m.id)+' بن '+fictionalFirstNames[(m.id*3+1)%fictionalFirstNames.length]+' 🤖',automated:true}));
-async function runSaliyahGovernment(db){
+async function runSaliyahGovernment(db,aviationDb){
  const hour=Math.floor(Date.now()/3600000);
  const roles=['موظف خدمة عملاء','موظف أحوال مدنية','معلم','ممرض','محاسب','موظف اتصالات','موظف بلدية','موظف بريد','فني صيانة','موظف نقل'];
  // Fictional employed citizens are separate from real staff and cannot gain permissions.
@@ -263,9 +263,10 @@ async function runSaliyahGovernment(db){
   await db.prepare("UPDATE saliyah_sim_citizens SET occupation='متوفى' WHERE id=? AND occupation<>'متوفى'").bind(candidate.id).run();
  }
  // Simulated border arrivals and departures: no real immigration records are touched.
+ if(aviationDb){
  // Foreign tourist bots are visitors, never Saliyah citizens or residents.
  // Seed a small group per four-hour simulation cycle to protect D1 quotas.
- await db.prepare("CREATE TABLE IF NOT EXISTS saliyah_sim_tourists(id TEXT PRIMARY KEY,name TEXT NOT NULL,nationality TEXT NOT NULL,passport_number TEXT NOT NULL UNIQUE,visa_status TEXT NOT NULL,arrival_port TEXT NOT NULL,visit_purpose TEXT NOT NULL,created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP)").run();
+ await aviationDb.prepare("CREATE TABLE IF NOT EXISTS saliyah_sim_tourists(id TEXT PRIMARY KEY,name TEXT NOT NULL,nationality TEXT NOT NULL,passport_number TEXT NOT NULL UNIQUE,visa_status TEXT NOT NULL,arrival_port TEXT NOT NULL,visit_purpose TEXT NOT NULL,created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP)").run();
  const touristFirst=['James','Oliver','William','Emily','Sophia','Charlotte','Noah','Liam','Amelia','Lucas','Emma','Henry','Isabella','Jack','Olivia','Ethan','Mia','Alexander','Grace','Daniel'];
  const touristLast=['Smith','Johnson','Brown','Wilson','Taylor','Anderson','Martin','Miller','Davis','Clark','Thomas','Walker','Harris','Lewis','White','Hall','Young','King','Scott','Baker'];
  const touristCountries=['المملكة المتحدة','الولايات المتحدة','كندا','أستراليا','ألمانيا','فرنسا','إيطاليا','هولندا','إسبانيا','نيوزيلندا'];
@@ -274,7 +275,8 @@ async function runSaliyahGovernment(db){
   const name=touristFirst[(n*7+3)%touristFirst.length]+' '+touristLast[(n*11+5)%touristLast.length];
   const nationality=touristCountries[n%touristCountries.length];
   const visa=(n%13===0?'pending':n%17===0?'refused':'approved');
-  await db.prepare("INSERT OR IGNORE INTO saliyah_sim_tourists(id,name,nationality,passport_number,visa_status,arrival_port,visit_purpose) VALUES(?,?,?,?,?,?,?)").bind('tourist-'+String(n+1).padStart(4,'0'),name,nationality,'VIS-'+String(n+1).padStart(6,'0'),visa,'مطار الملك زياد الدولي',n%4===0?'زيارة عائلية':'سياحة').run();
+  await aviationDb.prepare("INSERT OR IGNORE INTO saliyah_sim_tourists(id,name,nationality,passport_number,visa_status,arrival_port,visit_purpose) VALUES(?,?,?,?,?,?,?)").bind('tourist-'+String(n+1).padStart(4,'0'),name,nationality,'VIS-'+String(n+1).padStart(6,'0'),visa,'مطار الملك زياد الدولي',n%4===0?'زيارة عائلية':'سياحة').run();
+ }
  }
  const ports=['منفذ السجادة البري','مطار الملك زياد الدولي','ميناء المتجار'];
  const recent=(await db.prepare("SELECT id FROM saliyah_sim_citizens ORDER BY created_at DESC LIMIT 60").all()).results;
@@ -479,7 +481,7 @@ export default {
    if(!halfHour && hour%4===0)jobs.push(['government',runSaliyahGovernment]);
    for(const [name,fn] of jobs){
     try{
-     await fn(env.DB);
+     await (name==='government'?fn(env.DB,env.AVIATION_DB):fn(env.DB));
      await env.DB.prepare("INSERT INTO saliyah_sim_settings(key,value) VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value").bind('last_'+name+'_success',new Date().toISOString()).run();
      await env.DB.prepare('DELETE FROM saliyah_sim_settings WHERE key=?').bind('last_'+name+'_error').run();
      console.log('simulation_cron_success',name);
@@ -506,6 +508,12 @@ export default {
 
 // X Al-Saliyah: profiles are bound to authenticated accounts; ministry verification
 // is granted only for a ministry assignment recorded by the government.
+if(method==='GET'&&path==='/api/aviation/tourists'){
+ if(!user||user.role!=='king')return json({error:'غير مخول'},403);
+ if(!env.AVIATION_DB)return json({error:'قاعدة الطيران غير متصلة'},503);
+ const rows=await env.AVIATION_DB.prepare("SELECT id,name,nationality,visa_status,arrival_port,visit_purpose,created_at FROM saliyah_sim_tourists ORDER BY created_at DESC LIMIT 100").all();
+ return json({tourists:rows.results});
+}
 if(path.startsWith('/api/x/')){
  const profileFor=async()=>user?db.prepare('SELECT * FROM x_profiles WHERE user_id=?').bind(user.id).first():null;
  const botReachSQL="SELECT COALESCE(SUM(CAST((max(0,julianday('now')-julianday(created_at))*max(0,julianday('now')-julianday(created_at))*1250)+(bot_likes*min(1,max(0,julianday('now')-julianday(created_at))/3)) AS INTEGER)),0) bot_likes,COALESCE(SUM(CAST((max(0,julianday('now')-julianday(created_at))*max(0,julianday('now')-julianday(created_at))*75)+(bot_reposts*min(1,max(0,julianday('now')-julianday(created_at))/3)) AS INTEGER)),0) bot_reposts FROM x_bot_reach WHERE post_id IN (SELECT id FROM x_posts WHERE profile_id=?)";
