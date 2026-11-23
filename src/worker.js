@@ -417,7 +417,7 @@ async function generateXBotActivity(db){
   return -1;
  };
  const discussionPosts=posts.slice(0,80);
- let made=0;
+ const replyWrites=[];
  for(let i=0;i<65&&discussionPosts.length;i++){
   const p=discussionPosts[score(now+':discussion:'+i,'target')%discussionPosts.length];
   const reach=score(p.id,Math.floor(now/24))%100;
@@ -428,18 +428,18 @@ async function generateXBotActivity(db){
   const theme=topicFor(p.body);if(theme<0||/إعادة نشر/.test(p.body))continue;
   const body=replies[theme][score(bot,p.id+':reply')%replies[theme].length];
   const replyId='sim-reply-'+now+'-'+i;
-  await db.prepare("INSERT OR IGNORE INTO x_posts(id,profile_id,body,reply_to) VALUES(?,?,?,?)").bind(replyId,bot,body,p.id).run();
-  made++;
+  replyWrites.push(db.prepare("INSERT OR IGNORE INTO x_posts(id,profile_id,body,reply_to) VALUES(?,?,?,?)").bind(replyId,bot,body,p.id));
   // Some conversations develop into a second exchange; others stop after one comment.
   if(score(p.id,now+':thread:'+i)%100<55){
    const secondBot=botIds[score(p.id,now+':second:'+i)%botIds.length];
    if(secondBot!==bot){
     const second=followups[theme][score(secondBot,p.id)%followups[theme].length];
-    await db.prepare("INSERT OR IGNORE INTO x_posts(id,profile_id,body,reply_to) VALUES(?,?,?,?)").bind('sim-thread-'+now+'-'+i,secondBot,second,replyId).run();
+    replyWrites.push(db.prepare("INSERT OR IGNORE INTO x_posts(id,profile_id,body,reply_to) VALUES(?,?,?,?)").bind('sim-thread-'+now+'-'+i,secondBot,second,replyId));
    }
   }
  }
 
+ for(let i=0;i<replyWrites.length;i+=50)await db.batch(replyWrites.slice(i,i+50));
  // Keep follower growth and reposts active, but cap database work per run.
  const featured=discussionPosts.filter(p=>p.profile_id&&!p.id.startsWith('sim-'));
  const engagementWrites=[];
