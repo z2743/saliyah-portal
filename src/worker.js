@@ -424,7 +424,10 @@ async function checkSimulationHealth(db){
 export default {
  async scheduled(event,env,ctx){
   ctx.waitUntil((async()=>{
-   for(const [name,fn] of [['government',runSaliyahGovernment],['x_bots',generateXBotActivity],['x_rewards',runXCreatorAutoPayouts]]){
+   // Keep X activity fresh every 30 minutes; expensive government and payout scans run hourly.
+   const halfHour=new Date(event.scheduledTime||Date.now()).getUTCMinutes()===30;
+   const jobs=halfHour?[['x_bots',generateXBotActivity]]:[['government',runSaliyahGovernment],['x_bots',generateXBotActivity],['x_rewards',runXCreatorAutoPayouts]];
+   for(const [name,fn] of jobs){
     try{
      await fn(env.DB);
      await env.DB.prepare("INSERT INTO saliyah_sim_settings(key,value) VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value").bind('last_'+name+'_success',new Date().toISOString()).run();
@@ -438,7 +441,7 @@ export default {
      }catch(logError){console.error('simulation_log_failed',logError)}
     }
    }
-   try{
+   if(!halfHour)try{
     const health=await checkSimulationHealth(env.DB);
     await env.DB.prepare("DELETE FROM saliyah_sim_settings WHERE key='simulation_health_error'").run();
     console.log('simulation_health',JSON.stringify(health));
