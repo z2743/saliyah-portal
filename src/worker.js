@@ -16,7 +16,7 @@ const fictionalFirstNames=['محمد','عبدالله','خالد','فهد','نو
 const fictionalFamilyNames=['العتيبي','القحطاني','الشمري','العنزي','الحربي','الدوسري','المطيري','الغامدي','الزهراني','المالكي','العمري','الشهري','السبيعي','التميمي','الجهني','الرشيدي','السلمي','العجمي','القرني','الهاجري'];
 const fictionalBotName=n=>fictionalFirstNames[(n*7+3)%fictionalFirstNames.length]+' '+fictionalFamilyNames[(n*11+5)%fictionalFamilyNames.length];
 // Ministers are fictional bot personas with human-style names; the automated flag stays visible.
-const botMinisters=ministries.filter(m=>m.id!==0&&m.id!==1).map(m=>({...m,minister:fictionalBotName(m.id)+' 🤖',automated:true}));
+const botMinisters=ministries.filter(m=>m.id!==0&&m.id!==1).map(m=>({...m,minister:fictionalBotName(m.id)+' بن '+fictionalFirstNames[(m.id*3+1)%fictionalFirstNames.length]+' 🤖',automated:true}));
 async function runSaliyahGovernment(db){
  const hour=Math.floor(Date.now()/3600000);
  const roles=['موظف خدمة عملاء','موظف أحوال مدنية','معلم','ممرض','محاسب','موظف اتصالات','موظف بلدية','موظف بريد','فني صيانة','موظف نقل'];
