@@ -382,10 +382,10 @@ async function generateXBotActivity(db){
  };
  const discussionPosts=(await db.prepare("SELECT id,profile_id,body FROM x_posts WHERE reply_to IS NULL ORDER BY created_at DESC LIMIT 120").all()).results;
  let made=0;
- for(let i=0;i<60&&discussionPosts.length;i++){
+ for(let i=0;i<150&&discussionPosts.length;i++){
   const p=discussionPosts[score(now+':discussion:'+i,'target')%discussionPosts.length];
   const reach=score(p.id,Math.floor(now/24))%100;
-  const chance=reach<70?5:reach<95?35:90;
+  const chance=reach<70?35:reach<95?75:98;
   if(score(p.id,now+':comment:'+i)%100>=chance)continue;
   const bot=botIds[score(p.id,now+':commenter:'+i)%botIds.length];
   if(bot===p.profile_id)continue;
@@ -395,7 +395,7 @@ async function generateXBotActivity(db){
   await db.prepare("INSERT OR IGNORE INTO x_posts(id,profile_id,body,reply_to) VALUES(?,?,?,?)").bind(replyId,bot,body,p.id).run();
   made++;
   // Some conversations develop into a second exchange; others stop after one comment.
-  if(score(p.id,now+':thread:'+i)%100<35){
+  if(score(p.id,now+':thread:'+i)%100<55){
    const secondBot=botIds[score(p.id,now+':second:'+i)%botIds.length];
    if(secondBot!==bot){
     const second=followups[theme][score(secondBot,p.id)%followups[theme].length];
