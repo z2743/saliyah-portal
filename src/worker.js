@@ -318,7 +318,9 @@ async function generateXBotActivity(db){
  const familyNames=['العتيبي','القحطاني','الشمري','العنزي','الحربي','الدوسري','المطيري','الغامدي','الزهراني','المالكي','السالمي','الراشدي','الصالي','الهاجري','العمري','الشهري'];
  // Human-style fictional names, always clearly identified as bots with 🤖.
  const botIds=Array.from({length:1999},(_,i)=>'x-sim-bot-'+String(i+1).padStart(4,'0'));
- const seed=await db.prepare("WITH RECURSIVE seq(n) AS (SELECT 1 UNION ALL SELECT n+1 FROM seq WHERE n<1999) INSERT OR IGNORE INTO x_profiles(id,user_id,handle,display_name,bio,kind,verified) SELECT 'x-sim-bot-'||printf('%04d',n),NULL,'saliyah_bot_'||printf('%04d',n),'مواطن صالي آلي '||n||' 🤖','حساب محاكاة آلي؛ ليس شخصًا حقيقيًا','bot',0 FROM seq").run();
+ const botSeeded=await db.prepare("SELECT id FROM x_profiles WHERE id='x-sim-bot-1999'").first();
+ if(!botSeeded){const seed=await db.prepare("WITH RECURSIVE seq(n) AS (SELECT 1 UNION ALL SELECT n+1 FROM seq WHERE n<1999) INSERT OR IGNORE INTO x_profiles(id,user_id,handle,display_name,bio,kind,verified) SELECT 'x-sim-bot-'||printf('%04d',n),NULL,'saliyah_bot_'||printf('%04d',n),'مواطن صالي آلي '||n||' 🤖','حساب محاكاة آلي؛ ليس شخصًا حقيقيًا','bot',0 FROM seq").run();
+ }
  // Names are initialized only for new placeholder profiles; do not rewrite 1,999 rows every hour.
  const unnamed=(await db.prepare("SELECT id FROM x_profiles WHERE kind='bot' AND display_name LIKE 'مواطن صالي آلي %' LIMIT 100").all()).results;
  if(unnamed.length){const statements=unnamed.map(p=>{const i=Math.max(0,Number(p.id.slice(-4))-1);const name=firstNames[(i*7+Math.floor(i/30))%firstNames.length]+' '+familyNames[(i*11+Math.floor(i/16))%familyNames.length]+' 🤖';return db.prepare("UPDATE x_profiles SET display_name=? WHERE id=? AND kind='bot'").bind(name,p.id)});await db.batch(statements)}
@@ -426,7 +428,11 @@ export default {
   ctx.waitUntil((async()=>{
    // Keep X activity fresh every 30 minutes; expensive government and payout scans run hourly.
    const halfHour=new Date(event.scheduledTime||Date.now()).getUTCMinutes()===30;
-   const jobs=halfHour?[['x_bots',generateXBotActivity]]:[['government',runSaliyahGovernment],['x_bots',generateXBotActivity],['x_rewards',runXCreatorAutoPayouts]];
+   const hour=new Date(event.scheduledTime||Date.now()).getUTCHours();
+   // Keep social activity every 30 minutes, but avoid exhausting the D1 free-tier reads.
+   const jobs=[['x_bots',generateXBotActivity]];
+   if(!halfHour && hour%6===0)jobs.push(['x_rewards',runXCreatorAutoPayouts]);
+   if(!halfHour && hour===0)jobs.push(['government',runSaliyahGovernment]);
    for(const [name,fn] of jobs){
     try{
      await fn(env.DB);
@@ -441,7 +447,7 @@ export default {
      }catch(logError){console.error('simulation_log_failed',logError)}
     }
    }
-   if(!halfHour)try{
+   if(!halfHour && hour===0)try{
     const health=await checkSimulationHealth(env.DB);
     await env.DB.prepare("DELETE FROM saliyah_sim_settings WHERE key='simulation_health_error'").run();
     console.log('simulation_health',JSON.stringify(health));
