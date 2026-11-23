@@ -23,6 +23,8 @@ assert.doesNotMatch(ui,/المبلغ بالهلل الصالي/);
 assert.match(ui,/المبلغ بالريال الصالي/);
 assert.match(ui,/xAutoPay/);
 assert.match(worker,/runXCreatorAutoPayouts/);
+assert.match(worker,/halfHour\?\[\['x_bots',generateXBotActivity\]\]/);
+assert.match(worker,/if\(!halfHour\)try\{/);
 assert.match(worker,/\['x_rewards',runXCreatorAutoPayouts\]/);
 assert.match(worker,/INSERT OR IGNORE INTO x_creator_payouts/);
 assert.match(worker,/x_creator_payout_preferences/);
