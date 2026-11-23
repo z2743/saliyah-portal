@@ -321,6 +321,8 @@ async function runXCreatorAutoPayouts(db){
  }
 }
 async function generateXBotActivity(db){
+ // Index the exact feed predicate and ordering; idempotent across worker restarts.
+ await db.prepare('CREATE INDEX IF NOT EXISTS idx_x_root_feed_v2 ON x_posts(created_at DESC) WHERE reply_to IS NULL').run();
  const names=['نواف','سارة','راكان','ليان','فهد','ريم','تركي','جود','ماجد','هيا','بدر','دانة','سلطان','نورة','مشعل','لمى','عبدالله','شهد','فيصل','غلا','خالد','أريج','عمر','رغد','سلمان','مها','يوسف','رنا','طلال','عبير'];
  const topics=[
  'وش رأيكم في تجربة إكس الصالية اليوم؟ 🤖',
@@ -366,8 +368,9 @@ async function generateXBotActivity(db){
  if(newPostStatements.length)await db.batch(newPostStatements);
  // Uneven discovery: most posts receive little engagement; a few trend temporarily.
  // The distribution rotates over time, so fame is neither universal nor permanent.
- const posts=(await db.prepare("SELECT id,profile_id FROM x_posts WHERE reply_to IS NULL ORDER BY created_at DESC LIMIT 90").all()).results;
+ const posts=(await db.prepare("SELECT id,profile_id,body FROM x_posts WHERE reply_to IS NULL ORDER BY created_at DESC LIMIT 90").all()).results;
  const score=(id,salt)=>{let h=2166136261;for(const ch of String(id)+':'+salt){h=Math.imul(h^ch.charCodeAt(0),16777619)}return h>>>0};
+ const likeWrites=[];
  for(let i=0;i<75&&posts.length;i++){
   const candidate=posts[score(now+':'+i,'pick')%posts.length];
   const wave=score(candidate.id,Math.floor(now/24));
@@ -377,8 +380,9 @@ async function generateXBotActivity(db){
   if(score(candidate.id,now+':'+i)%100>=chance)continue;
   const bot=botIds[score(candidate.id,now+':fan:'+i)%botIds.length];
   if(bot===candidate.profile_id)continue;
-  await db.prepare('INSERT OR IGNORE INTO x_likes(profile_id,post_id) VALUES(?,?)').bind(bot,candidate.id).run();
+  likeWrites.push(db.prepare('INSERT OR IGNORE INTO x_likes(profile_id,post_id) VALUES(?,?)').bind(bot,candidate.id));
  }
+ if(likeWrites.length)await db.batch(likeWrites);
  // Fictional accounts hold uneven, contextual, multi-turn discussions.
  const replies=[
   ['بالتوفيق في الحساب الجديد، وش نوع المحتوى اللي بتنشرونه؟','حياكم في إكس الصالية، ننتظر أول أخباركم.','بداية موفقة، تابعنا الحساب وننتظر الجديد.'],
@@ -412,7 +416,7 @@ async function generateXBotActivity(db){
   if(/إعلان|قرار|افتتاح|خبر|مشروع/.test(t))return 6;
   return -1;
  };
- const discussionPosts=(await db.prepare("SELECT id,profile_id,body FROM x_posts WHERE reply_to IS NULL ORDER BY created_at DESC LIMIT 80").all()).results;
+ const discussionPosts=posts.slice(0,80);
  let made=0;
  for(let i=0;i<65&&discussionPosts.length;i++){
   const p=discussionPosts[score(now+':discussion:'+i,'target')%discussionPosts.length];
