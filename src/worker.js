@@ -263,7 +263,20 @@ async function runSaliyahGovernment(db){
   await db.prepare("UPDATE saliyah_sim_citizens SET occupation='متوفى' WHERE id=? AND occupation<>'متوفى'").bind(candidate.id).run();
  }
  // Simulated border arrivals and departures: no real immigration records are touched.
- const ports=['منفذ السجادة البري','مطار الصالية الدولي','ميناء المتجار'];
+ // Foreign tourist bots are visitors, never Saliyah citizens or residents.
+ // Seed a small group per four-hour simulation cycle to protect D1 quotas.
+ await db.prepare("CREATE TABLE IF NOT EXISTS saliyah_sim_tourists(id TEXT PRIMARY KEY,name TEXT NOT NULL,nationality TEXT NOT NULL,passport_number TEXT NOT NULL UNIQUE,visa_status TEXT NOT NULL,arrival_port TEXT NOT NULL,visit_purpose TEXT NOT NULL,created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP)").run();
+ const touristFirst=['James','Oliver','William','Emily','Sophia','Charlotte','Noah','Liam','Amelia','Lucas','Emma','Henry','Isabella','Jack','Olivia','Ethan','Mia','Alexander','Grace','Daniel'];
+ const touristLast=['Smith','Johnson','Brown','Wilson','Taylor','Anderson','Martin','Miller','Davis','Clark','Thomas','Walker','Harris','Lewis','White','Hall','Young','King','Scott','Baker'];
+ const touristCountries=['المملكة المتحدة','الولايات المتحدة','كندا','أستراليا','ألمانيا','فرنسا','إيطاليا','هولندا','إسبانيا','نيوزيلندا'];
+ for(let i=0;i<12;i++){
+  const n=(Math.floor(hour/4)*12+i)%240;
+  const name=touristFirst[(n*7+3)%touristFirst.length]+' '+touristLast[(n*11+5)%touristLast.length];
+  const nationality=touristCountries[n%touristCountries.length];
+  const visa=(n%13===0?'pending':n%17===0?'refused':'approved');
+  await db.prepare("INSERT OR IGNORE INTO saliyah_sim_tourists(id,name,nationality,passport_number,visa_status,arrival_port,visit_purpose) VALUES(?,?,?,?,?,?,?)").bind('tourist-'+String(n+1).padStart(4,'0'),name,nationality,'VIS-'+String(n+1).padStart(6,'0'),visa,'مطار الملك زياد الدولي',n%4===0?'زيارة عائلية':'سياحة').run();
+ }
+ const ports=['منفذ السجادة البري','مطار الملك زياد الدولي','ميناء المتجار'];
  const recent=(await db.prepare("SELECT id FROM saliyah_sim_citizens ORDER BY created_at DESC LIMIT 60").all()).results;
  for(let i=0;i<8&&recent.length;i++){
   const seq=hour*8+i,c=recent[(hour+i*11)%recent.length];
