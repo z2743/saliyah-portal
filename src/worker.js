@@ -149,6 +149,17 @@ async function runSaliyahGovernment(db){
  // Daily life events: studying, job hunting, shopping and running businesses.
  const day=Math.floor(Date.now()/86400000);
  await db.prepare("INSERT OR IGNORE INTO saliyah_sim_life_events(id,citizen_id,kind,description) SELECT 'sim-life-'||?||'-'||substr(id,-4),id,CASE (CAST(substr(id,-4) AS INTEGER)+?)%4 WHEN 0 THEN 'education' WHEN 1 THEN 'employment' WHEN 2 THEN 'shopping' ELSE 'business' END,CASE (CAST(substr(id,-4) AS INTEGER)+?)%4 WHEN 0 THEN 'حضور الدراسة في المملكة' WHEN 1 THEN 'البحث عن وظيفة أو أداء العمل' WHEN 2 THEN 'التسوق وشراء المستلزمات' ELSE 'متابعة مشروع تجاري افتراضي' END FROM saliyah_sim_citizens WHERE id LIKE 'sim-resident-%' AND CAST(substr(id,-4) AS INTEGER)%10=?").bind(day,day,day,day%10).run();
+ // Diverse fictional population: citizens, expatriate residents, travellers and people resting at home.
+ // Record a small rotating cohort per day rather than scanning/updating all 3,000 profiles every cycle.
+ const lifestyleDay=Math.floor(Date.now()/86400000);
+ const lifestyleKinds=['citizen','resident','travel','rest','work','study','shopping','family','job_search','business'];
+ const lifestyleDescriptions=['مواطن صالي يعيش في المملكة','مقيم يحمل إقامة صالية سارية ضمن المحاكاة','سافر خارج المملكة في رحلة شخصية','يقضي يوم راحة في المنزل','متجه إلى العمل','يحضر دراسته','خرج للتسوق','يزور أسرته وأقاربه','يبحث عن وظيفة','يدير مشروعه الخاص'];
+ for(let i=0;i<24;i++){
+  const n=(lifestyleDay*24+i)%3000+1;
+  const id=(n<=2000?'sim-resident-':'sim-employee-')+String(n<=2000?n:n-2000).padStart(4,'0');
+  const kindIndex=(n*7+Math.floor(lifestyleDay/3))%lifestyleKinds.length;
+  await db.prepare('INSERT OR IGNORE INTO saliyah_sim_life_events(id,citizen_id,kind,description) VALUES(?,?,?,?)').bind('lifestyle-'+lifestyleDay+'-'+i,id,lifestyleKinds[kindIndex],lifestyleDescriptions[kindIndex]).run();
+ }
  // Life milestones are deterministic per resident/day and idempotent across retries.
  await db.prepare("INSERT OR IGNORE INTO saliyah_sim_life_events(id,citizen_id,kind,description) SELECT 'sim-milestone-'||?||'-'||substr(id,-4),id,CASE (CAST(substr(id,-4) AS INTEGER)+?)%9 WHEN 0 THEN 'social' WHEN 1 THEN 'study_plan' WHEN 2 THEN 'study_challenge' WHEN 3 THEN 'career_plan' WHEN 4 THEN 'job_search' WHEN 5 THEN 'training' WHEN 6 THEN 'business_plan' WHEN 7 THEN 'business_challenge' ELSE 'single_life' END,CASE (CAST(substr(id,-4) AS INTEGER)+?)%9 WHEN 0 THEN 'يتواصل مع معارفه في المملكة' WHEN 1 THEN 'يستعد لاختبار دراسي' WHEN 2 THEN 'يواجه صعوبة في المذاكرة' WHEN 3 THEN 'يخطط للتقدم الوظيفي' WHEN 4 THEN 'يبحث عن فرص عمل مناسبة' WHEN 5 THEN 'يتدرب على مهارات جديدة' WHEN 6 THEN 'يدرس فكرة مشروع تجاري' WHEN 7 THEN 'يبحث تحديات تأسيس مشروع' ELSE 'يعيش أعزب ويواصل حياته' END FROM saliyah_sim_citizens WHERE id LIKE 'sim-resident-%' AND CAST(substr(id,-4) AS INTEGER)%10=?").bind(day,day,day,day%10).run();
 
@@ -260,7 +271,7 @@ async function runSaliyahGovernment(db){
  }
  // A fictional police incident is recorded, investigated and tried only within the simulation.
  if(recent.length>=2){
-  const incident='incident-'+Math.floor(hour/4),suspect=recent[hour%recent.length],officer='العسكري الآلي '+((hour%12)+1);
+  const incident='incident-'+Math.floor(hour/4),suspect=recent[hour%recent.length],officer=fictionalBotName(hour%80)+' بن '+fictionalFirstNames[hour%fictionalFirstNames.length];
   await db.prepare("INSERT OR IGNORE INTO saliyah_sim_incidents(id,suspect_id,officer,allegation,status) VALUES(?,?,?,?,'reported')").bind(incident,suspect.id,officer,['مخالفة مرورية افتراضية','إتلاف ممتلكات افتراضي','مخالفة تجارية افتراضية'][hour%3]).run();
  }
  const reports=(await db.prepare("SELECT id FROM saliyah_sim_incidents WHERE status='reported' ORDER BY created_at LIMIT 5").all()).results;
