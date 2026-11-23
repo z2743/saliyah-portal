@@ -322,9 +322,9 @@ async function generateXBotActivity(db){
  // Names are initialized only for new placeholder profiles; do not rewrite 1,999 rows every hour.
  const unnamed=(await db.prepare("SELECT id FROM x_profiles WHERE kind='bot' AND display_name LIKE 'مواطن صالي آلي %' LIMIT 100").all()).results;
  if(unnamed.length){const statements=unnamed.map(p=>{const i=Math.max(0,Number(p.id.slice(-4))-1);const name=firstNames[(i*7+Math.floor(i/30))%firstNames.length]+' '+familyNames[(i*11+Math.floor(i/16))%familyNames.length]+' 🤖';return db.prepare("UPDATE x_profiles SET display_name=? WHERE id=? AND kind='bot'").bind(name,p.id)});await db.batch(statements)}
- const now=Math.floor(Date.now()/3600000);
- // Idempotent per hour, safe if the scheduled job is retried.
- for(let i=0;i<36;i++){
+ const now=Math.floor(Date.now()/1800000);
+ // Idempotent per half-hour; maintain the same approximate hourly activity volume.
+ for(let i=0;i<18;i++){
   const id='sim-'+now+'-'+i;
   const profile=botIds[(now*7+i*11)%botIds.length];
   const body=topics[(now*3+i*7)%topics.length];
@@ -334,7 +334,7 @@ async function generateXBotActivity(db){
  // The distribution rotates over time, so fame is neither universal nor permanent.
  const posts=(await db.prepare("SELECT id,profile_id FROM x_posts WHERE reply_to IS NULL ORDER BY created_at DESC LIMIT 180").all()).results;
  const score=(id,salt)=>{let h=2166136261;for(const ch of String(id)+':'+salt){h=Math.imul(h^ch.charCodeAt(0),16777619)}return h>>>0};
- for(let i=0;i<360&&posts.length;i++){
+ for(let i=0;i<180&&posts.length;i++){
   const candidate=posts[score(now+':'+i,'pick')%posts.length];
   const wave=score(candidate.id,Math.floor(now/24));
   const tier=wave%100;
@@ -380,7 +380,7 @@ async function generateXBotActivity(db){
  };
  const discussionPosts=(await db.prepare("SELECT id,profile_id,body FROM x_posts WHERE reply_to IS NULL ORDER BY created_at DESC LIMIT 120").all()).results;
  let made=0;
- for(let i=0;i<120&&discussionPosts.length;i++){
+ for(let i=0;i<60&&discussionPosts.length;i++){
   const p=discussionPosts[score(now+':discussion:'+i,'target')%discussionPosts.length];
   const reach=score(p.id,Math.floor(now/24))%100;
   const chance=reach<70?5:reach<95?35:90;
