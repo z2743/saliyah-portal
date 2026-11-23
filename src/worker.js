@@ -326,7 +326,7 @@ async function generateXBotActivity(db){
  if(unnamed.length){const statements=unnamed.map(p=>{const i=Math.max(0,Number(p.id.slice(-4))-1);const name=firstNames[(i*7+Math.floor(i/30))%firstNames.length]+' '+familyNames[(i*11+Math.floor(i/16))%familyNames.length]+' 🤖';return db.prepare("UPDATE x_profiles SET display_name=? WHERE id=? AND kind='bot'").bind(name,p.id)});await db.batch(statements)}
  const now=Math.floor(Date.now()/1800000);
  // Idempotent per half-hour; maintain the same approximate hourly activity volume.
- for(let i=0;i<18;i++){
+ for(let i=0;i<8;i++){
   const id='sim-'+now+'-'+i;
   const profile=botIds[(now*7+i*11)%botIds.length];
   const body=topics[(now*3+i*7)%topics.length];
@@ -334,9 +334,9 @@ async function generateXBotActivity(db){
  }
  // Uneven discovery: most posts receive little engagement; a few trend temporarily.
  // The distribution rotates over time, so fame is neither universal nor permanent.
- const posts=(await db.prepare("SELECT id,profile_id FROM x_posts WHERE reply_to IS NULL ORDER BY created_at DESC LIMIT 180").all()).results;
+ const posts=(await db.prepare("SELECT id,profile_id FROM x_posts WHERE reply_to IS NULL ORDER BY created_at DESC LIMIT 90").all()).results;
  const score=(id,salt)=>{let h=2166136261;for(const ch of String(id)+':'+salt){h=Math.imul(h^ch.charCodeAt(0),16777619)}return h>>>0};
- for(let i=0;i<180&&posts.length;i++){
+ for(let i=0;i<75&&posts.length;i++){
   const candidate=posts[score(now+':'+i,'pick')%posts.length];
   const wave=score(candidate.id,Math.floor(now/24));
   const tier=wave%100;
@@ -380,9 +380,9 @@ async function generateXBotActivity(db){
   if(/إعلان|قرار|افتتاح|خبر|مشروع/.test(t))return 6;
   return -1;
  };
- const discussionPosts=(await db.prepare("SELECT id,profile_id,body FROM x_posts WHERE reply_to IS NULL ORDER BY created_at DESC LIMIT 120").all()).results;
+ const discussionPosts=(await db.prepare("SELECT id,profile_id,body FROM x_posts WHERE reply_to IS NULL ORDER BY created_at DESC LIMIT 80").all()).results;
  let made=0;
- for(let i=0;i<150&&discussionPosts.length;i++){
+ for(let i=0;i<65&&discussionPosts.length;i++){
   const p=discussionPosts[score(now+':discussion:'+i,'target')%discussionPosts.length];
   const reach=score(p.id,Math.floor(now/24))%100;
   const chance=reach<70?35:reach<95?75:98;
@@ -402,6 +402,22 @@ async function generateXBotActivity(db){
     await db.prepare("INSERT OR IGNORE INTO x_posts(id,profile_id,body,reply_to) VALUES(?,?,?,?)").bind('sim-thread-'+now+'-'+i,secondBot,second,replyId).run();
    }
   }
+ }
+
+ // Keep follower growth and reposts active, but cap database work per run.
+ const featured=discussionPosts.filter(p=>p.profile_id&&!p.id.startsWith('sim-'));
+ for(let i=0;i<22&&featured.length;i++){
+  const p=featured[score(now+':repost:'+i,'post')%featured.length];
+  const bot=botIds[score(p.id,now+':reposter:'+i)%botIds.length];
+  if(bot===p.profile_id)continue;
+  await db.prepare('INSERT OR IGNORE INTO x_posts(id,profile_id,body,repost_of) VALUES(?,?,?,?)').bind('sim-repost-'+now+'-'+i,bot,'',p.id).run();
+ }
+ const authors=[...new Set(featured.map(p=>p.profile_id))];
+ for(let i=0;i<36&&authors.length;i++){
+  const author=authors[score(now+':follow:'+i,'author')%authors.length];
+  const bot=botIds[score(author,now+':follower:'+i)%botIds.length];
+  if(bot===author)continue;
+  await db.prepare('INSERT OR IGNORE INTO x_follows(follower_id,following_id) VALUES(?,?)').bind(bot,author).run();
  }
 
 }
