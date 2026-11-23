@@ -356,12 +356,14 @@ async function generateXBotActivity(db){
  if(unnamed.length){const statements=unnamed.map(p=>{const i=Math.max(0,Number(p.id.slice(-4))-1);const name=firstNames[(i*7+Math.floor(i/30))%firstNames.length]+' '+familyNames[(i*11+Math.floor(i/16))%familyNames.length]+' 🤖';return db.prepare("UPDATE x_profiles SET display_name=? WHERE id=? AND kind='bot'").bind(name,p.id)});await db.batch(statements)}
  const now=Math.floor(Date.now()/1800000);
  // Idempotent per half-hour; maintain the same approximate hourly activity volume.
+ const newPostStatements=[];
  for(let i=0;i<8;i++){
   const id='sim-'+now+'-'+i;
   const profile=botIds[(now*7+i*11)%botIds.length];
   const body=topics[(now*3+i*7)%topics.length];
-  await db.prepare('INSERT OR IGNORE INTO x_posts(id,profile_id,body) VALUES(?,?,?)').bind(id,profile,body).run();
+  newPostStatements.push(db.prepare('INSERT OR IGNORE INTO x_posts(id,profile_id,body) VALUES(?,?,?)').bind(id,profile,body));
  }
+ if(newPostStatements.length)await db.batch(newPostStatements);
  // Uneven discovery: most posts receive little engagement; a few trend temporarily.
  // The distribution rotates over time, so fame is neither universal nor permanent.
  const posts=(await db.prepare("SELECT id,profile_id FROM x_posts WHERE reply_to IS NULL ORDER BY created_at DESC LIMIT 90").all()).results;
@@ -493,7 +495,9 @@ export default {
      }catch(logError){console.error('simulation_log_failed',logError)}
     }
    }
-   if(!halfHour && hour%4===0)try{
+   // Full-table integrity scans are expensive on D1 Free. Run once per day,
+   // while keeping the government simulation and social bot schedules unchanged.
+   if(!halfHour && hour===2)try{
     const health=await checkSimulationHealth(env.DB);
     await env.DB.prepare("DELETE FROM saliyah_sim_settings WHERE key='simulation_health_error'").run();
     console.log('simulation_health',JSON.stringify(health));
