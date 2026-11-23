@@ -438,20 +438,21 @@ async function generateXBotActivity(db){
 
  // Keep follower growth and reposts active, but cap database work per run.
  const featured=discussionPosts.filter(p=>p.profile_id&&!p.id.startsWith('sim-'));
+ const engagementWrites=[];
  for(let i=0;i<22&&featured.length;i++){
   const p=featured[score(now+':repost:'+i,'post')%featured.length];
   const bot=botIds[score(p.id,now+':reposter:'+i)%botIds.length];
   if(bot===p.profile_id)continue;
-  await db.prepare('INSERT OR IGNORE INTO x_posts(id,profile_id,body,repost_of) VALUES(?,?,?,?)').bind('sim-repost-'+now+'-'+i,bot,'',p.id).run();
+  engagementWrites.push(db.prepare('INSERT OR IGNORE INTO x_posts(id,profile_id,body,repost_of) VALUES(?,?,?,?)').bind('sim-repost-'+now+'-'+i,bot,'',p.id));
  }
  const authors=[...new Set(featured.map(p=>p.profile_id))];
  for(let i=0;i<36&&authors.length;i++){
   const author=authors[score(now+':follow:'+i,'author')%authors.length];
   const bot=botIds[score(author,now+':follower:'+i)%botIds.length];
   if(bot===author)continue;
-  await db.prepare('INSERT OR IGNORE INTO x_follows(follower_id,following_id) VALUES(?,?)').bind(bot,author).run();
+  engagementWrites.push(db.prepare('INSERT OR IGNORE INTO x_follows(follower_id,following_id) VALUES(?,?)').bind(bot,author));
  }
-
+ if(engagementWrites.length)await db.batch(engagementWrites);
 }
 async function checkSimulationHealth(db){
  const checks=[
@@ -757,7 +758,7 @@ if(method==='POST'&&path==='/api/admin/simulation/run'){
  const now=Math.floor(Date.now()/3600000);
  const previous=await db.prepare("SELECT value FROM saliyah_sim_settings WHERE key='last_manual_run'").first();
  if(previous&&Number(previous.value)===now)return json({error:'تم تشغيل المحاكاة يدويًا هذه الساعة، انتظر الساعة التالية'},429);
- try{await runSaliyahGovernment(db);await db.prepare("INSERT INTO saliyah_sim_settings(key,value) VALUES('last_manual_run',?) ON CONFLICT(key) DO UPDATE SET value=excluded.value").bind(String(now)).run();await audit(db,user.id,'simulation_manual_run','simulation',String(now),{hour:now});return json({ok:true,hour:now});}
+ try{await runSaliyahGovernment(db,env.AVIATION_DB);await db.prepare("INSERT INTO saliyah_sim_settings(key,value) VALUES('last_manual_run',?) ON CONFLICT(key) DO UPDATE SET value=excluded.value").bind(String(now)).run();await audit(db,user.id,'simulation_manual_run','simulation',String(now),{hour:now});return json({ok:true,hour:now});}
  catch(e){console.error('simulation_manual_run_failed',e);return json({error:'تعذر إكمال دورة المحاكاة',detail:String(e.message||e).slice(0,250)},500)}
 }
 if(method==='GET'&&path==='/api/admin/simulation/companies'){
@@ -829,7 +830,7 @@ if(method==='GET'&&path==='/api/admin/simulation/citizens'){
   db.prepare("SELECT COUNT(*) n FROM saliyah_sim_enrollments").first(),
   db.prepare("SELECT COUNT(*) n FROM saliyah_sim_marriages").first(),
   db.prepare("SELECT COUNT(*) n FROM saliyah_sim_children").first(),
-  db.prepare("SELECT id,citizen_id,event_type,description,created_at FROM saliyah_sim_life_events ORDER BY created_at DESC LIMIT 100").all(),
+  db.prepare("SELECT id,citizen_id,kind AS event_type,description,created_at FROM saliyah_sim_life_events ORDER BY created_at DESC LIMIT 100").all(),
   db.prepare("SELECT COUNT(*) n FROM x_posts").first(),
   db.prepare("SELECT COUNT(*) n FROM x_profiles").first(),
   db.prepare("SELECT status,COUNT(*) n FROM saliyah_projects GROUP BY status").all(),
