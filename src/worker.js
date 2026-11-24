@@ -478,41 +478,8 @@ async function checkSimulationHealth(db){
 }
 export default {
  async scheduled(event,env,ctx){
-  ctx.waitUntil((async()=>{
-   // Keep X activity fresh every 30 minutes; expensive government and payout scans run hourly.
-   const halfHour=new Date(event.scheduledTime||Date.now()).getUTCMinutes()===30;
-   const hour=new Date(event.scheduledTime||Date.now()).getUTCHours();
-   // Keep social activity every 30 minutes, but avoid exhausting the D1 free-tier reads.
-   const jobs=[['x_bots',generateXBotActivity]];
-   if(!halfHour && hour%6===0)jobs.push(['x_rewards',runXCreatorAutoPayouts]);
-   if(!halfHour && hour%4===0)jobs.push(['government',runSaliyahGovernment]);
-   for(const [name,fn] of jobs){
-    try{
-     await (name==='government'?fn(env.DB,env.AVIATION_DB):fn(env.DB));
-     await env.DB.prepare("INSERT INTO saliyah_sim_settings(key,value) VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value").bind('last_'+name+'_success',new Date().toISOString()).run();
-     await env.DB.prepare('DELETE FROM saliyah_sim_settings WHERE key=?').bind('last_'+name+'_error').run();
-     console.log('simulation_cron_success',name);
-    }catch(e){
-     const message=String(e instanceof Error?e.message:e).slice(0,300);
-     console.error('simulation_cron_failed',name,e instanceof Error?e.stack:String(e));
-     try{
-      await env.DB.prepare("INSERT INTO saliyah_sim_settings(key,value) VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value").bind('last_'+name+'_error',new Date().toISOString()+' '+message).run();
-     }catch(logError){console.error('simulation_log_failed',logError)}
-    }
-   }
-   // Full-table integrity scans are expensive on D1 Free. Run once per day,
-   // while keeping the government simulation and social bot schedules unchanged.
-   if(!halfHour && hour===2)try{
-    const health=await checkSimulationHealth(env.DB);
-    await env.DB.prepare("DELETE FROM saliyah_sim_settings WHERE key='simulation_health_error'").run();
-    console.log('simulation_health',JSON.stringify(health));
-   }catch(e){
-    console.error('simulation_health_failed',e);
-    try{
-     await env.DB.prepare("INSERT INTO saliyah_sim_settings(key,value) VALUES('simulation_health_error',?) ON CONFLICT(key) DO UPDATE SET value=excluded.value").bind(new Date().toISOString()+' '+String(e).slice(0,250)).run();
-    }catch(logError){console.error('simulation_health_log_failed',logError)}
-   }
-  })());
+  // Royal pause: no automated simulation, bot activity, payouts or integrity scans.
+  console.log('simulation_paused_by_royal_order');
  },async fetch(req,env){const u=new URL(req.url);if(u.pathname==='/simulation.html'){if(!env.DB)return new Response('Unavailable',{status:503});const royal=await actor(req,env.DB);if(royal?.role!=='king')return new Response('هذه الصفحة مخصصة للملك فقط',{status:403,headers:{'content-type':'text/plain; charset=utf-8','cache-control':'no-store'}});const asset=await env.ASSETS.fetch(req);const headers=new Headers(asset.headers);headers.set('Cache-Control','no-store, max-age=0');return new Response(asset.body,{status:asset.status,statusText:asset.statusText,headers})}if(!u.pathname.startsWith('/api/'))return env.ASSETS.fetch(req);try{if(!env.DB)return json({error:'Database binding missing'},503);const db=env.DB;const method=req.method;const path=u.pathname;const user=(path==='/api/auth/login'||path==='/api/setup/king'||path==='/api/setup/status'||path==='/api/setup/recover-owner'||path==='/api/auth/citizen/register')?null:await actor(req,db);if(method!=='GET'&&method!=='HEAD'){const origin=req.headers.get('origin');const site=req.headers.get('sec-fetch-site');if((origin&&origin!==u.origin)||(site&&site!=='same-origin'&&site!=='none'))return json({error:'مصدر الطلب غير مسموح'},403);}
 
 // X Al-Saliyah: profiles are bound to authenticated accounts; ministry verification
@@ -762,6 +729,7 @@ if(method==='POST'&&path==='/api/admin/simulation/run'){
  const now=Math.floor(Date.now()/3600000);
  const previous=await db.prepare("SELECT value FROM saliyah_sim_settings WHERE key='last_manual_run'").first();
  if(previous&&Number(previous.value)===now)return json({error:'تم تشغيل المحاكاة يدويًا هذه الساعة، انتظر الساعة التالية'},429);
+ if(true)return json({error:'المحاكاة والبوتات متوقفة مؤقتاً بأمر الملك'},503);
  try{await runSaliyahGovernment(db,env.AVIATION_DB);await db.prepare("INSERT INTO saliyah_sim_settings(key,value) VALUES('last_manual_run',?) ON CONFLICT(key) DO UPDATE SET value=excluded.value").bind(String(now)).run();await audit(db,user.id,'simulation_manual_run','simulation',String(now),{hour:now});return json({ok:true,hour:now});}
  catch(e){console.error('simulation_manual_run_failed',e);return json({error:'تعذر إكمال دورة المحاكاة',detail:String(e.message||e).slice(0,250)},500)}
 }
