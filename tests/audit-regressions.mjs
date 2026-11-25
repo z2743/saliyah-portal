@@ -41,4 +41,12 @@ const migrations=readdirSync(new URL('../migrations/',import.meta.url)).filter(n
 assert.equal(migrations.length,new Set(migrations).size);
 assert.match(worker,/SELECT c\.id FROM saliyah_sim_citizens c WHERE c\.occupation<>'متوفى' ORDER BY c\.created_at LIMIT 100/);
 assert.doesNotMatch(worker,/NOT EXISTS\(SELECT 1 FROM saliyah_sim_life_events e WHERE e\.citizen_id=c\.id AND e\.kind='death'\)/);
+assert.match(worker,/population_bootstrap_v2/);
+assert.match(worker,/x_bot_names_bootstrap_v1/);
+assert.match(worker,/lifestyleWrites\.push\(db\.prepare/);
+assert.match(worker,/await db\.batch\(lifestyleWrites\)/);
+assert.match(worker,/touristWrites\.push\(aviationDb\.prepare/);
+assert.match(worker,/await aviationDb\.batch\(touristWrites\)/);
+assert.match(read('migrations/9999_z_simulation_load_indexes.sql'),/idx_sim_citizens_active_created/);
+assert.match(read('migrations/9999_z_simulation_load_indexes.sql'),/idx_sim_citizens_created/);
 console.log('PASS audit regression source checks');
