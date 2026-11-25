@@ -39,4 +39,6 @@ assert.match(dashboard,/id="bankPrev"/);
 assert.match(dashboard,/id="bankNext"/);
 const migrations=readdirSync(new URL('../migrations/',import.meta.url)).filter(n=>n.endsWith('.sql'));
 assert.equal(migrations.length,new Set(migrations).size);
+assert.match(worker,/SELECT c\.id FROM saliyah_sim_citizens c WHERE c\.occupation<>'متوفى' ORDER BY c\.created_at LIMIT 100/);
+assert.doesNotMatch(worker,/NOT EXISTS\(SELECT 1 FROM saliyah_sim_life_events e WHERE e\.citizen_id=c\.id AND e\.kind='death'\)/);
 console.log('PASS audit regression source checks');
