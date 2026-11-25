@@ -1177,6 +1177,87 @@ if(path.startsWith('/api/enforcement/')){
 
 const can=async permission=>user.role==='king'||!!(await db.prepare('SELECT 1 FROM staff_permissions WHERE user_id=? AND permission=?').bind(user.id,permission).first());
 
+// Human and bot accounts share ONE D1 transaction boundary for simulated transfers,
+// stock purchases and property sales. Database triggers validate and apply mutations atomically.
+if(method==='GET'&&path==='/api/sim-market'){
+ const companies=await db.prepare("SELECT c.id,c.name,c.activity,c.location,c.capital,c.status,MAX(1,CAST(ROUND(c.capital/1000.0) AS INTEGER)) unit_price,(SELECT h.owner_id FROM saliyah_sim_shares h JOIN saliyah_sim_bank_accounts a ON a.owner_type='citizen' AND a.owner_id=h.owner_id AND a.status='active' WHERE h.company_id=c.id AND h.units>0 ORDER BY h.units DESC LIMIT 1) counterparty_id,(SELECT MAX(h.units) FROM saliyah_sim_shares h JOIN saliyah_sim_bank_accounts a ON a.owner_type='citizen' AND a.owner_id=h.owner_id AND a.status='active' WHERE h.company_id=c.id AND h.units>0) available_units,(SELECT MAX(a.balance) FROM saliyah_sim_shares h JOIN saliyah_sim_bank_accounts a ON a.owner_type='citizen' AND a.owner_id=h.owner_id AND a.status='active' WHERE h.company_id=c.id) bot_bid_balance FROM saliyah_sim_companies c WHERE c.status='approved' ORDER BY c.name LIMIT 100").all();
+ const portfolio=user?(await db.prepare("SELECT h.company_id,c.name company_name,h.units,MAX(1,CAST(ROUND(c.capital/1000.0) AS INTEGER)) unit_price FROM saliyah_sim_shares h JOIN saliyah_sim_companies c ON c.id=h.company_id WHERE h.owner_id=? AND h.units>0 ORDER BY c.name").bind('human:'+user.id).all()).results:[];
+ const accounts=user?(await db.prepare('SELECT id,bank,balance FROM bank_accounts WHERE user_id=? ORDER BY bank').bind(user.id).all()).results:[];
+ const trades=user?(await db.prepare("SELECT t.id,t.company_id,c.name company_name,t.direction,t.units,t.unit_price,t.created_at,b.name counterparty_name FROM saliyah_market_trades t JOIN saliyah_sim_companies c ON c.id=t.company_id LEFT JOIN saliyah_sim_citizens b ON b.id=t.bot_owner_id WHERE t.user_id=? ORDER BY t.created_at DESC,t.id DESC LIMIT 35").bind(user.id).all()).results:[];
+ return json({companies:companies.results.map(c=>({...c,bot_bid_balance:undefined,buyback_units:Math.floor(Number(c.bot_bid_balance||0)/Number(c.unit_price)),simulated:true,registry_number:'SIM-CO-'+c.id})),portfolio,accounts,trades,simulated:true});
+}
+if(method==='POST'&&path==='/api/sim-market/trade'){
+ if(!user)return json({error:'سجل الدخول لتداول الأسهم الصالية'},401);
+ const b=await input(req);
+ if(!b||!['buy','sell'].includes(b.direction)||!validText(b.company_id,5,120)||!validText(b.account_id,10,80)||!validText(b.counterparty_id,5,120)||!Number.isSafeInteger(b.units)||b.units<1||b.units>1000)return json({error:'بيانات صفقة الأسهم غير صالحة'},400);
+ const company=await db.prepare("SELECT id,MAX(1,CAST(ROUND(capital/1000.0) AS INTEGER)) unit_price FROM saliyah_sim_companies WHERE id=? AND status='approved'").bind(b.company_id).first();
+ if(!company)return json({error:'الشركة غير مدرجة أو غير متاحة'},404);
+ const id=random();
+ try{await db.prepare('INSERT INTO saliyah_market_trades(id,company_id,user_id,user_account_id,bot_owner_id,direction,units,unit_price) VALUES(?,?,?,?,?,?,?,?)').bind(id,company.id,user.id,b.account_id,b.counterparty_id,b.direction,b.units,company.unit_price).run()}
+ catch(e){console.error('sim_stock_trade_rejected',String(e).slice(0,120));return json({error:'تعذرت الصفقة: تأكد من الرصيد والأسهم المتاحة والطرف المقابل، ثم حدّث الأسعار'},409)}
+ await audit(db,user.id,'sim_stock_'+b.direction,'saliyah_market_trade',id,{company_id:company.id,units:b.units,unit_price:company.unit_price});
+ return json({ok:true,id,units:b.units,unit_price:company.unit_price,total:b.units*company.unit_price,simulated:true},201);
+}
+if(method==='GET'&&path==='/api/sim-market/properties'){
+ const listed=await db.prepare("SELECT p.id,p.kind,p.location,p.price,p.created_at,p.owner_id,c.name seller_name FROM saliyah_sim_properties p JOIN saliyah_sim_citizens c ON c.id=p.owner_id JOIN saliyah_sim_bank_accounts b ON b.owner_type='citizen' AND b.owner_id=p.owner_id AND b.status='active' WHERE p.status='listed' ORDER BY p.created_at DESC,p.id LIMIT 100").all();
+ const mine=user?(await db.prepare("SELECT id,kind,location,price,status FROM saliyah_sim_properties WHERE owner_id=? ORDER BY created_at DESC LIMIT 100").bind('human:'+user.id).all()).results:[];
+ return json({listed:listed.results.map(x=>({...x,registration_number:'SIM-PR-'+x.id})),mine,simulated:true});
+}
+if(method==='POST'&&path==='/api/sim-market/property/buy'){
+ if(!user)return json({error:'سجل الدخول لشراء العقارات'},401);
+ const b=await input(req);
+ if(!b||!validText(b.property_id,5,120)||!validText(b.account_id,10,80))return json({error:'بيانات شراء العقار غير صالحة'},400);
+ const property=await db.prepare("SELECT id,owner_id,price FROM saliyah_sim_properties WHERE id=? AND status='listed' AND owner_id NOT LIKE 'human:%'").bind(b.property_id).first();
+ if(!property)return json({error:'العقار غير معروض للبيع'},404);
+ const id=random();
+ try{await db.prepare('INSERT INTO saliyah_sim_public_property_trades(id,property_id,user_id,user_account_id,seller_id,price) VALUES(?,?,?,?,?,?)').bind(id,property.id,user.id,b.account_id,property.owner_id,property.price).run()}
+ catch{return json({error:'تعذر الشراء؛ تحقق من الرصيد وتوفر العقار ثم أعد المحاولة'},409)}
+ await audit(db,user.id,'sim_property_buy','saliyah_sim_public_property_trade',id,{property_id:property.id,price:property.price});
+ return json({ok:true,id,property_id:property.id,price:property.price,simulated:true},201);
+}
+if(method==='POST'&&path==='/api/sim-directory/payment'){
+ if(!user)return json({error:'سجل الدخول للتحويل إلى حساب افتراضي'},401);
+ const b=await input(req);
+ if(!b||!validText(b.account_id,10,80)||!validText(b.recipient_account_number,8,80)||!Number.isSafeInteger(b.amount)||b.amount<1||b.amount>100000000||typeof (b.memo??'')!=='string'||String(b.memo??'').length>200)return json({error:'بيانات التحويل غير صالحة'},400);
+ const recipient=await db.prepare("SELECT id FROM saliyah_sim_bank_accounts WHERE account_number=? AND status='active'").bind(b.recipient_account_number.trim()).first();
+ if(!recipient)return json({error:'حساب البوت غير موجود أو غير نشط'},404);
+ const id=random();
+ try{await db.prepare('INSERT INTO saliyah_sim_public_payments(id,user_id,from_account_id,recipient_account_id,amount,memo) VALUES(?,?,?,?,?,?)').bind(id,user.id,b.account_id,recipient.id,b.amount,String(b.memo||'').trim()).run()}
+ catch{return json({error:'تعذر التحويل؛ تأكد من ملكية الحساب والرصيد'},409)}
+ await audit(db,user.id,'sim_bot_payment','saliyah_sim_public_payment',id,{recipient:recipient.id,amount:b.amount});
+ return json({ok:true,id,amount:b.amount,simulated:true},201);
+}
+if(method==='GET'&&path==='/api/sim-directory/contacts'){
+ if(!user)return json({error:'سجل الدخول لعرض رسائلك'},401);
+ const [messages,payments]=await Promise.all([
+  db.prepare('SELECT id,target_type,target_id,message,status,bot_reply,created_at,replied_at FROM saliyah_sim_public_contacts WHERE user_id=? ORDER BY created_at DESC,id DESC LIMIT 80').bind(user.id).all(),
+  db.prepare("SELECT p.id,p.amount,p.memo,p.created_at,a.account_number FROM saliyah_sim_public_payments p JOIN saliyah_sim_bank_accounts a ON a.id=p.recipient_account_id WHERE p.user_id=? ORDER BY p.created_at DESC LIMIT 50").bind(user.id).all()
+ ]);
+ return json({messages:messages.results,payments:payments.results,simulated:true});
+}
+if(method==='POST'&&path==='/api/sim-directory/contact'){
+ if(!user)return json({error:'سجل الدخول لمراسلة السكان والمؤسسات'},401);
+ const b=await input(req);
+ const sources={
+  citizens:"SELECT 1 FROM saliyah_sim_citizens WHERE id=?",
+  companies:"SELECT 1 FROM saliyah_sim_companies WHERE id=?",
+  institutions:"SELECT 1 FROM saliyah_sim_institutions WHERE id=?",
+  jobs:"SELECT 1 FROM saliyah_sim_jobs WHERE id=?",
+  x:"SELECT 1 FROM x_profiles WHERE id=? AND kind='bot'",
+  lawyers:"SELECT 1 FROM saliyah_sim_legal_bots WHERE id=?",
+  properties:"SELECT 1 FROM saliyah_sim_properties WHERE id=? AND owner_id NOT LIKE 'human:%'"
+ };
+ if(!b||!Object.hasOwn(sources,b.type)||!validText(b.id,5,120)||!validText(b.message,5,1000))return json({error:'الجهة أو الرسالة غير صالحة'},400);
+ if(!(await db.prepare(sources[b.type]).bind(b.id).first()))return json({error:'الكيان الافتراضي غير موجود'},404);
+ const sent=await db.prepare("SELECT COUNT(*) n FROM saliyah_sim_public_contacts WHERE user_id=? AND created_at>=datetime('now','-1 day')").bind(user.id).first();
+ if(Number(sent.n)>=20)return json({error:'الحد اليومي 20 رسالة لحماية D1 من الاستنزاف'},429);
+ const id=random();
+ await db.prepare('INSERT INTO saliyah_sim_public_contacts(id,user_id,target_type,target_id,message) VALUES(?,?,?,?,?)').bind(id,user.id,b.type,b.id,b.message.trim()).run();
+ await audit(db,user.id,'sim_contact_send','saliyah_sim_public_contact',id,{type:b.type,target_id:b.id});
+ return json({ok:true,id,status:'pending_bot',simulated:true},201);
+}
+
+
 // Phase 36: private deployment readiness diagnostics (king only; read-only).
 if(method==='GET'&&path==='/api/admin/readiness'){
  if(user.role!=='king')return json({error:'هذه الصفحة للملك فقط'},403);
