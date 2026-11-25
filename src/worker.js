@@ -1,3 +1,7 @@
+
+// Virtual IBANs are reversible aliases for existing UUID accounts; no database scans or backfill.
+function saliyahIban(id){if(!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(id))return id;const part=BigInt('0x'+id.replace(/-/g,'')).toString(36).toUpperCase().padStart(25,'0');const digits=(part+'SL00').replace(/[A-Z]/g,c=>String(c.charCodeAt(0)-55));return 'SL'+String(98n-BigInt(digits)%97n).padStart(2,'0')+part}
+function saliyahAccountId(value){const s=String(value||'').replace(/\s/g,'').toUpperCase();if(/^[0-9A-F]{8}-[0-9A-F]{4}-[0-9A-F]{4}-[0-9A-F]{4}-[0-9A-F]{12}$/.test(s))return s.toLowerCase();if(!/^SL[0-9]{2}[0-9A-Z]{25}$/.test(s))return null;let n=0n;for(const c of s.slice(4))n=n*36n+BigInt(parseInt(c,36));const h=n.toString(16).padStart(32,'0');if(h.length!==32)return null;const id=h.slice(0,8)+'-'+h.slice(8,12)+'-'+h.slice(12,16)+'-'+h.slice(16,20)+'-'+h.slice(20);return saliyahIban(id)===s?id:null}
 const json=(data,status=200,extra={})=>new Response(JSON.stringify(data),{status,headers:{'content-type':'application/json; charset=utf-8','cache-control':'no-store','x-content-type-options':'nosniff',...extra}});
 const enc=new TextEncoder();
 const hex=buf=>Array.from(new Uint8Array(buf)).map(b=>b.toString(16).padStart(2,'0')).join('');
@@ -1868,9 +1872,9 @@ if(method==='GET'&&path==='/api/pos/merchants'){
  const r=await db.prepare('SELECT m.id,m.name,m.account_id,m.created_at FROM pos_merchants m WHERE owner_id=? ORDER BY created_at DESC').bind(user.id).all();return json({merchants:r.results});
 }
 if(method==='POST'&&path==='/api/pos/request'){
- const b=await input(req);if(!b||!validText(b.merchant_id,10,80)||!validText(b.customer,3,80)||!Number.isSafeInteger(b.amount)||b.amount<1||b.amount>1000000||typeof b.description!=='string'||b.description.length>200)return json({error:'بيانات طلب الدفع غير صالحة'},400);
+ const b=await input(req);if(!b||!validText(b.merchant_id,10,80)||!saliyahAccountId(b.customer_iban)||!Number.isSafeInteger(b.amount)||b.amount<1||b.amount>1000000||typeof b.description!=='string'||b.description.length>200)return json({error:'بيانات طلب الدفع غير صالحة'},400);
  const m=await db.prepare('SELECT id FROM pos_merchants WHERE id=? AND owner_id=?').bind(b.merchant_id,user.id).first();if(!m)return json({error:'المتجر غير موجود'},404);
- const customer=await db.prepare('SELECT id FROM users WHERE username=?').bind(b.customer.trim().toLowerCase()).first();if(!customer||customer.id===user.id)return json({error:'المشتري غير موجود أو غير مسموح'},400);
+ const customer=await db.prepare('SELECT user_id id FROM bank_accounts WHERE id=?').bind(saliyahAccountId(b.customer_iban)).first();if(!customer||customer.id===user.id)return json({error:'المشتري غير موجود أو غير مسموح'},400);
  const id=random();await db.prepare('INSERT INTO pos_payments(id,merchant_id,customer_id,amount,description) VALUES(?,?,?,?,?)').bind(id,m.id,customer.id,b.amount,b.description.trim()).run();
  await db.prepare('INSERT INTO messages(id,sender_id,recipient_id,subject,body) VALUES(?,?,?,?,?)').bind(random(),user.id,customer.id,'طلب دفع من متجر صالي',`لديك طلب دفع رقم ${id} بقيمة ${b.amount} ريال صالي. افتح نقاط البيع لمراجعته.`).run();
  await audit(db,user.id,'pos_request','pos_payment',id,{amount:b.amount});return json({id},201);
@@ -1881,7 +1885,7 @@ if(method==='GET'&&path==='/api/pos/payments'){
 if(method==='POST'&&path==='/api/pos/authorize'){
  const b=await input(req);if(!b||!validText(b.payment_id,10,80)||!validText(b.account_id,10,80))return json({error:'أدخل رقم الطلب وحسابك البنكي'},400);
  const pay=await db.prepare("SELECT id,amount FROM pos_payments WHERE id=? AND customer_id=? AND status='pending' AND created_at>=datetime('now','-24 hours')").bind(b.payment_id,user.id).first();if(!pay)return json({error:'الطلب غير متاح أو انتهت مهلة الدفع'},404);
- const card=await db.prepare("SELECT c.id,a.balance FROM bank_cards c JOIN bank_accounts a ON a.id=c.account_id WHERE a.id=? AND a.user_id=? AND c.status='active' LIMIT 1").bind(b.account_id.trim(),user.id).first();if(!card)return json({error:'الحساب لا يخصك أو ليس له بطاقة نشطة'},403);if(card.balance<pay.amount)return json({error:'الرصيد غير كافٍ'},409);
+ const card=await db.prepare("SELECT c.id,a.balance FROM bank_cards c JOIN bank_accounts a ON a.id=c.account_id WHERE a.id=? AND a.user_id=? AND c.status='active' LIMIT 1").bind(saliyahAccountId(b.account_id),user.id).first();if(!card)return json({error:'الحساب لا يخصك أو ليس له بطاقة نشطة'},403);if(card.balance<pay.amount)return json({error:'الرصيد غير كافٍ'},409);
  const code=String(crypto.getRandomValues(new Uint32Array(1))[0]%1000000).padStart(6,'0'),digest=await hash(code),id=random();
  await db.batch([db.prepare('DELETE FROM pos_otps WHERE payment_id=?').bind(pay.id),db.prepare("INSERT INTO pos_otps(id,payment_id,card_id,code_hash,expires_at) VALUES(?,?,?,?,datetime('now','+5 minutes'))").bind(id,pay.id,card.id,digest),db.prepare('INSERT INTO messages(id,sender_id,recipient_id,subject,body) VALUES(?,?,?,?,?)').bind(random(),null,user.id,'رمز تأكيد دفع صالي',`رمز التأكيد: ${code} — صالح لخمس دقائق لطلب ${pay.id}. لا تشاركه مع أحد.`)]);
  await audit(db,user.id,'pos_otp_issued','pos_payment',pay.id,{});return json({ok:true,notice:'أُرسل الرمز إلى الرسائل الحكومية الداخلية'});
@@ -1941,22 +1945,22 @@ if(method==='POST'&&path==='/api/banking/atm'){
 // Banking is simulated. Balances are integer Saliyah Riyals, never real money.
 if(method==='GET'&&path==='/api/banking/accounts'){
  const rows=await db.prepare('SELECT id,bank,balance,created_at FROM bank_accounts WHERE user_id=? ORDER BY bank').bind(user.id).all();
- return json({accounts:rows.results});
+ return json({accounts:rows.results.map(x=>({...x,iban:saliyahIban(x.id)}))});
 }
 if(method==='POST'&&path==='/api/banking/accounts'){
  const b=await input(req);if(!b||!['saliyah','national','development'].includes(b.bank))return json({error:'البنك غير صالح'},400);
  const id=random();await db.prepare('INSERT OR IGNORE INTO bank_accounts(id,user_id,bank) VALUES(?,?,?)').bind(id,user.id,b.bank).run();
  const account=await db.prepare('SELECT id,bank,balance FROM bank_accounts WHERE user_id=? AND bank=?').bind(user.id,b.bank).first();
- return json({account},201);
+ return json({account:{...account,iban:saliyahIban(account.id)}},201);
 }
 if(method==='GET'&&path==='/api/banking/transfers'){
  const r=await db.prepare(`SELECT t.id,t.amount,t.memo,t.created_at,t.sender_account,t.recipient_account,sa.bank sender_bank,ra.bank recipient_bank,su.username sender,ru.username recipient FROM bank_transfers t JOIN bank_accounts sa ON sa.id=t.sender_account JOIN bank_accounts ra ON ra.id=t.recipient_account JOIN users su ON su.id=sa.user_id JOIN users ru ON ru.id=ra.user_id WHERE sa.user_id=? OR ra.user_id=? ORDER BY t.created_at DESC LIMIT 100`).bind(user.id,user.id).all();return json({transfers:r.results});
 }
 if(method==='POST'&&path==='/api/banking/transfer'){
- const b=await input(req);if(!b||!validText(b.from,10,80)||!validText(b.recipient,3,80)||!['saliyah','national','development'].includes(b.bank)||!Number.isSafeInteger(b.amount)||b.amount<=0||b.amount>100000000||typeof b.memo!=='string'||b.memo.length>200)return json({error:'بيانات التحويل غير صالحة'},400);
+ const b=await input(req);if(!b||!validText(b.from,10,80)||!saliyahAccountId(b.recipient_iban)||!Number.isSafeInteger(b.amount)||b.amount<=0||b.amount>100000000||typeof b.memo!=='string'||b.memo.length>200)return json({error:'بيانات التحويل غير صالحة'},400);
  const sender=await db.prepare('SELECT id,balance FROM bank_accounts WHERE id=? AND user_id=?').bind(b.from,user.id).first();if(!sender)return json({error:'الحساب المرسل غير موجود'},404);
- const recipient=await db.prepare('SELECT a.id,a.user_id FROM bank_accounts a JOIN users u ON u.id=a.user_id WHERE u.username=? AND a.bank=?').bind(b.recipient.trim().toLowerCase(),b.bank).first();if(!recipient)return json({error:'حساب المستلم غير موجود في البنك المحدد'},404);
- if(recipient.user_id===user.id)return json({error:'التحويل إلى حسابك غير متاح من هذه الشاشة'},400);
+ const recipient=await db.prepare('SELECT id,user_id FROM bank_accounts WHERE id=?').bind(saliyahAccountId(b.recipient_iban)).first();if(!recipient)return json({error:'الآيبان أو الحساب المستلم غير موجود'},404);
+ if(recipient.id===sender.id)return json({error:'لا يمكن التحويل إلى الحساب نفسه'},400);
  if(sender.balance<b.amount)return json({error:'الرصيد غير كافٍ'},409);
  // Phase 34: the database trigger atomically debits and credits when this ledger row is inserted.
  const id=random();try{await db.prepare('INSERT INTO bank_transfers(id,sender_account,recipient_account,amount,memo) VALUES(?,?,?,?,?)').bind(id,sender.id,recipient.id,b.amount,b.memo.trim()).run();}catch{return json({error:'تعذر إتمام التحويل؛ تحقق من الرصيد وحاول مجددًا'},409)}
