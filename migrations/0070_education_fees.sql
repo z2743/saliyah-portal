@@ -1,0 +1,2 @@
+UPDATE education_institutions SET fee=CASE level WHEN 'primary' THEN 15000 WHEN 'middle' THEN 17000 WHEN 'secondary' THEN 21000 ELSE fee END WHERE sector='private' AND level IN ('primary','middle','secondary');
+UPDATE saliyah_sim_education_details SET tuition=CASE level WHEN 'primary' THEN 15000 WHEN 'middle' THEN 17000 WHEN 'secondary' THEN 21000 ELSE tuition END WHERE sector='private' AND level IN ('primary','middle','secondary');
