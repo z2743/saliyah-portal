@@ -66,3 +66,14 @@ primary.role='citizen';
 r=await request(env,'POST','/api/national-alert',{action:'delete',id:'alert-expired'});assert.equal(r.status,403);
 r=await request(env,'GET','/api/national-alert?history=1');assert.equal(r.status,403);
 console.log('PASS 11 national alert API tests: active/history, cancel expired, hard delete, mirror sync, audit, permissions, validation and CSRF.');
+
+import {readFileSync} from 'node:fs';
+const frontend=readFileSync(new URL('../public/app.js',import.meta.url),'utf8');
+const alertView=frontend.slice(frontend.indexOf('async function nationalAlertPage('),frontend.indexOf('\nfunction home()'));
+assert.match(alertView,/history\.addEventListener\('click'/,'Alert actions must be delegated from a stable container');
+assert.match(alertView,/data-confirm-alert/,'Delete and cancel actions must expose an inline confirmation button');
+assert.match(alertView,/data-delete-alert/,'Every alert must have a delete button');
+assert.match(alertView,/type="button" class="btn outline" data-delete-alert/,'Delete must never submit the publish form');
+assert.match(alertView,/await post\('\/national-alert',body\)/,'Confirmed alert changes must call the API');
+assert.doesNotMatch(alertView,/\bconfirm\(/,'Alert management must not rely on native confirm dialogs');
+console.log('PASS national alert frontend wiring: delegated event handling and in-page confirmation.');
