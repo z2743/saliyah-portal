@@ -912,7 +912,13 @@ if(method==='POST'&&path==='/api/auth/logout'){const t=(req.headers.get('cookie'
 if(method==='GET'&&path==='/api/sim-directory'){
  const type=u.searchParams.get('type')||'citizens';
  const page=Math.max(1,Math.min(1000,Number.parseInt(u.searchParams.get('page')||'1',10)||1));
- const search=(u.searchParams.get('q')||'').trim().slice(0,80).replace(/^SIM-[A-Z]+-/i,'');
+ const rawSearch=(u.searchParams.get('q')||'').trim().slice(0,80);
+ let search=rawSearch.replace(/^SIM-[A-Z]+-/i,'');
+ const phoneTypes=new Set(['citizens','companies','institutions','x','lawyers']);
+ if(/^SIM-\d{9}$/i.test(rawSearch)&&phoneTypes.has(type)){
+  const match=(await sharedRows(db,"SELECT target_id FROM saliyah_sim_public_phones WHERE target_type=? AND phone_number=? LIMIT 1",[type,rawSearch.toUpperCase()]))[0];
+  search=match?.target_id||rawSearch;
+ }
  const pattern='%'+search+'%';
  const categories={
   citizens:{code:'C',sql:"SELECT c.id,c.name,c.occupation,c.gender,c.created_at FROM saliyah_sim_citizens c WHERE (?='' OR c.name LIKE ? OR c.id LIKE ?) ORDER BY c.created_at DESC,c.id LIMIT ? OFFSET ?"},
@@ -932,7 +938,18 @@ if(method==='GET'&&path==='/api/sim-directory'){
  if(!source)return json({error:'قاعدة الطيران غير متصلة'},503);
  const args=(category.companySearch||type==='x'||type==='banking')?[search,pattern,pattern,pattern,31,(page-1)*30]:[search,pattern,pattern,31,(page-1)*30];
  const r=await source.prepare(category.sql).bind(...args).all();
- return json({type,page,more:r.results.length>30,items:r.results.slice(0,30).map(item=>({...item,simulation_number:'SIM-'+category.code+'-'+item.id,automated:true}))});
+ const rows=r.results.slice(0,30),phones=new Map();
+ const phoneSourceType=phoneTypes.has(type)?type:type==='jobs'?'companies':type==='properties'||type==='shares'?'citizens':null;
+ if(phoneSourceType&&rows.length){
+  const refs=[...new Set(rows.map(item=>phoneSourceType==='companies'&&type==='jobs'?item.company_id:phoneSourceType==='citizens'&&type==='properties'?item.owner_id:phoneSourceType==='citizens'&&type==='shares'?item.owner_id:item.id).filter(Boolean))];
+  if(refs.length){const lookups=await sharedRows(db,'SELECT target_id,phone_number,provider FROM saliyah_sim_public_phones WHERE target_type=? AND target_id IN ('+refs.map(()=>'?').join(',')+')',[phoneSourceType,...refs]);for(const row of lookups)phones.set(row.target_id,row)}
+ }
+ const items=rows.map(item=>{
+  const ref=type==='jobs'?item.company_id:type==='properties'||type==='shares'?item.owner_id:item.id;
+  const phone=phones.get(ref);
+  return {...item,sim_phone_number:phone?.phone_number||null,sim_operator:phone?.provider||null,simulation_number:'SIM-'+category.code+'-'+item.id,automated:true};
+ });
+ return json({type,page,more:r.results.length>30,items,simulated:true});
 }
 if(method==='GET'&&path==='/api/simulation/economy'){
  const [properties,propertyTrades,shares,shareTrades,marriages,lifeEvents]=await Promise.all([
