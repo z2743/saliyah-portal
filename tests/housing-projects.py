@@ -11,7 +11,7 @@ CREATE TABLE saliyah_sim_properties(id TEXT PRIMARY KEY,owner_id TEXT NOT NULL,k
 INSERT INTO saliyah_projects VALUES('gov-plan-83124','housing','حي النخيل السكني','السجادة','approved');
 INSERT INTO saliyah_projects VALUES('future-house','housing','حي المستقبل','عقار','pending_human');
 """)
-sql=(Path(__file__).parents[1]/'migrations'/'0073_housing_project_units.sql').read_text()
+sql=(Path(__file__).parents[1]/'migrations'/'9999_zzzzz_housing_project_units.sql').read_text()
 db.executescript(sql)
 def read(sql,*args):return db.execute(sql,args).fetchone()
 assert read("SELECT status FROM saliyah_housing_projects WHERE project_id='gov-plan-83124'")[0]=='completed'
