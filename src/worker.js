@@ -565,7 +565,7 @@ if(method==='GET'&&path==='/api/admin/royal-audit'){
  ];
  const rows=await Promise.all(types.map(async([table,label])=>{
   const source=table==='national_alert_history'?(env.ARCHIVE_DB||db):db;
-  try{const data=await source.prepare('SELECT * FROM '+table+' ORDER BY rowid DESC LIMIT 20').all();return {type:table,label,rows:data.results}}
+  try{const data=await source.prepare('SELECT * FROM '+table+' ORDER BY rowid DESC LIMIT 20').all();const safeRows=data.results.map(row=>Object.fromEntries(Object.entries(row).filter(([key])=>!/(password|token|secret|credential|cookie|salt|otp)/i.test(key))));return {type:table,label,rows:safeRows}}
   catch(e){return {type:table,label,rows:[],error:String(e?.message||e).slice(0,140)}}
  }));
  return json({ok:true,groups:rows,read_only:true});
