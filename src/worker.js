@@ -369,8 +369,12 @@ async function generateXBotActivity(db){
  if(!botSeeded){const seed=await db.prepare("WITH RECURSIVE seq(n) AS (SELECT 1 UNION ALL SELECT n+1 FROM seq WHERE n<1999) INSERT OR IGNORE INTO x_profiles(id,user_id,handle,display_name,bio,kind,verified) SELECT 'x-sim-bot-'||printf('%04d',n),NULL,'saliyah_bot_'||printf('%04d',n),'مواطن صالي آلي '||n||' 🤖','حساب محاكاة آلي؛ ليس شخصًا حقيقيًا','bot',0 FROM seq").run();
  }
  // Names are initialized only for new placeholder profiles; do not rewrite 1,999 rows every hour.
+ const botNamesReady=await db.prepare("SELECT 1 FROM saliyah_sim_settings WHERE key='x_bot_names_bootstrap_v1'").first();
+ if(!botNamesReady){
  const unnamed=(await db.prepare("SELECT id FROM x_profiles WHERE kind='bot' AND display_name LIKE 'مواطن صالي آلي %' LIMIT 100").all()).results;
  if(unnamed.length){const statements=unnamed.map(p=>{const i=Math.max(0,Number(p.id.slice(-4))-1);const name=firstNames[(i*7+Math.floor(i/30))%firstNames.length]+' '+familyNames[(i*11+Math.floor(i/16))%familyNames.length]+' 🤖';return db.prepare("UPDATE x_profiles SET display_name=? WHERE id=? AND kind='bot'").bind(name,p.id)});await db.batch(statements)}
+ if(!unnamed.length)await db.prepare("INSERT OR IGNORE INTO saliyah_sim_settings(key,value) VALUES('x_bot_names_bootstrap_v1','complete')").run();
+ }
  const now=Math.floor(Date.now()/1800000);
  // Idempotent per half-hour; maintain the same approximate hourly activity volume.
  const newPostStatements=[];
