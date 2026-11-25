@@ -25,6 +25,9 @@ const botMinisters=ministries.filter(m=>m.id!==0&&m.id!==1).map(m=>({...m,minist
 async function runSaliyahGovernment(db,aviationDb){
  const hour=Math.floor(Date.now()/3600000);
  const roles=['موظف خدمة عملاء','موظف أحوال مدنية','معلم','ممرض','محاسب','موظف اتصالات','موظف بلدية','موظف بريد','فني صيانة','موظف نقل'];
+ // One-time bootstrap: avoid scanning and rewriting all 3,000 fictional profiles on every simulation cycle.
+ const populationBootstrapped=await db.prepare("SELECT 1 FROM saliyah_sim_settings WHERE key='population_bootstrap_v2'").first();
+ if(!populationBootstrapped){
  // Fictional employed citizens are separate from real staff and cannot gain permissions.
  await db.prepare("WITH RECURSIVE seq(n) AS (SELECT 1 UNION ALL SELECT n+1 FROM seq WHERE n<1000) INSERT OR IGNORE INTO saliyah_sim_citizens(id,name,occupation) SELECT 'sim-employee-'||printf('%04d',n),'موظف صالي افتراضي '||n,CASE n%10 WHEN 0 THEN 'موظف خدمة عملاء' WHEN 1 THEN 'موظف أحوال مدنية' WHEN 2 THEN 'معلم' WHEN 3 THEN 'ممرض' WHEN 4 THEN 'محاسب' WHEN 5 THEN 'موظف اتصالات' WHEN 6 THEN 'موظف بلدية' WHEN 7 THEN 'موظف بريد' WHEN 8 THEN 'فني صيانة' ELSE 'موظف نقل' END FROM seq").run();
  // 2,000 additional fictional residents with independent lives and no access to real user accounts.
@@ -40,10 +43,14 @@ async function runSaliyahGovernment(db,aviationDb){
  await db.prepare("UPDATE saliyah_sim_citizens SET name=(CASE CAST(substr(id,-4) AS INTEGER)%20 WHEN 0 THEN 'نورة' WHEN 2 THEN 'سارة' WHEN 4 THEN 'ريم' WHEN 6 THEN 'هيا' WHEN 8 THEN 'ليان' WHEN 10 THEN 'جود' WHEN 12 THEN 'لمى' WHEN 14 THEN 'شهد' WHEN 16 THEN 'غلا' ELSE 'دانة' END)||' بنت '||(CASE ((CAST(substr(id,-4) AS INTEGER)-1)/400) WHEN 0 THEN 'إبراهيم' WHEN 1 THEN 'صالح' WHEN 2 THEN 'عبدالرحمن' WHEN 3 THEN 'حمد' ELSE 'سعد' END)||' '||substr(name,instr(name,' ')+1) WHERE id LIKE 'sim-resident-%' AND gender='female' AND name NOT LIKE '% بنت %'").run();
  // Skip the broad legacy-name cleanup scan after one-time migration; only legacy rows can match.
  await db.prepare("UPDATE saliyah_sim_citizens SET name=replace(name,' بن محمد ',' ') WHERE gender='female' AND name LIKE '% بنت % بن محمد %'").run();
+ await db.prepare("INSERT OR IGNORE INTO saliyah_sim_settings(key,value) VALUES('population_bootstrap_v2','complete')").run();
+ }
  // Separate virtual banking ledger: never connect simulated balances to real bank_accounts.
  await db.prepare("CREATE TABLE IF NOT EXISTS saliyah_sim_bank_accounts(id TEXT PRIMARY KEY,owner_type TEXT NOT NULL CHECK(owner_type IN ('citizen','company')),owner_id TEXT NOT NULL,account_number TEXT NOT NULL UNIQUE,bank_name TEXT NOT NULL,balance INTEGER NOT NULL DEFAULT 0 CHECK(balance>=0),status TEXT NOT NULL DEFAULT 'active',created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,UNIQUE(owner_type,owner_id))").run();
  await db.prepare("CREATE TABLE IF NOT EXISTS saliyah_sim_bank_transactions(id TEXT PRIMARY KEY,account_id TEXT NOT NULL,kind TEXT NOT NULL,amount INTEGER NOT NULL,description TEXT NOT NULL,related_account_id TEXT,created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,FOREIGN KEY(account_id) REFERENCES saliyah_sim_bank_accounts(id))").run();
+ if(!await db.prepare("SELECT 1 FROM saliyah_sim_bank_accounts WHERE id='sim-bank-c-sim-resident-2000'").first()){
  await db.prepare("INSERT OR IGNORE INTO saliyah_sim_bank_accounts(id,owner_type,owner_id,account_number,bank_name,balance) SELECT 'sim-bank-c-'||id,'citizen',id,'SC'||printf('%012d',CAST(substr(id,-4) AS INTEGER)+CASE WHEN id LIKE 'sim-employee-%' THEN 300000 ELSE 100000 END),'البنك الصالي',CASE WHEN CAST(substr(id,-4) AS INTEGER)%11=0 THEN 0 ELSE 800+CAST(substr(id,-4) AS INTEGER)%12000 END FROM saliyah_sim_citizens WHERE id LIKE 'sim-resident-%' OR id LIKE 'sim-employee-%'").run();
+ }
  await db.prepare("INSERT OR IGNORE INTO saliyah_sim_bank_accounts(id,owner_type,owner_id,account_number,bank_name,balance) SELECT 'sim-bank-b-'||id,'company',id,'SB-'||id,'البنك الصالي للأعمال',MAX(0,capital) FROM saliyah_sim_companies WHERE status='approved'").run();
  // Each simulated company chooses weekly (1) or fortnightly (2) payroll.
  try{await db.prepare("ALTER TABLE saliyah_sim_companies ADD COLUMN payroll_weeks INTEGER NOT NULL DEFAULT 1").run()}catch(e){if(!String(e).includes('duplicate column name'))throw e}
