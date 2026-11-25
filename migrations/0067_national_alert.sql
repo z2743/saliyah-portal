@@ -1,0 +1,1 @@
+CREATE TABLE IF NOT EXISTS national_alert (id INTEGER PRIMARY KEY CHECK(id=1), title TEXT NOT NULL, body TEXT NOT NULL, severity TEXT NOT NULL, expires_at INTEGER NOT NULL, updated_at INTEGER NOT NULL);

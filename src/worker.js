@@ -482,6 +482,28 @@ export default {
   console.log('simulation_paused_by_royal_order');
  },async fetch(req,env){const u=new URL(req.url);if(u.pathname==='/simulation.html'){if(!env.DB)return new Response('Unavailable',{status:503});const royal=await actor(req,env.DB);if(royal?.role!=='king')return new Response('هذه الصفحة مخصصة للملك فقط',{status:403,headers:{'content-type':'text/plain; charset=utf-8','cache-control':'no-store'}});const asset=await env.ASSETS.fetch(req);const headers=new Headers(asset.headers);headers.set('Cache-Control','no-store, max-age=0');return new Response(asset.body,{status:asset.status,statusText:asset.statusText,headers})}if(!u.pathname.startsWith('/api/'))return env.ASSETS.fetch(req);try{if(!env.DB)return json({error:'Database binding missing'},503);const db=env.DB;const method=req.method;const path=u.pathname;const user=(path==='/api/auth/login'||path==='/api/setup/king'||path==='/api/setup/status'||path==='/api/setup/recover-owner'||path==='/api/auth/citizen/register')?null:await actor(req,db);if(method!=='GET'&&method!=='HEAD'){const origin=req.headers.get('origin');const site=req.headers.get('sec-fetch-site');if((origin&&origin!==u.origin)||(site&&site!=='same-origin'&&site!=='none'))return json({error:'مصدر الطلب غير مسموح'},403);}
 
+
+if(path==='/api/national-alert'){
+ if(method==='GET'){
+  let alert=null;
+  try{alert=await db.prepare('SELECT title,body,severity,expires_at,updated_at FROM national_alert WHERE id=1 AND expires_at>?').bind(Date.now()).first()}catch(e){if(!String(e).includes('no such table: national_alert'))throw e}
+  return json({alert});
+ }
+ if(method==='POST'){
+  if(user?.role!=='king')return json({error:'غير مخول'},403);
+  const b=await input(req);
+  if(!b)return json({error:'بيانات غير صالحة'},400);
+  if(b.action!=='cancel'&&!(b.action==='publish'&&validText(b.title,1,160)&&validText(b.body,1,3000)&&['info','warning','urgent'].includes(b.severity)&&Number.isInteger(b.hours)&&b.hours>=1&&b.hours<=168))return json({error:'بيانات التنبيه غير صالحة'},400);
+  await db.prepare("CREATE TABLE IF NOT EXISTS national_alert (id INTEGER PRIMARY KEY CHECK(id=1), title TEXT NOT NULL, body TEXT NOT NULL, severity TEXT NOT NULL, expires_at INTEGER NOT NULL, updated_at INTEGER NOT NULL)").run();
+  const now=Date.now();
+  if(b.action==='cancel')await db.prepare('DELETE FROM national_alert WHERE id=1').run();
+  else await db.prepare('INSERT INTO national_alert(id,title,body,severity,expires_at,updated_at) VALUES(1,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET title=excluded.title,body=excluded.body,severity=excluded.severity,expires_at=excluded.expires_at,updated_at=excluded.updated_at').bind(b.title.trim(),b.body.trim(),b.severity,now+b.hours*3600000,now).run();
+  await audit(db,user.id,'national_alert_'+b.action,'national_alert','1',{severity:b.severity});
+  return json({ok:true});
+ }
+ return json({error:'طريقة غير مسموحة'},405);
+}
+
 // X Al-Saliyah: profiles are bound to authenticated accounts; ministry verification
 // is granted only for a ministry assignment recorded by the government.
 if(method==='GET'&&path==='/api/aviation/tourists'){
