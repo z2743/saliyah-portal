@@ -591,18 +591,36 @@ if(path==='/api/national-alert'){
  if(method==='POST'){
   if(user?.role!=='king')return json({error:'غير مخول'},403);
   const b=await input(req);
-  if(!b||!['publish','cancel'].includes(b.action))return json({error:'بيانات غير صالحة'},400);
+  if(!b||!['publish','cancel','delete'].includes(b.action))return json({error:'بيانات غير صالحة'},400);
   if(b.action==='publish'&&!(validText(b.title,1,160)&&validText(b.body,1,3000)&&['info','warning','urgent'].includes(b.severity)&&['all','sajjadah','mutajjar','aqar'].includes(b.target)&&Number.isInteger(b.hours)&&b.hours>=1&&b.hours<=168))return json({error:'بيانات التنبيه غير صالحة'},400);
-  if((b.id!=null&&!validText(b.id,1,80))||(b.action==='cancel'&&!b.id))return json({error:'معرف غير صالح'},400);
+  if((b.id!=null&&!validText(b.id,1,80))||(['cancel','delete'].includes(b.action)&&!b.id))return json({error:'معرف غير صالح'},400);
   await alertDb.prepare("CREATE TABLE IF NOT EXISTS national_alert_history (id TEXT PRIMARY KEY, title TEXT NOT NULL, body TEXT NOT NULL, severity TEXT NOT NULL, target TEXT NOT NULL, expires_at INTEGER NOT NULL, updated_at INTEGER NOT NULL, cancelled INTEGER NOT NULL DEFAULT 0)").run();
   await alertDb.prepare("CREATE INDEX IF NOT EXISTS national_alert_history_updated ON national_alert_history(updated_at DESC)").run();
   const now=Date.now(),id=b.id||random();
-  if(b.action==='cancel'||b.id){
-   const result=b.action==='cancel'?await alertDb.prepare('UPDATE national_alert_history SET cancelled=1,updated_at=? WHERE id=? AND cancelled=0 AND expires_at>?').bind(now,id,now).run():await alertDb.prepare('UPDATE national_alert_history SET title=?,body=?,severity=?,target=?,expires_at=?,updated_at=? WHERE id=? AND cancelled=0 AND expires_at>?').bind(b.title.trim(),b.body.trim(),b.severity,b.target,now+b.hours*3600000,now,id,now).run();
-   if(!result.meta.changes)return json({error:'التنبيه غير نشط أو غير موجود'},409);
-  }else await alertDb.prepare('INSERT INTO national_alert_history(id,title,body,severity,target,expires_at,updated_at) VALUES(?,?,?,?,?,?,?)').bind(id,b.title.trim(),b.body.trim(),b.severity,b.target,now+b.hours*3600000,now).run();
-  await audit(db,user.id,'national_alert_'+b.action,'national_alert',id,{severity:b.severity,target:b.target});
-  return json({ok:true,id});
+  if(b.action==='delete'){
+   // Royal deletion removes the alert from all lists; the audit log retains the action.
+   const result=await alertDb.prepare('DELETE FROM national_alert_history WHERE id=?').bind(id).run();
+   if(!result.meta.changes)return json({error:'التنبيه غير موجود أو تم حذفه سابقاً'},404);
+   if(alertDb!==db){
+    try{await db.prepare('DELETE FROM national_alert_history WHERE id=?').bind(id).run()}
+    catch(error){console.error('national_alert_mirror_delete_failed',String(error).slice(0,160))}
+   }
+  }else if(b.action==='cancel'){
+   // Expired alerts may be cancelled from history; no time-bound restriction.
+   const result=await alertDb.prepare('UPDATE national_alert_history SET cancelled=1,updated_at=? WHERE id=? AND cancelled=0').bind(now,id).run();
+   if(!result.meta.changes)return json({error:'التنبيه ملغى أو غير موجود'},409);
+   if(alertDb!==db){
+    try{await db.prepare('UPDATE national_alert_history SET cancelled=1,updated_at=? WHERE id=? AND cancelled=0').bind(now,id).run()}
+    catch(error){console.error('national_alert_mirror_cancel_failed',String(error).slice(0,160))}
+   }
+  }else if(b.id){
+   const result=await alertDb.prepare('UPDATE national_alert_history SET title=?,body=?,severity=?,target=?,expires_at=?,updated_at=? WHERE id=? AND cancelled=0').bind(b.title.trim(),b.body.trim(),b.severity,b.target,now+b.hours*3600000,now,id).run();
+   if(!result.meta.changes)return json({error:'التنبيه ملغى أو غير موجود'},409);
+  }else{
+   await alertDb.prepare('INSERT INTO national_alert_history(id,title,body,severity,target,expires_at,updated_at) VALUES(?,?,?,?,?,?,?)').bind(id,b.title.trim(),b.body.trim(),b.severity,b.target,now+b.hours*3600000,now).run();
+  }
+  await audit(db,user.id,'national_alert_'+b.action,'national_alert',id,{action:b.action});
+  return json({ok:true,id,action:b.action});
  }
  return json({error:'طريقة غير مسموحة'},405);
 }

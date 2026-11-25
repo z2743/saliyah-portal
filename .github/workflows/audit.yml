@@ -18,6 +18,7 @@ jobs:
           node --check public/app.js
           node --check tests/audit-regressions.mjs
           node --check tests/d1-distribution.mjs
+          node --check tests/national-alert.mjs
       - name: Run tests
         run: npm test
       - name: Release preflight
