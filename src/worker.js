@@ -670,7 +670,7 @@ async function resolveRoyalBotNames(db,rows){
  // A single indexed lookup per 64 record IDs is cheaper than querying each table separately.
  for(let i=0;i<ids.length;i+=64){
   const chunk=ids.slice(i,i+64);
-  const sql='WITH targets(id) AS (VALUES '+chunk.map(()=>'(?)').join(',')+') SELECT t.id,COALESCE(c.name,co.name,l.name,x.display_name,i.name,j.title,a.account_number,u.username) AS resolved_name FROM targets t LEFT JOIN saliyah_sim_citizens c ON c.id=t.id LEFT JOIN saliyah_sim_companies co ON co.id=t.id LEFT JOIN saliyah_sim_legal_bots l ON l.id=t.id LEFT JOIN x_profiles x ON x.id=t.id LEFT JOIN saliyah_sim_institutions i ON i.id=t.id LEFT JOIN saliyah_sim_jobs j ON j.id=t.id LEFT JOIN saliyah_sim_bank_accounts a ON a.id=t.id LEFT JOIN users u ON u.id=t.id';
+  const sql='WITH targets(id) AS (VALUES '+chunk.map(()=>'(?)').join(',')+') SELECT t.id,COALESCE(c.name,co.name,l.name,x.display_name,i.name,j.title,ac.name,aco.name,u.username) AS resolved_name FROM targets t LEFT JOIN saliyah_sim_citizens c ON c.id=t.id LEFT JOIN saliyah_sim_companies co ON co.id=t.id LEFT JOIN saliyah_sim_legal_bots l ON l.id=t.id LEFT JOIN x_profiles x ON x.id=t.id LEFT JOIN saliyah_sim_institutions i ON i.id=t.id LEFT JOIN saliyah_sim_jobs j ON j.id=t.id LEFT JOIN saliyah_sim_bank_accounts a ON a.id=t.id LEFT JOIN saliyah_sim_citizens ac ON ac.id=a.owner_id AND a.owner_type=\'citizen\' LEFT JOIN saliyah_sim_companies aco ON aco.id=a.owner_id AND a.owner_type=\'company\' LEFT JOIN users u ON u.id=t.id';
   try{
    const found=await db.prepare(sql).bind(...chunk).all();
    for(const item of found.results)if(item.resolved_name)names.set(item.id,item.resolved_name);
