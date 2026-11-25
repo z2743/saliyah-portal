@@ -31,16 +31,55 @@ async function nationalAlertPage(editId){
  const active=x=>!x.cancelled&&x.expires_at>Date.now();
  const alert=alerts.find(x=>x.id===editId&&active(x));
  const options=(obj,selected)=>Object.entries(obj).map(([k,v])=>'<option value="'+k+'" '+(selected===k?'selected':'')+'>'+v+'</option>').join('');
- page('إدارة التنبيه الوطني',`<section class="card"><p>تنبيهات المملكة الافتراضية. يمكنك إلغاء التنبيه أو حذفه نهائياً من السجل حتى بعد انتهاء صلاحيته. الحذف النهائي لا يمكن التراجع عنه.</p><form id="nationalAlertForm"><label>العنوان<input name="title" required maxlength="160" value="${safe(alert?.title||'')}"></label><label>نص التنبيه<textarea name="body" required maxlength="3000">${safe(alert?.body||'')}</textarea></label><label>المحافظة<select name="target">${options(alertTargets,alert?.target||'all')}</select></label><label>المستوى<select name="severity">${options(alertLevels,alert?.severity||'info')}</select></label><label>المدة بالساعات (1–168)<input name="hours" type="number" min="1" max="168" required value="${alert?Math.max(1,Math.ceil((alert.expires_at-Date.now())/3600000)):24}"></label><div class="actions"><button class="btn gold" type="submit">${alert?'حفظ التعديل':'نشر التنبيه'}</button><button class="btn outline" type="button" id="newNationalAlert">تنبيه جديد</button></div><p id="nationalAlertStatus" role="status"></p></form></section><section class="section"><h2>سجل التنبيهات (آخر 100)</h2>${alerts.map(x=>'<article class="card"><h3>'+safe(x.title)+'</h3><p>'+safe(x.body)+'</p><p>'+safe(alertTargets[x.target])+' · '+safe(alertLevels[x.severity])+' · '+(x.cancelled?'ملغى':active(x)?'نشط':'منتهي')+'</p><p>ينتهي: '+safe(new Date(x.expires_at).toLocaleString('ar-SA'))+'</p>'+(active(x)?'<button class="btn outline" data-edit-alert="'+safe(x.id)+'">تعديل</button> ':'')+(!x.cancelled?'<button class="btn outline" data-cancel-alert="'+safe(x.id)+'">إلغاء</button> ':'')+'<button class="btn outline" data-delete-alert="'+safe(x.id)+'">حذف نهائي</button></article>').join('')||'<p>لا توجد تنبيهات سابقة.</p>'}</section>`);
- const form=document.querySelector('#nationalAlertForm'),status=document.querySelector('#nationalAlertStatus');
+ page('إدارة التنبيه الوطني',`<section class="card"><p>تنبيهات المملكة الافتراضية. يمكنك إلغاء التنبيه أو حذفه نهائياً من السجل حتى بعد انتهاء صلاحيته. الحذف النهائي لا يمكن التراجع عنه.</p><form id="nationalAlertForm"><label>العنوان<input name="title" required maxlength="160" value="${safe(alert?.title||'')}"></label><label>نص التنبيه<textarea name="body" required maxlength="3000">${safe(alert?.body||'')}</textarea></label><label>المحافظة<select name="target">${options(alertTargets,alert?.target||'all')}</select></label><label>المستوى<select name="severity">${options(alertLevels,alert?.severity||'info')}</select></label><label>المدة بالساعات (1–168)<input name="hours" type="number" min="1" max="168" required value="${alert?Math.max(1,Math.ceil((alert.expires_at-Date.now())/3600000)):24}"></label><div class="actions"><button class="btn gold" type="submit">${alert?'حفظ التعديل':'نشر التنبيه'}</button><button class="btn outline" type="button" id="newNationalAlert">تنبيه جديد</button></div><p id="nationalAlertStatus" role="status" aria-live="polite"></p></form></section><section class="section" id="nationalAlertHistory"><h2>سجل التنبيهات (آخر 100)</h2><p id="nationalAlertActionStatus" role="status" aria-live="assertive"></p>${alerts.map(x=>'<article class="card"><h3>'+safe(x.title)+'</h3><p>'+safe(x.body)+'</p><p>'+safe(alertTargets[x.target])+' · '+safe(alertLevels[x.severity])+' · '+(x.cancelled?'ملغى':active(x)?'نشط':'منتهي')+'</p><p>ينتهي: '+safe(new Date(x.expires_at).toLocaleString('ar-SA'))+'</p><div class="actions">'+(active(x)?'<button type="button" class="btn outline" data-edit-alert="'+safe(x.id)+'">تعديل</button> ':'')+(!x.cancelled?'<button type="button" class="btn outline" data-cancel-alert="'+safe(x.id)+'">إلغاء</button> ':'')+'<button type="button" class="btn outline" data-delete-alert="'+safe(x.id)+'">حذف نهائي</button></div></article>').join('')||'<p>لا توجد تنبيهات سابقة.</p>'}</section>`);
+ const form=document.querySelector('#nationalAlertForm');
+ const history=document.querySelector('#nationalAlertHistory');
+ const formStatus=document.querySelector('#nationalAlertStatus');
+ const actionStatus=document.querySelector('#nationalAlertActionStatus');
  let busy=false;
- async function save(body){if(busy)return;busy=true;try{await post('/national-alert',body);await nationalAlertPage();const notice=document.querySelector('#nationalAlertStatus');if(notice)notice.textContent=body.action==='delete'?'تم حذف التنبيه نهائياً.':body.action==='cancel'?'تم إلغاء التنبيه.':'تم حفظ التنبيه بنجاح.'}catch(e){status.textContent=e.message}finally{busy=false}}
+ function message(text){const el=document.querySelector('#nationalAlertActionStatus')||document.querySelector('#nationalAlertStatus');if(el)el.textContent=text}
+ async function save(body){
+  if(busy)return;
+  busy=true;
+  const button=[...document.querySelectorAll('[data-delete-alert],[data-cancel-alert]')].find(el=>(el.dataset.deleteAlert||el.dataset.cancelAlert)===body.id);
+  if(button)button.disabled=true;
+  message('جارٍ تنفيذ الطلب…');
+  try{
+   await post('/national-alert',body);
+   await nationalAlertPage();
+   message(body.action==='delete'?'تم حذف التنبيه نهائياً.':body.action==='cancel'?'تم إلغاء التنبيه.':'تم حفظ التنبيه بنجاح.');
+  }catch(error){message('تعذر تنفيذ العملية: '+error.message);if(button)button.disabled=false}
+  finally{busy=false}
+ }
  form.onsubmit=e=>{e.preventDefault();const f=new FormData(form);save({action:'publish',id:alert?.id,title:f.get('title'),body:f.get('body'),target:f.get('target'),severity:f.get('severity'),hours:Number(f.get('hours'))})};
  document.querySelector('#newNationalAlert').onclick=()=>nationalAlertPage();
- document.querySelectorAll('[data-edit-alert]').forEach(el=>el.onclick=()=>nationalAlertPage(el.dataset.editAlert));
- document.querySelectorAll('[data-cancel-alert]').forEach(el=>el.onclick=()=>{if(confirm('إلغاء هذا التنبيه؟'))save({action:'cancel',id:el.dataset.cancelAlert})});
- document.querySelectorAll('[data-delete-alert]').forEach(el=>el.onclick=()=>{if(confirm('حذف التنبيه نهائياً من السجل؟ لا يمكن التراجع عن الحذف.'))save({action:'delete',id:el.dataset.deleteAlert})});
+ history.addEventListener('click',async e=>{
+  const target=e.target.closest('button[data-edit-alert],button[data-cancel-alert],button[data-delete-alert],button[data-confirm-alert],button[data-dismiss-alert]');
+  if(!target||busy)return;
+  if(target.dataset.editAlert){await nationalAlertPage(target.dataset.editAlert);return}
+  if(target.dataset.dismissAlert!==undefined){const pending=history.querySelector('#nationalAlertPending');if(pending)pending.remove();message('تم التراجع عن العملية.');return}
+  if(target.dataset.confirmAlert!==undefined){
+   const id=target.dataset.confirmAlert,action=target.dataset.action;
+   if(!id||!['delete','cancel'].includes(action))return;
+   const pending=history.querySelector('#nationalAlertPending');
+   if(pending)pending.remove();
+   await save({action,id});
+   return;
+  }
+  const action=target.dataset.deleteAlert!==undefined?'delete':'cancel';
+  const id=action==='delete'?target.dataset.deleteAlert:target.dataset.cancelAlert;
+  const old=history.querySelector('#nationalAlertPending');if(old)old.remove();
+  const panel=document.createElement('div');
+  panel.id='nationalAlertPending';
+  panel.className='card';
+  panel.setAttribute('role','group');
+  panel.innerHTML='<p><strong>'+(action==='delete'?'تأكيد الحذف النهائي':'تأكيد إلغاء التنبيه')+'</strong></p><p>'+(action==='delete'?'سيُحذف التنبيه من السجل نهائياً.':'سيُلغى التنبيه ولن يظهر كتنبيه نشط.')+'</p><div class="actions"><button type="button" class="btn gold" data-confirm-alert="'+safe(id)+'" data-action="'+action+'">تأكيد العملية</button><button type="button" class="btn outline" data-dismiss-alert="">تراجع</button></div>';
+  target.closest('article').insertAdjacentElement('afterend',panel);
+  panel.querySelector('[data-confirm-alert]').focus();
+  message('اختر تأكيد العملية أو تراجع.');
+ });
 }
+
 function home(){app.innerHTML=hero()+`<div class="wrap"><div class="notice" id="nationalAlertBanner" role="status">جارٍ التحقق من التنبيهات الوطنية…</div>${me?.role==='king'?'<section class="section"><h2>👑 مرصد المملكة العربية الصالية</h2><p class="muted">لوحة الملك الخاصة.</p><a class="btn gold" href="/simulation.html">فتح مرصد المملكة</a> <a class="btn gold" href="#/national-alert">إدارة التنبيه الوطني</a></section>':''}<section class="section" id="services"><h2>خدمات مختارة</h2><div class="muted">الخدمات المرتبطة بالسجل الرسمي للمستخدم</div>${serviceCards(services.slice(0,6))}<p><a class="btn outline" href="#/services">عرض جميع الخدمات</a></p></section><section class="section"><h2>استكشف المحافظات</h2>${govCards()}</section><section class="section"><h2>الوزارات والهيئات</h2><div class="muted">35 وزارة · هيئة الطيران المدني تحت إشراف الملك المباشر</div>${ministryCards(data.ministries.slice(0,9))}<div class="actions"><a class="btn outline" href="#/ministries">عرض دليل الجهات كاملًا</a></div></section><section class="section"><h2>البنوك</h2><p class="muted">حسابات وتحويلات داخلية بالريال الصالي.</p><a class="btn outline" href="#/banking">دخول البنوك</a> <a class="btn outline" href="#/cards-atm">البطاقات والصرافات</a> <a class="btn outline" href="#/pos">نقاط البيع</a> <a class="btn outline" href="#/installments">تابي وتمارا الصالية</a></section><section class="section"><h2>التوظيف</h2><p class="muted">استعرض الوظائف الحكومية والخاصة والعسكرية وتابع طلباتك.</p><a class="btn outline" href="#/jobs">بوابة التوظيف</a></section><section class="section"><h2>الأخبار والقرارات</h2>${newsCards()}</section><section class="section"><h2>مؤشرات الدولة</h2><div class="muted">تظهر البيانات الحقيقية عند اكتمال ربط الأنظمة.</div><div class="grid">${['المواطنون','المقيمون','الطلبات المنجزة'].map(x=>`<div class="card"><div class="muted">${x}</div><h2>—</h2></div>`).join('')}</div></section></div>`;document.querySelector('#searchForm').onsubmit=e=>{e.preventDefault();location.hash='#/ministries?q='+encodeURIComponent(document.querySelector('#searchBox').value)}}
 function serviceCards(items=services){return `<div class="grid">${items.map(([n,d,i,route])=>`<a class="card link" href="#/${route}"><div class="icon">${i}</div><h3>${safe(n)}</h3><div class="muted">${safe(d)}</div></a>`).join('')}</div>`}
 function page(title,body){app.innerHTML=`<div class="wrap page"><a class="muted" href="#/">الرئيسية</a><h1>${title}</h1>${body}</div>`;attachRoyalBotRecords()}
