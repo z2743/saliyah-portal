@@ -553,6 +553,20 @@ const royalInventoryTables={
 };
 const royalServiceRecords={"education":[["المؤسسات التعليمية","saliyah_sim_institutions"],["الطلاب والتسجيل","saliyah_sim_enrollments"],["تفاصيل المؤسسات","saliyah_sim_education_details"]],"banking":[["الحسابات البنكية","saliyah_sim_bank_accounts"],["الحركات المالية","saliyah_sim_bank_transactions"]],"bank-admin":[["الحسابات البنكية","saliyah_sim_bank_accounts"],["الحركات المالية","saliyah_sim_bank_transactions"]],"civil":[["السكان","saliyah_sim_citizens"],["الهويات","saliyah_sim_identities"],["الزواج","saliyah_sim_marriages"],["الأبناء","saliyah_sim_children"]],"registry":[["الهويات","saliyah_sim_identities"]],"family-cards":[["بطاقات العائلة","saliyah_sim_family_cards"]],"commerce":[["الشركات","saliyah_sim_companies"]],"company-treasury":[["الحسابات البنكية","saliyah_sim_bank_accounts"]],"company-staff":[["الوظائف","saliyah_sim_jobs"],["طلبات التوظيف","saliyah_sim_job_applications"]],"jobs":[["الوظائف","saliyah_sim_jobs"],["طلبات التوظيف","saliyah_sim_job_applications"]],"jobs-admin":[["الوظائف","saliyah_sim_jobs"],["طلبات التوظيف","saliyah_sim_job_applications"]],"payroll":[["الحركات المالية","saliyah_sim_bank_transactions"],["قرارات الرواتب","saliyah_sim_company_payroll_decisions"]],"courts":[["القضايا العمالية","saliyah_sim_labor_cases"],["المحاكمات","saliyah_sim_trials"],["المذكرات","saliyah_sim_labor_filings"]],"security":[["البلاغات","saliyah_sim_incidents"]],"borders":[["حركة المنافذ","saliyah_sim_border_events"]],"land":[["العقارات","saliyah_sim_properties"],["الصفقات","saliyah_sim_property_trades"]],"state-budgets":[["المشاريع","saliyah_projects"]],"telecom":[["خطوط الاتصالات","telecom_lines"],["عمليات الشحن","telecom_purchases"],["الرسائل","telecom_sms"]],"pos":[["نقاط البيع","pos_merchants"],["عمليات نقاط البيع","pos_payments"]],"absher":[["أصول أبشر","absher_assets"],["طلبات أبشر","absher_requests"]],"health":[["المواعيد الصحية","health_appointments"],["العيادات","health_clinics"]],"municipality":[["تصاريح البلدية","municipal_permits"],["التفتيش","municipal_inspections"]],"installments":[["خطط الأقساط","installment_plans"],["دفعات الأقساط","installment_payments"],["المستحقات","installment_dues"]]};
 // Royal D1 distribution report. Read-only: reconciles legacy payroll authority with finance snapshots.
+if(method==='GET'&&path==='/api/admin/d1-inventory'){
+ if(user?.role!=='king')return json({error:'للملك فقط'},403);
+ const sources={DB:db,FINANCE_DB:env.FINANCE_DB,SIMULATION_DB:env.SIMULATION_DB,AVIATION_DB:env.AVIATION_DB,ARCHIVE_DB:env.ARCHIVE_DB};
+ const inventories=await Promise.all(Object.entries(royalInventoryTables).map(async([name,tables])=>{
+  const source=sources[name];
+  if(!source)return {binding:name,error:'القاعدة غير متصلة',tables:[]};
+  const entries=await Promise.all(tables.map(async(table)=>{
+   try{const row=await source.prepare('SELECT COUNT(*) n FROM '+table).first();return {table,count:Number(row?.n||0)}}
+   catch(e){return {table,error:String(e?.message||e).slice(0,140)}}
+  }));
+  return {binding:name,tables:entries};
+ }));
+ return json({inventories,bots_paused:true,read_only:true});
+}
 if(method==='GET'&&path==='/api/admin/d1-distribution'){
  if(user?.role!=='king')return json({error:'للملك فقط'},403);
  const sources=[
