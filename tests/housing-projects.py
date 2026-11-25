@@ -17,7 +17,7 @@ def read(sql,*args):return db.execute(sql,args).fetchone()
 assert read("SELECT status FROM saliyah_housing_projects WHERE project_id='gov-plan-83124'")[0]=='completed'
 assert read("SELECT COUNT(*) FROM saliyah_housing_units WHERE project_id='gov-plan-83124'")[0]==30
 assert read("SELECT COUNT(*) FROM saliyah_sim_properties WHERE status='listed' AND id LIKE 'housing-%'")[0]==30
-assert read("SELECT COUNT(DISTINCT unit_type),COUNT(DISTINCT price) FROM saliyah_housing_units JOIN saliyah_sim_properties USING(property_id)")[0]>=4
+assert read("SELECT COUNT(DISTINCT unit_type),COUNT(DISTINCT price) FROM saliyah_housing_units u JOIN saliyah_sim_properties p ON p.id=u.property_id")[0]>=4
 assert read("SELECT COUNT(*) FROM saliyah_sim_bank_accounts WHERE owner_id='project-sales-gov-plan-83124'")[0]==1
 db.execute("UPDATE saliyah_projects SET status='approved' WHERE id='future-house'")
 assert read("SELECT status FROM saliyah_housing_projects WHERE project_id='future-house'")[0]=='building'
