@@ -663,7 +663,7 @@ const royalInventoryTables={
 // technical identifiers stay in the database for joins and audit integrity.
 async function resolveRoyalBotNames(db, rows) {
  if(!rows?.length)return rows||[];
- const keys=['citizen_id','founder_id','owner_id','seller_id','buyer_id','partner_a','partner_b','suspect_id','bot_owner_id','employee_id','student_id','author_bot_id','lawyer_id','officer','judge','actor_id','target_id','recipient_id','reviewed_by'];
+ const keys=['citizen_id','founder_id','owner_id','seller_id','buyer_id','partner_a','partner_b','suspect_id','bot_owner_id','employee_id','student_id','author_bot_id','lawyer_id','officer','judge','actor_id','target_id','recipient_id','reviewed_by','company_id','institution_id','job_id','account_id','related_account_id','recipient_account_id','from_account_id'];
  const idValues=new Set();
  for(const row of rows)for(const key of keys){
   const v=row[key];
@@ -676,7 +676,10 @@ async function resolveRoyalBotNames(db, rows) {
   ['saliyah_sim_citizens','name'],
   ['saliyah_sim_companies','name'],
   ['saliyah_sim_legal_bots','name'],
-  ['x_profiles','display_name']
+  ['x_profiles','display_name'],
+  ['saliyah_sim_institutions','name'],
+  ['saliyah_sim_jobs','title'],
+  ['saliyah_sim_bank_accounts','account_number']
  ];
  for(const [table,column] of lookup){
   for(let i=0;i<ids.length;i+=75){
