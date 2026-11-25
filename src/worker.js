@@ -501,8 +501,12 @@ async function checkSimulationHealth(db){
 }
 export default {
  async scheduled(event,env,ctx){
-  // Royal pause: no automated simulation, bot activity, payouts or integrity scans.
-  console.log('simulation_paused_by_royal_order');
+  // Royal authorization: resume conservatively, once every four hours.
+  const hour=Math.floor(event.scheduledTime/3600000);
+  if(hour%4!==0||new Date(event.scheduledTime).getUTCMinutes()!==0)return;
+  await runSaliyahGovernment(env.DB,env.AVIATION_DB);
+  await generateXBotActivity(env.DB);
+  await runXCreatorAutoPayouts(env.DB);
  },async fetch(req,env){const u=new URL(req.url);if(u.pathname==='/simulation.html'){if(!env.DB)return new Response('Unavailable',{status:503});const royal=await actor(req,env.DB);if(royal?.role!=='king')return new Response('هذه الصفحة مخصصة للملك فقط',{status:403,headers:{'content-type':'text/plain; charset=utf-8','cache-control':'no-store'}});const asset=await env.ASSETS.fetch(req);const headers=new Headers(asset.headers);headers.set('Cache-Control','no-store, max-age=0');return new Response(asset.body,{status:asset.status,statusText:asset.statusText,headers})}if(!u.pathname.startsWith('/api/'))return env.ASSETS.fetch(req);try{if(!env.DB)return json({error:'Database binding missing'},503);const db=env.DB;const method=req.method;const path=u.pathname;const user=(path==='/api/auth/login'||path==='/api/setup/king'||path==='/api/setup/status'||path==='/api/setup/recover-owner'||path==='/api/auth/citizen/register')?null:await actor(req,db);if(method!=='GET'&&method!=='HEAD'){const origin=req.headers.get('origin');const site=req.headers.get('sec-fetch-site');if((origin&&origin!==u.origin)||(site&&site!=='same-origin'&&site!=='none'))return json({error:'مصدر الطلب غير مسموح'},403);}
 
 
@@ -896,7 +900,7 @@ if(method==='POST'&&path==='/api/admin/simulation/run'){
  const now=Math.floor(Date.now()/3600000);
  const previous=await (env.SIMULATION_DB||db).prepare("SELECT value FROM saliyah_sim_settings WHERE key='last_manual_run'").first();
  if(previous&&Number(previous.value)===now)return json({error:'تم تشغيل المحاكاة يدويًا هذه الساعة، انتظر الساعة التالية'},429);
- if(true)return json({error:'المحاكاة والبوتات متوقفة مؤقتاً بأمر الملك'},503);
+
  try{await runSaliyahGovernment(db,env.AVIATION_DB);await (env.SIMULATION_DB||db).prepare("INSERT INTO saliyah_sim_settings(key,value) VALUES('last_manual_run',?) ON CONFLICT(key) DO UPDATE SET value=excluded.value").bind(String(now)).run();await audit(db,user.id,'simulation_manual_run','simulation',String(now),{hour:now});return json({ok:true,hour:now});}
  catch(e){console.error('simulation_manual_run_failed',e);return json({error:'تعذر إكمال دورة المحاكاة',detail:String(e.message||e).slice(0,250)},500)}
 }
