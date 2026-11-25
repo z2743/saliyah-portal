@@ -78,6 +78,12 @@ BEGIN
  UPDATE saliyah_sim_bank_accounts
  SET balance=balance+CASE WHEN NEW.direction='buy' THEN NEW.units*NEW.unit_price ELSE -NEW.units*NEW.unit_price END
  WHERE owner_type='citizen' AND owner_id=NEW.bot_owner_id;
+ INSERT INTO saliyah_sim_bank_transactions(id,account_id,kind,amount,description,related_account_id)
+ VALUES('market-'||NEW.id,
+  (SELECT id FROM saliyah_sim_bank_accounts WHERE owner_type='citizen' AND owner_id=NEW.bot_owner_id),
+  CASE WHEN NEW.direction='buy' THEN 'stock_sale' ELSE 'stock_purchase' END,
+  CASE WHEN NEW.direction='buy' THEN NEW.units*NEW.unit_price ELSE -NEW.units*NEW.unit_price END,
+  'تداول أسهم صالي افتراضي '||NEW.company_id,NEW.user_account_id);
  UPDATE saliyah_sim_shares
  SET units=units+CASE WHEN NEW.direction='buy' THEN -NEW.units ELSE NEW.units END
  WHERE id=(SELECT id FROM saliyah_sim_shares WHERE company_id=NEW.company_id AND owner_id=NEW.bot_owner_id ORDER BY units DESC,id LIMIT 1);
@@ -147,6 +153,10 @@ AFTER INSERT ON saliyah_sim_public_property_trades
 BEGIN
  UPDATE bank_accounts SET balance=balance-NEW.price WHERE id=NEW.user_account_id AND user_id=NEW.user_id;
  UPDATE saliyah_sim_bank_accounts SET balance=balance+NEW.price WHERE owner_type='citizen' AND owner_id=NEW.seller_id;
+ INSERT INTO saliyah_sim_bank_transactions(id,account_id,kind,amount,description,related_account_id)
+ VALUES('property-sale-'||NEW.id,
+ (SELECT id FROM saliyah_sim_bank_accounts WHERE owner_type='citizen' AND owner_id=NEW.seller_id),
+ 'property_sale',NEW.price,'بيع عقار صالي افتراضي '||NEW.property_id,NEW.user_account_id);
  UPDATE saliyah_sim_properties SET owner_id='human:'||NEW.user_id,status='owned',sold_at=CURRENT_TIMESTAMP WHERE id=NEW.property_id AND owner_id=NEW.seller_id AND status='listed';
  INSERT INTO saliyah_sim_property_trades(id,property_id,seller_id,buyer_id,price)
  VALUES('human-property-'||NEW.id,NEW.property_id,NEW.seller_id,'human:'||NEW.user_id,NEW.price);
