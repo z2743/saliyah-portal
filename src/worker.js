@@ -606,8 +606,10 @@ if(method==='GET'&&path==='/api/admin/d1-distribution'){
  const ledgerTables=['saliyah_sim_bank_accounts','saliyah_sim_bank_transactions'];
  const ledgerMatches=ledgerTables.every(table=>Number.isFinite(primary[table]?.count)&&primary[table].count===finance[table]?.count);
  const ledgerTotals=await Promise.all([db,env.FINANCE_DB].map(async source=>{if(!source)return null;try{return await source.prepare('SELECT COUNT(*) accounts,COALESCE(SUM(balance),0) balance FROM saliyah_sim_bank_accounts').first()}catch{return null}}));
+ const ledgerFingerprints=await Promise.all([db,env.FINANCE_DB].map(async source=>{if(!source)return null;try{const accounts=await source.prepare('SELECT COUNT(*) n,COALESCE(SUM(balance),0) total,COALESCE(SUM(length(id)+length(account_number)+length(owner_id)),0) lengths FROM saliyah_sim_bank_accounts').first();const entries=await source.prepare('SELECT COUNT(*) n,COALESCE(SUM(amount),0) total,COALESCE(SUM(length(id)+length(description)),0) lengths FROM saliyah_sim_bank_transactions').first();return {accounts,entries}}catch{return null}}));
+ const ledgerFingerprintsMatch=!!(ledgerFingerprints[0]&&ledgerFingerprints[1]&&JSON.stringify(ledgerFingerprints[0])===JSON.stringify(ledgerFingerprints[1]));
  const ledgerBalancesMatch=!!(ledgerTotals[0]&&ledgerTotals[1]&&ledgerTotals[0].accounts===ledgerTotals[1].accounts&&ledgerTotals[0].balance===ledgerTotals[1].balance);
- return json({ok:true,databases,ledger:{matching_record_counts:ledgerMatches,matching_total_balances:ledgerBalancesMatch,source_totals:ledgerTotals,primary_write_binding:'DB',finance_binding:'FINANCE_DB',note:'تطابق أعداد السجلات لا يضمن تطابق الأرصدة؛ ترحيل صرف الرواتب بالكامل ما زال مطلوباً'},bots_paused:true});
+ return json({ok:true,databases,ledger:{matching_record_counts:ledgerMatches,matching_total_balances:ledgerBalancesMatch,matching_aggregate_fingerprints:ledgerFingerprintsMatch,source_totals:ledgerTotals,primary_write_binding:'DB',finance_binding:'FINANCE_DB',note:'تطابق أعداد السجلات لا يضمن تطابق الأرصدة؛ ترحيل صرف الرواتب بالكامل ما زال مطلوباً'},bots_paused:true});
 }
 if(method==='GET'&&path==='/api/admin/service-bots'){
  if(user?.role!=='king')return json({error:'للملك فقط'},403);
