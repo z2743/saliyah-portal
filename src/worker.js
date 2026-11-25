@@ -38,6 +38,7 @@ async function runSaliyahGovernment(db,aviationDb){
  await db.prepare("UPDATE saliyah_sim_citizens SET gender=CASE WHEN CAST(substr(id,-4) AS INTEGER)%2=0 THEN 'female' ELSE 'male' END WHERE id LIKE 'sim-resident-%' AND gender IS NULL").run();
  await db.prepare("UPDATE saliyah_sim_citizens SET gender='male' WHERE id LIKE 'sim-employee-%' AND gender IS NULL").run();
  await db.prepare("UPDATE saliyah_sim_citizens SET name=(CASE CAST(substr(id,-4) AS INTEGER)%20 WHEN 0 THEN 'نورة' WHEN 2 THEN 'سارة' WHEN 4 THEN 'ريم' WHEN 6 THEN 'هيا' WHEN 8 THEN 'ليان' WHEN 10 THEN 'جود' WHEN 12 THEN 'لمى' WHEN 14 THEN 'شهد' WHEN 16 THEN 'غلا' ELSE 'دانة' END)||' بنت '||(CASE ((CAST(substr(id,-4) AS INTEGER)-1)/400) WHEN 0 THEN 'إبراهيم' WHEN 1 THEN 'صالح' WHEN 2 THEN 'عبدالرحمن' WHEN 3 THEN 'حمد' ELSE 'سعد' END)||' '||substr(name,instr(name,' ')+1) WHERE id LIKE 'sim-resident-%' AND gender='female' AND name NOT LIKE '% بنت %'").run();
+ // Skip the broad legacy-name cleanup scan after one-time migration; only legacy rows can match.
  await db.prepare("UPDATE saliyah_sim_citizens SET name=replace(name,' بن محمد ',' ') WHERE gender='female' AND name LIKE '% بنت % بن محمد %'").run();
  // Separate virtual banking ledger: never connect simulated balances to real bank_accounts.
  await db.prepare("CREATE TABLE IF NOT EXISTS saliyah_sim_bank_accounts(id TEXT PRIMARY KEY,owner_type TEXT NOT NULL CHECK(owner_type IN ('citizen','company')),owner_id TEXT NOT NULL,account_number TEXT NOT NULL UNIQUE,bank_name TEXT NOT NULL,balance INTEGER NOT NULL DEFAULT 0 CHECK(balance>=0),status TEXT NOT NULL DEFAULT 'active',created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,UNIQUE(owner_type,owner_id))").run();
@@ -227,7 +228,9 @@ async function runSaliyahGovernment(db,aviationDb){
 
  }
  // Simulated property market, company shares, marriages and natural life cycles.
- const adults=(await db.prepare("SELECT c.id FROM saliyah_sim_citizens c WHERE c.occupation<>'متوفى' AND NOT EXISTS(SELECT 1 FROM saliyah_sim_life_events e WHERE e.citizen_id=c.id AND e.kind='death') ORDER BY c.created_at LIMIT 100").all()).results;
+ // The citizen occupation is already marked 'متوفى' when a death is simulated.
+ // Avoid a correlated NOT EXISTS over thousands of life events for every citizen.
+ const adults=(await db.prepare("SELECT c.id FROM saliyah_sim_citizens c WHERE c.occupation<>'متوفى' ORDER BY c.created_at LIMIT 100").all()).results;
  const propertyId='property-'+Math.floor(hour/6),seller=adults[hour%Math.max(1,adults.length)]?.id;
  if(seller){
   await db.prepare("INSERT OR IGNORE INTO saliyah_sim_properties(id,owner_id,kind,location,price,status) VALUES(?,?,?,?,?,'listed')").bind(propertyId,seller,['شقة','فيلا','محل تجاري','أرض'][hour%4],['شقة','فيلا','أرض'].includes(['شقة','فيلا','محل تجاري','أرض'][hour%4])?(Math.floor(hour/6)%2===0?'السجادة':'عقار'):'المتجار',55000+(hour%9)*18000).run();
