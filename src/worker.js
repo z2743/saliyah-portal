@@ -520,6 +520,29 @@ if(path==='/api/national-alert'){
 
 
 const royalServiceRecords={"education":[["المؤسسات التعليمية","saliyah_sim_institutions"],["الطلاب والتسجيل","saliyah_sim_enrollments"],["تفاصيل المؤسسات","saliyah_sim_education_details"]],"banking":[["الحسابات البنكية","saliyah_sim_bank_accounts"],["الحركات المالية","saliyah_sim_bank_transactions"]],"bank-admin":[["الحسابات البنكية","saliyah_sim_bank_accounts"],["الحركات المالية","saliyah_sim_bank_transactions"]],"civil":[["السكان","saliyah_sim_citizens"],["الهويات","saliyah_sim_identities"],["الزواج","saliyah_sim_marriages"],["الأبناء","saliyah_sim_children"]],"registry":[["الهويات","saliyah_sim_identities"]],"family-cards":[["بطاقات العائلة","saliyah_sim_family_cards"]],"commerce":[["الشركات","saliyah_sim_companies"]],"company-treasury":[["الحسابات البنكية","saliyah_sim_bank_accounts"]],"company-staff":[["الوظائف","saliyah_sim_jobs"],["طلبات التوظيف","saliyah_sim_job_applications"]],"jobs":[["الوظائف","saliyah_sim_jobs"],["طلبات التوظيف","saliyah_sim_job_applications"]],"jobs-admin":[["الوظائف","saliyah_sim_jobs"],["طلبات التوظيف","saliyah_sim_job_applications"]],"payroll":[["الحركات المالية","saliyah_sim_bank_transactions"],["قرارات الرواتب","saliyah_sim_company_payroll_decisions"]],"courts":[["القضايا العمالية","saliyah_sim_labor_cases"],["المحاكمات","saliyah_sim_trials"],["المذكرات","saliyah_sim_labor_filings"]],"security":[["البلاغات","saliyah_sim_incidents"]],"borders":[["حركة المنافذ","saliyah_sim_border_events"]],"land":[["العقارات","saliyah_sim_properties"],["الصفقات","saliyah_sim_property_trades"]],"state-budgets":[["المشاريع","saliyah_projects"]],"telecom":[],"pos":[],"absher":[],"health":[],"municipality":[],"installments":[]};
+// Royal D1 distribution report. Read-only: reconciles legacy payroll authority with finance snapshots.
+if(method==='GET'&&path==='/api/admin/d1-distribution'){
+ if(user?.role!=='king')return json({error:'للملك فقط'},403);
+ const sources=[
+  ['DB',db,['saliyah_sim_bank_accounts','saliyah_sim_bank_transactions']],
+  ['FINANCE_DB',env.FINANCE_DB,['saliyah_sim_bank_accounts','saliyah_sim_bank_transactions','saliyah_sim_company_payroll_decisions']],
+  ['SIMULATION_DB',env.SIMULATION_DB,['saliyah_sim_settings','saliyah_sim_institutions','saliyah_sim_education_details']],
+  ['AVIATION_DB',env.AVIATION_DB,['saliyah_sim_tourists']],
+  ['ARCHIVE_DB',env.ARCHIVE_DB,['national_alert_history']]
+ ];
+ const databases=await Promise.all(sources.map(async([binding,connection,tables])=>{
+  if(!connection)return {binding,connected:false,tables:{},errors:['missing binding']};
+  const entries=await Promise.all(tables.map(async table=>{
+   try{const data=await connection.prepare('SELECT COUNT(*) AS n FROM '+table).first();return [table,{count:Number(data?.n||0)}]}
+   catch(e){return [table,{error:String(e?.message||e).slice(0,160)}]}
+  }));
+  return {binding,connected:true,tables:Object.fromEntries(entries),errors:entries.filter(([,v])=>v.error).map(([name])=>name)};
+ }));
+ const primary=databases[0].tables,finance=databases[1].tables;
+ const ledgerTables=['saliyah_sim_bank_accounts','saliyah_sim_bank_transactions'];
+ const ledgerMatches=ledgerTables.every(table=>Number.isFinite(primary[table]?.count)&&primary[table].count===finance[table]?.count);
+ return json({ok:true,databases,ledger:{matching_record_counts:ledgerMatches,primary_write_binding:'DB',finance_binding:'FINANCE_DB',note:'تطابق أعداد السجلات لا يضمن تطابق الأرصدة؛ ترحيل صرف الرواتب بالكامل ما زال مطلوباً'},bots_paused:true});
+}
 if(method==='GET'&&path==='/api/admin/service-bots'){
  if(user?.role!=='king')return json({error:'للملك فقط'},403);
  const service=u.searchParams.get('service'),group=royalServiceRecords[service];
@@ -787,7 +810,7 @@ if(method==='POST'&&path==='/api/admin/simulation/run'){
  const previous=await (env.SIMULATION_DB||db).prepare("SELECT value FROM saliyah_sim_settings WHERE key='last_manual_run'").first();
  if(previous&&Number(previous.value)===now)return json({error:'تم تشغيل المحاكاة يدويًا هذه الساعة، انتظر الساعة التالية'},429);
  if(true)return json({error:'المحاكاة والبوتات متوقفة مؤقتاً بأمر الملك'},503);
- try{await runSaliyahGovernment(db,env.AVIATION_DB);await db.prepare("INSERT INTO saliyah_sim_settings(key,value) VALUES('last_manual_run',?) ON CONFLICT(key) DO UPDATE SET value=excluded.value").bind(String(now)).run();await audit(db,user.id,'simulation_manual_run','simulation',String(now),{hour:now});return json({ok:true,hour:now});}
+ try{await runSaliyahGovernment(db,env.AVIATION_DB);await (env.SIMULATION_DB||db).prepare("INSERT INTO saliyah_sim_settings(key,value) VALUES('last_manual_run',?) ON CONFLICT(key) DO UPDATE SET value=excluded.value").bind(String(now)).run();await audit(db,user.id,'simulation_manual_run','simulation',String(now),{hour:now});return json({ok:true,hour:now});}
  catch(e){console.error('simulation_manual_run_failed',e);return json({error:'تعذر إكمال دورة المحاكاة',detail:String(e.message||e).slice(0,250)},500)}
 }
 if(method==='GET'&&path==='/api/admin/simulation/companies'){
