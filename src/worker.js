@@ -570,10 +570,9 @@ if(method==='GET'&&path==='/api/admin/d1-distribution'){
 }
 if(method==='GET'&&path==='/api/admin/service-bots'){
  if(user?.role!=='king')return json({error:'للملك فقط'},403);
- const service=u.searchParams.get('service'),group=[...(royalServiceRecords[service]||[]),...(royalActualServiceRecords[service]||[])];
+ const service=u.searchParams.get('service');if(!Object.hasOwn(royalServiceRecords,service)&&!Object.hasOwn(royalActualServiceRecords,service))return json({error:'خدمة غير معروفة'},400);const group=[...(royalServiceRecords[service]||[]),...(royalActualServiceRecords[service]||[])];
  if(!Array.isArray(group))return json({error:'خدمة غير معروفة'},400);
  const index=Number(u.searchParams.get('group')||0),offset=Number(u.searchParams.get('offset')||0);
- const canViewReal=user.role==='king'; // Real-person records are never available to bot actors
  if(!Number.isInteger(index)||index<0||!Number.isSafeInteger(offset)||offset<0||offset>100000)return json({error:'صفحة غير صالحة'},400);
  if(!group.length)return json({groups:[],rows:[]});
  if(!group[index])return json({error:'سجل غير معروف'},400);
