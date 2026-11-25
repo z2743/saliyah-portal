@@ -753,6 +753,33 @@ if(method==='GET'&&path==='/api/admin/d1-distribution'){
  const ledgerBalancesMatch=!!(ledgerTotals[0]&&ledgerTotals[1]&&ledgerTotals[0].accounts===ledgerTotals[1].accounts&&ledgerTotals[0].balance===ledgerTotals[1].balance);
  return json({ok:true,databases,ledger:{matching_record_counts:ledgerMatches,matching_total_balances:ledgerBalancesMatch,matching_aggregate_fingerprints:ledgerFingerprintsMatch,source_totals:ledgerTotals,primary_write_binding:'DB',finance_binding:'FINANCE_DB',note:'تطابق أعداد السجلات لا يضمن تطابق الأرصدة؛ ترحيل صرف الرواتب بالكامل ما زال مطلوباً'},bots_paused:true});
 }
+if(method==='GET'&&path==='/api/admin/bot-directory'){
+ if(user?.role!=='king')return json({error:'للملك فقط'},403);
+ const type=u.searchParams.get('type')||'citizens';
+ const term=(u.searchParams.get('q')||'').trim().slice(0,80);
+ const page=Math.max(1,Math.min(1000,Number.parseInt(u.searchParams.get('page')||'1',10)||1));
+ const limit=50;
+ const types={
+  citizens:{source:db,from:'saliyah_sim_citizens c',where:"1=1",search:'c.name LIKE ? OR c.id LIKE ?',select:'c.id,c.name,c.occupation,c.created_at',title:'السكان الآليون'},
+  employees:{source:db,from:'saliyah_sim_citizens c',where:"c.id LIKE 'sim-employee-%'",search:'c.name LIKE ? OR c.id LIKE ?',select:'c.id,c.name,c.occupation,c.created_at',title:'الموظفون الآليون'},
+  residents:{source:db,from:'saliyah_sim_citizens c',where:"c.id LIKE 'sim-resident-%'",search:'c.name LIKE ? OR c.id LIKE ?',select:'c.id,c.name,c.occupation,c.created_at',title:'المقيمون الآليون'},
+  lawyers:{source:db,from:'saliyah_sim_legal_bots c',where:'1=1',search:'c.name LIKE ? OR c.id LIKE ?',select:'c.id,c.name,c.role occupation,c.active status',title:'المحامون الآليون'},
+  x:{source:db,from:'x_profiles c',where:"c.kind='bot'",search:'c.display_name LIKE ? OR c.handle LIKE ? OR c.id LIKE ?',select:'c.id,c.display_name name,c.handle,c.bio,c.created_at',title:'حسابات إكس الآلية'},
+  companies:{source:db,from:'saliyah_sim_companies c LEFT JOIN saliyah_sim_citizens p ON p.id=c.founder_id',where:'1=1',search:'c.name LIKE ? OR c.id LIKE ? OR p.name LIKE ?',select:'c.id,c.name,c.activity occupation,c.status,p.name founder_name,c.created_at',title:'الشركات التي تديرها الشخصيات الآلية'},
+  tourists:{source:env.AVIATION_DB,from:'saliyah_sim_tourists c',where:'1=1',search:'c.name LIKE ? OR c.id LIKE ?',select:'c.id,c.name,c.nationality,c.visa_status status,c.created_at',title:'السياح الآليون'}
+ };
+ const selected=Object.hasOwn(types,type)?types[type]:null;
+ if(!selected)return json({error:'نوع دليل غير معروف'},400);
+ if(!selected.source)return json({error:'قاعدة البيانات غير متصلة'},503);
+ const count=(selected.search.match(/\?/g)||[]).length;
+ const where=selected.where+' AND ('+selected.search+')';
+ const params=Array.from({length:count},()=>'%'+term+'%');
+ const total=Number((await selected.source.prepare('SELECT COUNT(*) n FROM '+selected.from+' WHERE '+where).bind(...params).first())?.n||0);
+ const offset=(page-1)*limit;
+ const rows=await selected.source.prepare('SELECT '+selected.select+' FROM '+selected.from+' WHERE '+where+' ORDER BY c.id LIMIT ? OFFSET ?').bind(...params,limit,offset).all();
+ return json({type,title:selected.title,rows:rows.results,pagination:{page,pages:Math.ceil(total/limit),total,page_size:limit}});
+}
+
 if(method==='GET'&&path==='/api/admin/service-bots'){
  if(user?.role!=='king')return json({error:'للملك فقط'},403);
  const service=u.searchParams.get('service');if(!Object.hasOwn(royalServiceRecords,service)&&!Object.hasOwn(royalActualServiceRecords,service))return json({error:'خدمة غير معروفة'},400);const group=[...(royalServiceRecords[service]||[]),...(royalActualServiceRecords[service]||[])];
