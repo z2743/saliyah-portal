@@ -3,7 +3,7 @@
 CREATE TABLE IF NOT EXISTS saliyah_sim_public_contacts(
  id TEXT PRIMARY KEY,
  user_id TEXT NOT NULL REFERENCES users(id),
- target_type TEXT NOT NULL CHECK(target_type IN ('citizens','companies','institutions','jobs','x','lawyers','properties')),
+ target_type TEXT NOT NULL CHECK(target_type IN ('citizens','companies','institutions','jobs','x','lawyers','properties','tourists','projects','banking','shares')),
  target_id TEXT NOT NULL,
  message TEXT NOT NULL CHECK(length(message) BETWEEN 5 AND 1000),
  status TEXT NOT NULL DEFAULT 'pending_bot' CHECK(status IN ('pending_bot','replied')),
