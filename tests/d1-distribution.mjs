@@ -18,13 +18,13 @@ assert.match(worker,/await \(env\.SIMULATION_DB\|\|db\)\.prepare\("INSERT INTO s
 assert.match(worker,/\(\)=>runSaliyahGovernment\(env\.DB,env\.AVIATION_DB\)/);
 assert.match(worker,/\(\)=>runSimContactReplies\(env\.DB,env\.AVIATION_DB\)/);
 assert.doesNotMatch(worker,/simulation_paused_by_royal_order/);
-assert.match(worker,/const botRequests=await sharedRows\(db/);
-assert.match(worker,/institutionNames=new Map\(\)/);
+assert.match(worker,/await syncEducationCatalog\(db,env\.SIMULATION_DB\)/);
+assert.match(worker,/education_automated_review/);
 assert.doesNotMatch(worker,/shared_service_applications a JOIN saliyah_sim_institutions i ON i.id=a.target_id/);
 assert.match(worker,/const totals=await db\.prepare\("SELECT owner_type,COUNT\(\*\) accounts,SUM\(balance\)/);
 for(const key of ['telecom','pos','absher','health','municipality','installments'])assert.match(worker,new RegExp('"'+key+'":\\[\\['));
 assert.match(worker,/matching_total_balances:ledgerBalancesMatch/);
-assert.match(worker,/const botRequests=await sharedRows\(db/);
+assert.match(worker,/await syncEducationCatalog\(db,env\.SIMULATION_DB\)/);
 assert.match(worker,/const recordDb=\['saliyah_sim_institutions','saliyah_sim_education_details'\]/);
 assert.match(worker,/saliyah_sim_bank_transactions'\?'SELECT \* FROM saliyah_sim_bank_transactions/);
 const royalPage=read('public/simulation.html');
