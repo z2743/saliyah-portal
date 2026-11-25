@@ -167,12 +167,14 @@ async function runSaliyahGovernment(db,aviationDb){
  const lifestyleDay=Math.floor(Date.now()/86400000);
  const lifestyleKinds=['citizen','resident','travel','rest','work','study','shopping','family','job_search','business'];
  const lifestyleDescriptions=['مواطن صالي يعيش في المملكة','مقيم يحمل إقامة صالية سارية ضمن المحاكاة','سافر خارج المملكة في رحلة شخصية','يقضي يوم راحة في المنزل','متجه إلى العمل','يحضر دراسته','خرج للتسوق','يزور أسرته وأقاربه','يبحث عن وظيفة','يدير مشروعه الخاص'];
+ const lifestyleWrites=[];
  for(let i=0;i<24;i++){
   const n=(lifestyleDay*24+i)%3000+1;
   const id=(n<=2000?'sim-resident-':'sim-employee-')+String(n<=2000?n:n-2000).padStart(4,'0');
   const kindIndex=(n*7+Math.floor(lifestyleDay/3))%lifestyleKinds.length;
-  await db.prepare('INSERT OR IGNORE INTO saliyah_sim_life_events(id,citizen_id,kind,description) VALUES(?,?,?,?)').bind('lifestyle-'+lifestyleDay+'-'+i,id,lifestyleKinds[kindIndex],lifestyleDescriptions[kindIndex]).run();
+  lifestyleWrites.push(db.prepare('INSERT OR IGNORE INTO saliyah_sim_life_events(id,citizen_id,kind,description) VALUES(?,?,?,?)').bind('lifestyle-'+lifestyleDay+'-'+i,id,lifestyleKinds[kindIndex],lifestyleDescriptions[kindIndex]));
  }
+ if(lifestyleWrites.length)await db.batch(lifestyleWrites);
  // Life milestones are deterministic per resident/day and idempotent across retries.
  await db.prepare("INSERT OR IGNORE INTO saliyah_sim_life_events(id,citizen_id,kind,description) SELECT 'sim-milestone-'||?||'-'||substr(id,-4),id,CASE (CAST(substr(id,-4) AS INTEGER)+?)%9 WHEN 0 THEN 'social' WHEN 1 THEN 'study_plan' WHEN 2 THEN 'study_challenge' WHEN 3 THEN 'career_plan' WHEN 4 THEN 'job_search' WHEN 5 THEN 'training' WHEN 6 THEN 'business_plan' WHEN 7 THEN 'business_challenge' ELSE 'single_life' END,CASE (CAST(substr(id,-4) AS INTEGER)+?)%9 WHEN 0 THEN 'يتواصل مع معارفه في المملكة' WHEN 1 THEN 'يستعد لاختبار دراسي' WHEN 2 THEN 'يواجه صعوبة في المذاكرة' WHEN 3 THEN 'يخطط للتقدم الوظيفي' WHEN 4 THEN 'يبحث عن فرص عمل مناسبة' WHEN 5 THEN 'يتدرب على مهارات جديدة' WHEN 6 THEN 'يدرس فكرة مشروع تجاري' WHEN 7 THEN 'يبحث تحديات تأسيس مشروع' ELSE 'يعيش أعزب ويواصل حياته' END FROM saliyah_sim_citizens WHERE id LIKE 'sim-resident-%' AND CAST(substr(id,-4) AS INTEGER)%10=?").bind(day,day,day,day%10).run();
 
@@ -285,13 +287,15 @@ async function runSaliyahGovernment(db,aviationDb){
  const touristFirst=['James','Oliver','William','Emily','Sophia','Charlotte','Noah','Liam','Amelia','Lucas','Emma','Henry','Isabella','Jack','Olivia','Ethan','Mia','Alexander','Grace','Daniel'];
  const touristLast=['Smith','Johnson','Brown','Wilson','Taylor','Anderson','Martin','Miller','Davis','Clark','Thomas','Walker','Harris','Lewis','White','Hall','Young','King','Scott','Baker'];
  const touristCountries=['المملكة المتحدة','الولايات المتحدة','كندا','أستراليا','ألمانيا','فرنسا','إيطاليا','هولندا','إسبانيا','نيوزيلندا'];
+ const touristWrites=[];
  for(let i=0;i<12;i++){
   const n=(Math.floor(hour/4)*12+i)%240;
   const name=touristFirst[(n*7+3)%touristFirst.length]+' '+touristLast[(n*11+5)%touristLast.length];
   const nationality=touristCountries[n%touristCountries.length];
   const visa=(n%13===0?'pending':n%17===0?'refused':'approved');
-  await aviationDb.prepare("INSERT OR IGNORE INTO saliyah_sim_tourists(id,name,nationality,passport_number,visa_status,arrival_port,visit_purpose) VALUES(?,?,?,?,?,?,?)").bind('tourist-'+String(n+1).padStart(4,'0'),name,nationality,'VIS-'+String(n+1).padStart(6,'0'),visa,'مطار الملك زياد الدولي',n%4===0?'زيارة عائلية':'سياحة').run();
+  touristWrites.push(aviationDb.prepare("INSERT OR IGNORE INTO saliyah_sim_tourists(id,name,nationality,passport_number,visa_status,arrival_port,visit_purpose) VALUES(?,?,?,?,?,?,?)").bind('tourist-'+String(n+1).padStart(4,'0'),name,nationality,'VIS-'+String(n+1).padStart(6,'0'),visa,'مطار الملك زياد الدولي',n%4===0?'زيارة عائلية':'سياحة'));
  }
+ if(touristWrites.length)await aviationDb.batch(touristWrites);
  }
  const ports=['منفذ السجادة البري','مطار الملك زياد الدولي','ميناء المتجار'];
  const recent=(await db.prepare("SELECT id FROM saliyah_sim_citizens ORDER BY created_at DESC LIMIT 60").all()).results;
