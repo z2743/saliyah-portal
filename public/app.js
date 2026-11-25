@@ -54,9 +54,10 @@ async function nationalAlertPage(editId){
  form.onsubmit=e=>{e.preventDefault();const f=new FormData(form);save({action:'publish',id:alert?.id,title:f.get('title'),body:f.get('body'),target:f.get('target'),severity:f.get('severity'),hours:Number(f.get('hours'))})};
  document.querySelector('#newNationalAlert').onclick=()=>nationalAlertPage();
  history.addEventListener('click',async e=>{
-  const target=e.target.closest('button[data-edit-alert],button[data-cancel-alert],button[data-delete-alert],button[data-confirm-alert],button[data-dismiss-alert]');
+  const target=(e.target instanceof Element?e.target:e.target?.parentElement)?.closest('button[data-edit-alert],button[data-cancel-alert],button[data-delete-alert],button[data-confirm-alert],button[data-dismiss-alert]');
   if(!target||busy)return;
   if(target.dataset.editAlert){await nationalAlertPage(target.dataset.editAlert);return}
+  if(!target)return;
   if(target.dataset.dismissAlert!==undefined){const pending=history.querySelector('#nationalAlertPending');if(pending)pending.remove();message('تم التراجع عن العملية.');return}
   if(target.dataset.confirmAlert!==undefined){
    const id=target.dataset.confirmAlert,action=target.dataset.action;
