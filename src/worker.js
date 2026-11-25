@@ -1,3 +1,4 @@
+async function sharedRows(db,sql,args=[]){try{return (await db.prepare(sql).bind(...args).all()).results}catch(e){if(String(e).includes('no such table'))return [];throw e}}
 
 // Virtual IBANs are reversible aliases for existing UUID accounts; no database scans or backfill.
 function saliyahIban(id){if(!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(id))return id;const part=BigInt('0x'+id.replace(/-/g,'')).toString(36).toUpperCase().padStart(25,'0');const digits=(part+'SL00').replace(/[A-Z]/g,c=>String(c.charCodeAt(0)-55));return 'SL'+String(98n-BigInt(digits)%97n).padStart(2,'0')+part}
@@ -1741,7 +1742,7 @@ if(path.startsWith('/api/payroll/')){
 if(path.startsWith('/api/education/')){
  const manage=await can('education');
  if(method==='GET'&&path==='/api/education/institutions'){
-  const r=await db.prepare('SELECT id,name,level,sector,capacity,min_grade,fee,active FROM education_institutions WHERE active=1 OR ?=1 ORDER BY created_at DESC').bind(manage?1:0).all();return json({institutions:r.results,can_manage:manage});
+  const r=await db.prepare('SELECT id,name,level,sector,capacity,min_grade,fee,active FROM education_institutions WHERE active=1 OR ?=1 ORDER BY created_at DESC').bind(manage?1:0).all();const bots=await sharedRows(db,"SELECT i.id,i.name,CASE WHEN i.kind='university' THEN 'university' WHEN d.level IN ('primary','middle','secondary') THEN d.level ELSE 'primary' END level,COALESCE(d.sector,'public') sector,COALESCE(d.capacity,200) capacity,0 min_grade,COALESCE(d.tuition,0) fee,1 active FROM saliyah_sim_institutions i LEFT JOIN saliyah_sim_education_details d ON d.institution_id=i.id WHERE i.status='open' LIMIT 100");return json({institutions:[...r.results,...bots],can_manage:manage});
  }
  if(method==='POST'&&path==='/api/education/institutions'){
   if(!manage)return json({error:'غير مخول'},403);const b=await input(req);
@@ -1751,7 +1752,7 @@ if(path.startsWith('/api/education/')){
  }
  if(method==='POST'&&path==='/api/education/apply'){
   const b=await input(req);if(!b||!validText(b.institution_id,10,80)||!(b.previous_grade===null||b.previous_grade===undefined||(typeof b.previous_grade==='number'&&b.previous_grade>=0&&b.previous_grade<=100)))return json({error:'طلب غير صالح'},400);
-  const inst=await db.prepare('SELECT * FROM education_institutions WHERE id=? AND active=1').bind(b.institution_id).first();if(!inst)return json({error:'المؤسسة غير موجودة'},404);
+  const inst=await db.prepare('SELECT * FROM education_institutions WHERE id=? AND active=1').bind(b.institution_id).first();if(!inst){if(b.student_id&&b.student_id!==user.id)return json({error:'غير مخول'},403);const bot=(await sharedRows(db,"SELECT id FROM saliyah_sim_institutions WHERE id=? AND status='open'",[b.institution_id]))[0];if(!bot)return json({error:'المؤسسة غير موجودة'},404);const id=random();await db.prepare("CREATE TABLE IF NOT EXISTS shared_service_applications(id TEXT PRIMARY KEY,service TEXT NOT NULL CHECK(service IN ('jobs','education')),target_id TEXT NOT NULL,applicant_id TEXT NOT NULL REFERENCES users(id),statement TEXT,previous_grade REAL,status TEXT NOT NULL DEFAULT 'submitted',created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,UNIQUE(service,target_id,applicant_id));").run();const result=await db.prepare("INSERT OR IGNORE INTO shared_service_applications(id,service,target_id,applicant_id,previous_grade) VALUES(?,'education',?,?,?)").bind(id,bot.id,user.id,b.previous_grade??null).run();if(!result.meta.changes)return json({error:'سبق التقديم'},409);return json({id,status:'submitted'},201);}
   const student=typeof b.student_id==='string'&&b.student_id!==user.id?b.student_id:user.id;
   if(student!==user.id)return json({error:'تقديم ولي الأمر يتطلب ربطًا موثقًا، غير مفعّل بعد'},403);
   if(inst.level!=='primary'&&(b.previous_grade===null||b.previous_grade===undefined||b.previous_grade<inst.min_grade))return json({error:'الدرجة السابقة لا تحقق شروط القبول'},409);
@@ -1759,7 +1760,7 @@ if(path.startsWith('/api/education/')){
   await audit(db,user.id,'education_apply','education_application',id,{institution_id:inst.id});return json({id,status:'submitted'},201);
  }
  if(method==='GET'&&path==='/api/education/applications'){
-  const r=manage?await db.prepare('SELECT a.*,i.name institution_name,i.level FROM education_applications a JOIN education_institutions i ON i.id=a.institution_id ORDER BY a.created_at DESC LIMIT 200').all():await db.prepare('SELECT a.*,i.name institution_name,i.level FROM education_applications a JOIN education_institutions i ON i.id=a.institution_id WHERE a.student_id=? ORDER BY a.created_at DESC LIMIT 100').bind(user.id).all();return json({applications:r.results});
+  const r=manage?await db.prepare('SELECT a.*,i.name institution_name,i.level FROM education_applications a JOIN education_institutions i ON i.id=a.institution_id ORDER BY a.created_at DESC LIMIT 200').all():await db.prepare('SELECT a.*,i.name institution_name,i.level FROM education_applications a JOIN education_institutions i ON i.id=a.institution_id WHERE a.student_id=? ORDER BY a.created_at DESC LIMIT 100').bind(user.id).all();const bots=await sharedRows(db,"SELECT a.*,a.target_id institution_id,a.applicant_id student_id,i.name institution_name,CASE WHEN i.kind='university' THEN 'university' ELSE 'primary' END level FROM shared_service_applications a JOIN saliyah_sim_institutions i ON i.id=a.target_id WHERE a.service='education' AND (?=1 OR a.applicant_id=?) ORDER BY a.created_at DESC LIMIT 100",[manage?1:0,user.id]);return json({applications:[...r.results,...bots]});
  }
  if(method==='POST'&&path==='/api/education/review'){
   if(!manage)return json({error:'غير مخول'},403);const b=await input(req);if(!b||!validText(b.id,10,80)||!['accepted','rejected'].includes(b.status))return json({error:'بيانات غير صالحة'},400);
@@ -2123,16 +2124,16 @@ if(method==='POST'&&path==='/api/admin/news'){if(!(await can('news')))return jso
 
 // Employment service: publicly browsable vacancies; applications require an account.
 if(method==='GET'&&path==='/api/jobs'){
- const r=await db.prepare("SELECT id,title,employer,sector,description,salary,status,created_at FROM vacancies WHERE status='open' ORDER BY created_at DESC LIMIT 100").all();return json({jobs:r.results});
+ const r=await db.prepare("SELECT id,title,employer,sector,description,salary,status,created_at FROM vacancies WHERE status='open' ORDER BY created_at DESC LIMIT 100").all();const bots=await sharedRows(db,"SELECT j.id,j.title,c.name employer,'private' sector,c.description,j.salary,j.status,j.created_at FROM saliyah_sim_jobs j JOIN saliyah_sim_companies c ON c.id=j.company_id WHERE j.status='open' AND c.status='approved' AND NOT EXISTS(SELECT 1 FROM saliyah_sim_job_applications a WHERE a.job_id=j.id AND a.status='hired') ORDER BY j.created_at DESC LIMIT 100");return json({jobs:[...r.results,...bots]});
 }
 if(method==='GET'&&path==='/api/jobs/mine'){
  if(!user)return json({error:'سجل الدخول أولًا'},401);
- const r=await db.prepare('SELECT a.id,a.vacancy_id,a.status,a.created_at,v.title,v.employer FROM job_applications a JOIN vacancies v ON v.id=a.vacancy_id WHERE a.applicant_id=? ORDER BY a.created_at DESC').bind(user.id).all();return json({applications:r.results});
+ const r=await db.prepare('SELECT a.id,a.vacancy_id,a.status,a.created_at,v.title,v.employer FROM job_applications a JOIN vacancies v ON v.id=a.vacancy_id WHERE a.applicant_id=? ORDER BY a.created_at DESC').bind(user.id).all();const bots=await sharedRows(db,"SELECT a.id,a.target_id vacancy_id,a.status,a.created_at,j.title,c.name employer FROM shared_service_applications a JOIN saliyah_sim_jobs j ON j.id=a.target_id JOIN saliyah_sim_companies c ON c.id=j.company_id WHERE a.service='jobs' AND a.applicant_id=? ORDER BY a.created_at DESC LIMIT 100",[user.id]);return json({applications:[...r.results,...bots]});
 }
 if(method==='POST'&&path==='/api/jobs/apply'){
  if(!user)return json({error:'سجل الدخول أولًا'},401);
  const b=await input(req);if(!b||!validText(b.vacancy_id,10,80)||!validText(b.statement,10,2000))return json({error:'اختر وظيفة واكتب نبذة عن مؤهلاتك'},400);
- const v=await db.prepare("SELECT id FROM vacancies WHERE id=? AND status='open'").bind(b.vacancy_id).first();if(!v)return json({error:'الوظيفة غير متاحة'},404);
+ const v=await db.prepare("SELECT id FROM vacancies WHERE id=? AND status='open'").bind(b.vacancy_id).first();if(!v){const bot=(await sharedRows(db,"SELECT j.id FROM saliyah_sim_jobs j JOIN saliyah_sim_companies c ON c.id=j.company_id WHERE j.id=? AND j.status='open' AND c.status='approved' AND NOT EXISTS(SELECT 1 FROM saliyah_sim_job_applications a WHERE a.job_id=j.id AND a.status='hired')",[b.vacancy_id]))[0];if(!bot)return json({error:'الوظيفة غير متاحة'},404);const id=random();await db.prepare("CREATE TABLE IF NOT EXISTS shared_service_applications(id TEXT PRIMARY KEY,service TEXT NOT NULL CHECK(service IN ('jobs','education')),target_id TEXT NOT NULL,applicant_id TEXT NOT NULL REFERENCES users(id),statement TEXT,previous_grade REAL,status TEXT NOT NULL DEFAULT 'submitted',created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,UNIQUE(service,target_id,applicant_id));").run();const result=await db.prepare("INSERT OR IGNORE INTO shared_service_applications(id,service,target_id,applicant_id,statement) VALUES(?,'jobs',?,?,?)").bind(id,bot.id,user.id,b.statement.trim()).run();if(!result.meta.changes)return json({error:'سبق التقديم لهذه الوظيفة'},409);return json({id,status:'submitted'},201);}
  const id=random();try{await db.prepare('INSERT INTO job_applications(id,vacancy_id,applicant_id,statement) VALUES(?,?,?,?)').bind(id,v.id,user.id,b.statement.trim()).run()}catch{return json({error:'سبق التقديم لهذه الوظيفة'},409)}
  await audit(db,user.id,'apply_job','job_application',id,{vacancy_id:v.id});return json({id,status:'submitted'},201);
 }

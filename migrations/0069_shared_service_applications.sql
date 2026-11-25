@@ -1,0 +1,1 @@
+CREATE TABLE IF NOT EXISTS shared_service_applications(id TEXT PRIMARY KEY,service TEXT NOT NULL CHECK(service IN ('jobs','education')),target_id TEXT NOT NULL,applicant_id TEXT NOT NULL REFERENCES users(id),statement TEXT,previous_grade REAL,status TEXT NOT NULL DEFAULT 'submitted',created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,UNIQUE(service,target_id,applicant_id));
