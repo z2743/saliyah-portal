@@ -1288,7 +1288,7 @@ if(path.startsWith('/api/enforcement/')){
  if(!assigned.length)return json({error:'الخدمة للملك ووزارات الداخلية والعدل والمالية'},403);
  if(method==='GET'&&path==='/api/enforcement/cases'){
   const r=await db.prepare("SELECT e.*,u.username subject_username FROM enforcement_cases_v2 e JOIN users u ON u.id=e.subject_user_id ORDER BY e.created_at DESC LIMIT 100").all();
-  const h=await db.prepare("SELECT s.*,u.username subject_username FROM service_suspensions_v2 s JOIN users u ON u.id=s.subject_user_id ORDER BY s.created_at DESC LIMIT 100").all();
+  const h=await db.prepare("SELECT s.*,u.username subject_username,e.action case_action,d.status debt_status,d.remaining_amount debt_remaining FROM service_suspensions_v2 s JOIN users u ON u.id=s.subject_user_id JOIN enforcement_cases_v2 e ON e.id=s.case_id LEFT JOIN debt_claims d ON d.case_id=s.case_id ORDER BY s.created_at DESC LIMIT 100").all();
   const cases=user.role==='king'?r.results:r.results.filter(x=>assigned.includes(x.ministry_id));
   const suspensions=user.role==='king'?h.results:h.results.filter(x=>assigned.includes(x.ministry_id));
   return json({cases,suspensions,ministries:assigned});
@@ -1329,6 +1329,19 @@ if(path.startsWith('/api/enforcement/')){
   try{await db.batch(updates)}catch{return json({error:'تعذر اعتماد القرار. تحقق من جاهزية جداول الإيقاف'},409)}
   await audit(db,user.id,'enforcement_case_decision','enforcement_case',b.id,{decision:b.decision,suspension_activated:suspend,collection_activated:collect});
   return json({status:b.decision,suspension_activated:suspend,collection_activated:collect,note:suspend?'تم تفعيل إيقاف الخدمات الاختيارية المحددة':'تم تسجيل القرار'});
+ }
+ if(method==='POST'&&path==='/api/enforcement/reconcile'){
+  if(user.role!=='king')return json({error:'رفع الإيقاف التلقائي بعد السداد للملك فقط'},403);
+  // Keep independent court-ordered suspensions: only "both" cases with a fully paid debt qualify.
+  const eligible="FROM service_suspensions_v2 s JOIN enforcement_cases_v2 c ON c.id=s.case_id JOIN debt_claims d ON d.case_id=s.case_id WHERE s.status='active' AND c.action='both' AND d.status='paid' AND d.remaining_amount=0";
+  try{
+   const statements=[
+    db.prepare("INSERT INTO audit_log(id,actor_id,action,entity_type,entity_id,details) SELECT lower(hex(randomblob(16))),?,'service_suspension_auto_lifted','service_suspension',s.id,json_object('reason','paid_debt','case_id',s.case_id) "+eligible).bind(user.id),
+    db.prepare("UPDATE service_suspensions_v2 SET status='lifted',ended_at=CURRENT_TIMESTAMP,ended_by=?,lift_reason='سداد المديونية بالكامل - رفع آلي' WHERE status='active' AND EXISTS(SELECT 1 FROM enforcement_cases_v2 c JOIN debt_claims d ON d.case_id=c.id WHERE c.id=service_suspensions_v2.case_id AND c.action='both' AND d.status='paid' AND d.remaining_amount=0)").bind(user.id)
+   ];
+   const outcomes=await db.batch(statements);
+   return json({ok:true,lifted:Number(outcomes[1]?.meta?.changes||0)});
+  }catch(e){console.error('enforcement_auto_lift_failed',String(e).slice(0,180));return json({error:'تعذر مزامنة الإيقافات مع المديونيات المسددة'},503)}
  }
  if(method==='POST'&&path==='/api/enforcement/lift'){
   if(user.role!=='king')return json({error:'رفع الإيقاف للملك فقط'},403);
