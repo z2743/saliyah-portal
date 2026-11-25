@@ -2158,11 +2158,27 @@ if(method==='GET'&&path==='/api/telecom/usage'){
 }
 if(method==='GET'&&path==='/api/telecom/sms'){
  const line=u.searchParams.get('line');const owned=await db.prepare('SELECT id FROM telecom_lines WHERE id=? AND user_id=?').bind(line||'',user.id).first();if(!owned)return json({error:'الشريحة لا تخصك'},403);
- const r=await db.prepare('SELECT id,from_number,to_number,body,created_at FROM telecom_sms WHERE from_line_id=? OR to_line_id=? ORDER BY created_at DESC LIMIT 100').bind(line,line).all();return json({messages:r.results});
+ const r=await db.prepare('SELECT id,from_number,to_number,body,created_at FROM telecom_sms WHERE from_line_id=? OR to_line_id=? ORDER BY created_at DESC LIMIT 100').bind(line,line).all();
+ const botMessages=await sharedRows(db,'SELECT s.contact_id id,s.from_number,s.to_number,c.message body,c.bot_reply,c.status,s.created_at FROM saliyah_sim_phone_sms s JOIN saliyah_sim_public_contacts c ON c.id=s.contact_id WHERE s.from_line_id=? AND c.user_id=? ORDER BY s.created_at DESC LIMIT 100',[line,user.id]);
+ return json({messages:[...r.results,...botMessages].sort((a,b)=>String(b.created_at).localeCompare(String(a.created_at))).slice(0,100)});
 }
 if(method==='POST'&&path==='/api/telecom/sms'){
- const b=await input(req);if(!b||!validText(b.line_id,10,80)||!/^05[0-9]{8}$/.test(b.to_number||'')||!validText(b.body,1,500))return json({error:'رقم المستلم أو نص الرسالة غير صالح'},400);
+ const b=await input(req);if(!b||!validText(b.line_id,10,80)||!(/^(?:05[0-9]{8}|SIM-[0-9]{9})$/i.test(b.to_number||''))||!validText(b.body,1,500))return json({error:'رقم المستلم أو نص الرسالة غير صالح'},400);
  const from=await db.prepare("SELECT id,number FROM telecom_lines WHERE id=? AND user_id=? AND status='active'").bind(b.line_id,user.id).first();if(!from)return json({error:'الشريحة غير متاحة'},403);
+ if(/^SIM-[0-9]{9}$/i.test(b.to_number)){
+  if(!validText(b.body,5,500))return json({error:'رسائل البوتات لا تقل عن 5 أحرف'},400);
+  const recipient=await db.prepare('SELECT target_type,target_id FROM saliyah_sim_public_phones WHERE phone_number=?').bind(b.to_number.toUpperCase()).first();
+  if(!recipient)return json({error:'رقم الشريحة الافتراضية غير موجود'},404);
+  const rate=await db.prepare("SELECT COUNT(*) n FROM saliyah_sim_public_contacts WHERE user_id=? AND created_at>=datetime('now','-1 day')").bind(user.id).first();
+  if(Number(rate?.n||0)>=20)return json({error:'الحد اليومي 20 رسالة إلى البوتات'},429);
+  const id=random();
+  try{await db.batch([
+   db.prepare('INSERT INTO saliyah_sim_public_contacts(id,user_id,target_type,target_id,message) VALUES(?,?,?,?,?)').bind(id,user.id,recipient.target_type,recipient.target_id,b.body.trim()),
+   db.prepare('INSERT INTO saliyah_sim_phone_sms(contact_id,from_line_id,from_number,to_number) VALUES(?,?,?,?)').bind(id,from.id,from.number,b.to_number.toUpperCase())
+  ])}catch{return json({error:'تعذر تسجيل الرسالة في شبكة الصالية الافتراضية'},409)}
+  await audit(db,user.id,'telecom_bot_sms','saliyah_sim_public_contact',id,{number:b.to_number.toUpperCase(),target:recipient.target_type});
+  return json({id,to_number:b.to_number.toUpperCase(),simulated:true,reply_pending:true},201);
+ }
  const to=await db.prepare("SELECT id FROM telecom_lines WHERE number=? AND status='active'").bind(b.to_number).first();if(!to)return json({error:'الرقم غير مسجل في نظام الاتصالات الصالي'},404);
  const id=random();await db.prepare('INSERT INTO telecom_sms(id,from_line_id,to_line_id,from_number,to_number,body) VALUES(?,?,?,?,?,?)').bind(id,from.id,to.id,from.number,b.to_number,b.body.trim()).run();await audit(db,user.id,'telecom_sms_send','telecom_sms',id,{to:b.to_number});return json({id},201);
 }
