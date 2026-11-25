@@ -1,2 +1,4 @@
+-- Education fee update must work on clean databases, before simulator runtime initialization.
+CREATE TABLE IF NOT EXISTS saliyah_sim_education_details(institution_id TEXT PRIMARY KEY,sector TEXT NOT NULL,level TEXT NOT NULL,tuition INTEGER NOT NULL DEFAULT 0,capacity INTEGER NOT NULL DEFAULT 200,founder_id TEXT);
 UPDATE education_institutions SET fee=CASE level WHEN 'primary' THEN 15000 WHEN 'middle' THEN 17000 WHEN 'secondary' THEN 21000 ELSE fee END WHERE sector='private' AND level IN ('primary','middle','secondary');
 UPDATE saliyah_sim_education_details SET tuition=CASE level WHEN 'primary' THEN 15000 WHEN 'middle' THEN 17000 WHEN 'secondary' THEN 21000 ELSE tuition END WHERE sector='private' AND level IN ('primary','middle','secondary');
