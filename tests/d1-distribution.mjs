@@ -17,6 +17,7 @@ assert.match(worker,/const alertDb=env\.ARCHIVE_DB\|\|db/);
 assert.match(worker,/await \(env\.SIMULATION_DB\|\|db\)\.prepare\("INSERT INTO saliyah_sim_settings\(key,value\) VALUES\('last_manual_run',\?\)/);
 assert.match(worker,/await runSaliyahGovernment\(env\.DB,env\.AVIATION_DB\)/);
 assert.match(worker,/await runSimContactReplies\(env\.DB\)/);
+assert.match(worker,/await runSimContactReplies\(env\.DB\)/);
 assert.doesNotMatch(worker,/simulation_paused_by_royal_order/);
 assert.match(worker,/const botRequests=await sharedRows\(db/);
 assert.match(worker,/institutionNames=new Map\(\)/);
