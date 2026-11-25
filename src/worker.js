@@ -535,10 +535,9 @@ export default {
   // Royal authorization: resume conservatively, once every four hours.
   const hour=Math.floor(event.scheduledTime/3600000);
   if(hour%4!==0||new Date(event.scheduledTime).getUTCMinutes()!==0)return;
-  await runSaliyahGovernment(env.DB,env.AVIATION_DB);
-  await generateXBotActivity(env.DB);
-  await runSimContactReplies(env.DB);
-  await runXCreatorAutoPayouts(env.DB);
+  // A failing subsystem must not prevent other fictional residents from replying.
+  const phases=[['government',()=>runSaliyahGovernment(env.DB,env.AVIATION_DB)],['x_bots',()=>generateXBotActivity(env.DB)],['citizen_contacts',()=>runSimContactReplies(env.DB)],['creator_rewards',()=>runXCreatorAutoPayouts(env.DB)]];
+  for(const [label,run] of phases)try{await run()}catch(error){console.error('simulation_phase_failed',label,String(error).slice(0,220))}
  },async fetch(req,env){const u=new URL(req.url);if(u.pathname==='/simulation.html'){if(!env.DB)return new Response('Unavailable',{status:503});const royal=await actor(req,env.DB);if(royal?.role!=='king')return new Response('هذه الصفحة مخصصة للملك فقط',{status:403,headers:{'content-type':'text/plain; charset=utf-8','cache-control':'no-store'}});const asset=await env.ASSETS.fetch(req);const headers=new Headers(asset.headers);headers.set('Cache-Control','no-store, max-age=0');return new Response(asset.body,{status:asset.status,statusText:asset.statusText,headers})}if(!u.pathname.startsWith('/api/'))return env.ASSETS.fetch(req);try{if(!env.DB)return json({error:'Database binding missing'},503);const db=env.DB;const method=req.method;const path=u.pathname;const user=(path==='/api/auth/login'||path==='/api/setup/king'||path==='/api/setup/status'||path==='/api/setup/recover-owner'||path==='/api/auth/citizen/register')?null:await actor(req,db);if(method!=='GET'&&method!=='HEAD'){const origin=req.headers.get('origin');const site=req.headers.get('sec-fetch-site');if((origin&&origin!==u.origin)||(site&&site!=='same-origin'&&site!=='none'))return json({error:'مصدر الطلب غير مسموح'},403);}
 
 
@@ -913,7 +912,7 @@ if(method==='POST'&&path==='/api/auth/logout'){const t=(req.headers.get('cookie'
 if(method==='GET'&&path==='/api/sim-directory'){
  const type=u.searchParams.get('type')||'citizens';
  const page=Math.max(1,Math.min(1000,Number.parseInt(u.searchParams.get('page')||'1',10)||1));
- const search=(u.searchParams.get('q')||'').trim().slice(0,80);
+ const search=(u.searchParams.get('q')||'').trim().slice(0,80).replace(/^SIM-[A-Z]+-/i,'');
  const pattern='%'+search+'%';
  const categories={
   citizens:{code:'C',sql:"SELECT c.id,c.name,c.occupation,c.gender,c.created_at FROM saliyah_sim_citizens c WHERE (?='' OR c.name LIKE ? OR c.id LIKE ?) ORDER BY c.created_at DESC,c.id LIMIT ? OFFSET ?"},
@@ -921,16 +920,17 @@ if(method==='GET'&&path==='/api/sim-directory'){
   institutions:{code:'ED',sql:"SELECT i.id,i.name,i.kind,i.status,d.level,d.sector,d.tuition FROM saliyah_sim_institutions i LEFT JOIN saliyah_sim_education_details d ON d.institution_id=i.id WHERE (?='' OR i.name LIKE ? OR i.id LIKE ?) ORDER BY i.created_at DESC,i.id LIMIT ? OFFSET ?"},
   jobs:{code:'JOB',sql:"SELECT j.id,j.title,j.salary,j.status,j.company_id,c.name company_name FROM saliyah_sim_jobs j JOIN saliyah_sim_companies c ON c.id=j.company_id WHERE (?='' OR j.title LIKE ? OR j.id LIKE ? OR c.name LIKE ?) ORDER BY j.created_at DESC,j.id LIMIT ? OFFSET ?",companySearch:true},
   properties:{code:'PR',sql:"SELECT p.id,p.kind,p.location,p.price,p.status,p.created_at,c.name owner_name,p.owner_id FROM saliyah_sim_properties p LEFT JOIN saliyah_sim_citizens c ON c.id=p.owner_id WHERE p.owner_id NOT LIKE 'human:%' AND (?='' OR p.location LIKE ? OR p.id LIKE ?) ORDER BY p.created_at DESC,p.id LIMIT ? OFFSET ?"},
-  x:{code:'X',sql:"SELECT p.id,p.handle,p.display_name name,p.bio,p.created_at,b.account_number FROM x_profiles p LEFT JOIN x_bot_bank_accounts b ON b.profile_id=p.id WHERE p.kind='bot' AND (?='' OR p.display_name LIKE ? OR p.handle LIKE ?) ORDER BY p.handle LIMIT ? OFFSET ?"},
+  x:{code:'X',sql:"SELECT p.id,p.handle,p.display_name name,p.bio,p.created_at,b.account_number FROM x_profiles p LEFT JOIN x_bot_bank_accounts b ON b.profile_id=p.id WHERE p.kind='bot' AND (?='' OR p.display_name LIKE ? OR p.handle LIKE ? OR p.id LIKE ?) ORDER BY p.handle LIMIT ? OFFSET ?"},
   lawyers:{code:'LAW',sql:"SELECT l.id,l.name,l.role,l.active FROM saliyah_sim_legal_bots l WHERE (?='' OR l.name LIKE ? OR l.id LIKE ?) ORDER BY l.id LIMIT ? OFFSET ?"},
-  banking:{code:'ACC',sql:"SELECT a.id,a.account_number,a.bank_name,a.owner_type,COALESCE(c.name,b.name) owner_name FROM saliyah_sim_bank_accounts a LEFT JOIN saliyah_sim_citizens c ON a.owner_type='citizen' AND c.id=a.owner_id LEFT JOIN saliyah_sim_companies b ON a.owner_type='company' AND b.id=a.owner_id WHERE (?='' OR a.account_number LIKE ? OR COALESCE(c.name,b.name) LIKE ?) ORDER BY a.account_number LIMIT ? OFFSET ?"},
+  banking:{code:'ACC',sql:"SELECT a.id,a.account_number,a.bank_name,a.owner_type,COALESCE(c.name,b.name) owner_name FROM saliyah_sim_bank_accounts a LEFT JOIN saliyah_sim_citizens c ON a.owner_type='citizen' AND c.id=a.owner_id LEFT JOIN saliyah_sim_companies b ON a.owner_type='company' AND b.id=a.owner_id WHERE (?='' OR a.account_number LIKE ? OR COALESCE(c.name,b.name) LIKE ? OR a.id LIKE ?) ORDER BY a.account_number LIMIT ? OFFSET ?"},
   shares:{code:'SH',sql:"SELECT h.id,h.units,h.company_id,c.name company_name,p.name owner_name,h.owner_id FROM saliyah_sim_shares h JOIN saliyah_sim_companies c ON c.id=h.company_id LEFT JOIN saliyah_sim_citizens p ON p.id=h.owner_id WHERE h.owner_id NOT LIKE 'human:%' AND (?='' OR c.name LIKE ? OR h.id LIKE ?) ORDER BY h.units DESC,h.id LIMIT ? OFFSET ?"},
+  projects:{code:'PROJECT',sql:"SELECT p.id,p.title,p.project_type,p.location,p.status,p.description FROM saliyah_projects p WHERE p.proposed_by='bot' AND (?='' OR p.title LIKE ? OR p.id LIKE ?) ORDER BY p.created_at DESC,p.id LIMIT ? OFFSET ?"},
   tourists:{code:'VIS',sql:"SELECT t.id,t.name,t.nationality,t.arrival_port,t.visit_purpose,t.created_at FROM saliyah_sim_tourists t WHERE (?='' OR t.name LIKE ? OR t.id LIKE ?) ORDER BY t.created_at DESC,t.id LIMIT ? OFFSET ?",aviation:true}
  };
  if(!Object.hasOwn(categories,type))return json({error:'تصنيف غير معروف'},400);
  const category=categories[type],source=category.aviation?env.AVIATION_DB:db;
  if(!source)return json({error:'قاعدة الطيران غير متصلة'},503);
- const args=category.companySearch?[search,pattern,pattern,pattern,31,(page-1)*30]:[search,pattern,pattern,31,(page-1)*30];
+ const args=(category.companySearch||type==='x'||type==='banking')?[search,pattern,pattern,pattern,31,(page-1)*30]:[search,pattern,pattern,31,(page-1)*30];
  const r=await source.prepare(category.sql).bind(...args).all();
  return json({type,page,more:r.results.length>30,items:r.results.slice(0,30).map(item=>({...item,simulation_number:'SIM-'+category.code+'-'+item.id,automated:true}))});
 }
