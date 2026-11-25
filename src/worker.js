@@ -1,5 +1,36 @@
 async function sharedRows(db,sql,args=[]){try{return (await db.prepare(sql).bind(...args).all()).results}catch(e){if(String(e).includes('no such table'))return [];throw e}}
 
+const educationStages=['primary','middle','secondary','university'];
+const educationStageNames={primary:'ابتدائي',middle:'متوسط',secondary:'ثانوي',university:'جامعة'};
+const educationTuition={primary:18000,middle:22000,secondary:26000,university:30000};
+const educationRating=grade=>grade>=90?'ممتاز':grade>=85?'جيد جداً':grade>=80?'جيد':grade>=70?'مقبول':'لم يجتز';
+async function syncEducationCatalog(db,simulationDb){
+ const sql="SELECT i.id,i.name,i.kind,COALESCE(d.level,'all') level,COALESCE(d.sector,'public') sector,COALESCE(d.capacity,200) capacity,COALESCE(d.tuition,0) tuition FROM saliyah_sim_institutions i LEFT JOIN saliyah_sim_education_details d ON d.institution_id=i.id WHERE i.status='open' LIMIT 300";
+ const own=await sharedRows(db,sql);
+ const other=simulationDb&&simulationDb!==db?await sharedRows(simulationDb,sql):[];
+ const found=new Map([...other,...own].map(x=>[x.id,x]));
+ if(!found.size)return;
+ const king=await db.prepare("SELECT id FROM users WHERE role='king' LIMIT 1").first();
+ if(!king)return;
+ const old=await db.prepare("SELECT id FROM education_institutions WHERE id LIKE 'sim-%'").all();
+ const existing=new Set(old.results.map(x=>x.id));
+ const inserts=[];
+ for(const item of found.values()){
+  const levels=item.kind==='university'?['university']:educationStages.slice(0,3).filter(x=>item.level==='all'||x===item.level);
+  for(const level of levels){
+   const id=item.level==='all'||item.kind==='university'?item.id+'--'+level:item.id;
+   if(existing.has(id))continue;
+   const privateSchool=item.sector==='private';
+   const fee=privateSchool?Math.max(educationTuition[level],Number(item.tuition)||0):0;
+   const minGrade=privateSchool?(level==='university'?85:80):70;
+   const name=item.name+' — '+educationStageNames[level];
+   inserts.push(db.prepare("INSERT OR IGNORE INTO education_institutions(id,name,level,sector,capacity,min_grade,fee,created_by) VALUES(?,?,?,?,?,?,?,?)").bind(id,name,level,privateSchool?'private':'public',Math.max(1,Number(item.capacity)||200),minGrade,fee,king.id));
+  }
+ }
+ for(let i=0;i<inserts.length;i+=30)await db.batch(inserts.slice(i,i+30));
+}
+
+
 // Virtual IBANs are reversible aliases for existing UUID accounts; no database scans or backfill.
 function saliyahIban(id){if(!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(id))return id;const part=BigInt('0x'+id.replace(/-/g,'')).toString(36).toUpperCase().padStart(25,'0');const digits=(part+'SL00').replace(/[A-Z]/g,c=>String(c.charCodeAt(0)-55));return 'SL'+String(98n-BigInt(digits)%97n).padStart(2,'0')+part}
 function saliyahAccountId(value){const s=String(value||'').replace(/\s/g,'').toUpperCase();if(/^[0-9A-F]{8}-[0-9A-F]{4}-[0-9A-F]{4}-[0-9A-F]{4}-[0-9A-F]{12}$/.test(s))return s.toLowerCase();if(!/^SL[0-9]{2}[0-9A-Z]{25}$/.test(s))return null;let n=0n;for(const c of s.slice(4))n=n*36n+BigInt(parseInt(c,36));const h=n.toString(16).padStart(32,'0');if(h.length!==32)return null;const id=h.slice(0,8)+'-'+h.slice(8,12)+'-'+h.slice(12,16)+'-'+h.slice(16,20)+'-'+h.slice(20);return saliyahIban(id)===s?id:null}
@@ -2022,50 +2053,97 @@ if(path.startsWith('/api/payroll/')){
  }
 }
 
-// Phase 10: schools, universities and academic results.
+// Phase 10: unified public/bot education admissions and verified academic history.
 if(path.startsWith('/api/education/')){
  const manage=await can('education');
  if(method==='GET'&&path==='/api/education/institutions'){
-  const r=await db.prepare('SELECT id,name,level,sector,capacity,min_grade,fee,active FROM education_institutions WHERE active=1 OR ?=1 ORDER BY created_at DESC').bind(manage?1:0).all();const bots=await sharedRows(env.SIMULATION_DB||db,"SELECT i.id,i.name,CASE WHEN i.kind='university' THEN 'university' WHEN d.level IN ('primary','middle','secondary') THEN d.level ELSE 'primary' END level,COALESCE(d.sector,'public') sector,COALESCE(d.capacity,200) capacity,0 min_grade,COALESCE(d.tuition,0) fee,1 active FROM saliyah_sim_institutions i LEFT JOIN saliyah_sim_education_details d ON d.institution_id=i.id WHERE i.status='open' LIMIT 100");return json({institutions:[...r.results,...bots],can_manage:manage});
+  await syncEducationCatalog(db,env.SIMULATION_DB);
+  const r=await db.prepare('SELECT id,name,level,sector,capacity,min_grade,fee,active FROM education_institutions WHERE active=1 OR ?=1 ORDER BY name,level').bind(manage?1:0).all();
+  return json({institutions:r.results,can_manage:manage,stages:educationStageNames});
  }
  if(method==='POST'&&path==='/api/education/institutions'){
   if(!manage)return json({error:'غير مخول'},403);const b=await input(req);
-  if(!b||!validText(b.name,2,120)||!['primary','middle','secondary','university'].includes(b.level)||!['public','private'].includes(b.sector)||!Number.isInteger(b.capacity)||b.capacity<1||b.capacity>100000||!Number.isFinite(b.min_grade)||b.min_grade<0||b.min_grade>100||!Number.isSafeInteger(b.fee)||b.fee<0||b.fee>100000000)return json({error:'بيانات المؤسسة غير صالحة'},400);
+  if(!b||!validText(b.name,2,120)||!educationStages.includes(b.level)||!['public','private'].includes(b.sector)||!Number.isInteger(b.capacity)||b.capacity<1||b.capacity>100000||!Number.isFinite(b.min_grade)||b.min_grade<0||b.min_grade>100||!Number.isSafeInteger(b.fee)||b.fee<0||b.fee>100000000)return json({error:'بيانات المؤسسة غير صالحة'},400);
   if(b.sector==='public'&&b.fee!==0)return json({error:'المؤسسة الحكومية بلا رسوم'},400);
-  const id=random();await db.prepare('INSERT INTO education_institutions(id,name,level,sector,capacity,min_grade,fee,created_by) VALUES(?,?,?,?,?,?,?,?)').bind(id,b.name.trim(),b.level,b.sector,b.capacity,b.min_grade,b.fee,user.id).run();await audit(db,user.id,'education_institution_create','institution',id,{name:b.name});return json({id},201);
+  const id=random();await db.prepare('INSERT INTO education_institutions(id,name,level,sector,capacity,min_grade,fee,created_by) VALUES(?,?,?,?,?,?,?,?)').bind(id,b.name.trim(),b.level,b.sector,b.capacity,b.min_grade,b.fee,user.id).run();
+  await audit(db,user.id,'education_institution_create','institution',id,{name:b.name,level:b.level});return json({id},201);
  }
  if(method==='POST'&&path==='/api/education/apply'){
-  const b=await input(req);if(!b||!validText(b.institution_id,10,80)||!(b.previous_grade===null||b.previous_grade===undefined||(typeof b.previous_grade==='number'&&b.previous_grade>=0&&b.previous_grade<=100)))return json({error:'طلب غير صالح'},400);
-  const inst=await db.prepare('SELECT * FROM education_institutions WHERE id=? AND active=1').bind(b.institution_id).first();if(!inst){if(b.student_id&&b.student_id!==user.id)return json({error:'غير مخول'},403);const bot=(await sharedRows(env.SIMULATION_DB||db,"SELECT i.id,CASE WHEN i.kind='university' THEN 'university' WHEN d.level IN ('primary','middle','secondary') THEN d.level ELSE 'primary' END level FROM saliyah_sim_institutions i LEFT JOIN saliyah_sim_education_details d ON d.institution_id=i.id WHERE i.id=? AND i.status='open'",[b.institution_id]))[0];if(!bot)return json({error:'المؤسسة غير موجودة'},404);const levels=['primary','middle','secondary','university'];const stage=levels.indexOf(bot.level);let verifiedGrade=null;if(stage>0){const prior=await db.prepare("SELECT COALESCE(g.retest_grade,g.original_grade) grade FROM education_grades g JOIN education_applications a ON a.id=g.application_id JOIN education_institutions i ON i.id=a.institution_id WHERE a.student_id=? AND a.status='accepted' AND i.level=? ORDER BY g.updated_at DESC LIMIT 1").bind(user.id,levels[stage-1]).first();if(!prior||prior.grade<70)return json({error:'يجب اجتياز المرحلة السابقة'},409);verifiedGrade=prior.grade;}const id=random();await db.prepare("CREATE TABLE IF NOT EXISTS shared_service_applications(id TEXT PRIMARY KEY,service TEXT NOT NULL CHECK(service IN ('jobs','education')),target_id TEXT NOT NULL,applicant_id TEXT NOT NULL REFERENCES users(id),statement TEXT,previous_grade REAL,status TEXT NOT NULL DEFAULT 'submitted',created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,UNIQUE(service,target_id,applicant_id));").run();const result=await db.prepare("INSERT OR IGNORE INTO shared_service_applications(id,service,target_id,applicant_id,previous_grade) VALUES(?,'education',?,?,?)").bind(id,bot.id,user.id,verifiedGrade).run();if(!result.meta.changes)return json({error:'سبق التقديم'},409);return json({id,status:'submitted'},201);}
-  const student=typeof b.student_id==='string'&&b.student_id!==user.id?b.student_id:user.id;
-  if(student!==user.id)return json({error:'تقديم ولي الأمر يتطلب ربطًا موثقًا، غير مفعّل بعد'},403);
-  const levels=['primary','middle','secondary','university'];const stage=levels.indexOf(inst.level);let verifiedGrade=null;if(stage<0)return json({error:'مرحلة غير صالحة'},400);if(stage>0){const prior=await db.prepare("SELECT COALESCE(g.retest_grade,g.original_grade) grade FROM education_grades g JOIN education_applications a ON a.id=g.application_id JOIN education_institutions i ON i.id=a.institution_id WHERE a.student_id=? AND a.status='accepted' AND i.level=? ORDER BY g.updated_at DESC LIMIT 1").bind(user.id,levels[stage-1]).first();if(!prior||prior.grade<Math.max(70,inst.min_grade))return json({error:'يجب اجتياز المرحلة السابقة وتحقيق شروط المدرسة'},409);verifiedGrade=prior.grade;}
-  const id=random();try{await db.prepare('INSERT INTO education_applications(id,institution_id,student_id,previous_grade) VALUES(?,?,?,?)').bind(id,inst.id,user.id,verifiedGrade).run()}catch{return json({error:'تم تقديم طلب لهذه المؤسسة سابقًا'},409)}
-  await audit(db,user.id,'education_apply','education_application',id,{institution_id:inst.id});return json({id,status:'submitted'},201);
+  const b=await input(req);
+  if(!b||!validText(b.institution_id,10,100))return json({error:'اختر مؤسسة ومرحلة دراسية'},400);
+  if(b.student_id!==undefined&&b.student_id!==user.id)return json({error:'تقديم ولي الأمر يتطلب ربطاً موثقاً'},403);
+  await syncEducationCatalog(db,env.SIMULATION_DB);
+  const inst=await db.prepare('SELECT * FROM education_institutions WHERE id=? AND active=1').bind(b.institution_id).first();
+  if(!inst)return json({error:'المؤسسة أو المرحلة غير موجودة'},404);
+  if(b.stage!==undefined&&b.stage!==inst.level)return json({error:'المرحلة المختارة لا تطابق المؤسسة'},400);
+  const stage=educationStages.indexOf(inst.level);
+  if(stage<0)return json({error:'مرحلة دراسية غير صالحة'},400);
+  let verifiedGrade=null;
+  if(stage>0){
+   const prior=await db.prepare("SELECT COALESCE(g.retest_grade,g.original_grade) grade FROM education_grades g JOIN education_applications a ON a.id=g.application_id JOIN education_institutions i ON i.id=a.institution_id WHERE a.student_id=? AND a.status='accepted' AND i.level=? AND COALESCE(g.retest_grade,g.original_grade)>=70 ORDER BY g.updated_at DESC LIMIT 1").bind(user.id,educationStages[stage-1]).first();
+   if(!prior)return json({error:'لا يمكن التسجيل: يجب إكمال المرحلة السابقة بدرجة 70 على الأقل (بدرجات موثقة في النظام)'},409);
+   verifiedGrade=prior.grade;
+  }
+  const enrolled=await db.prepare("SELECT a.id FROM education_applications a JOIN education_institutions i ON i.id=a.institution_id WHERE a.student_id=? AND a.status='accepted' AND i.level=? LIMIT 1").bind(user.id,inst.level).first();
+  if(enrolled)return json({error:'لديك قبول نشط في هذه المرحلة بالفعل'},409);
+  const id=random();
+  try{await db.prepare('INSERT INTO education_applications(id,institution_id,student_id,previous_grade) VALUES(?,?,?,?)').bind(id,inst.id,user.id,verifiedGrade).run()}catch{return json({error:'سبق تقديم طلب لهذه المؤسسة'},409)}
+  let status='submitted';
+  if(inst.id.startsWith('sim-')){
+   const qualifying=stage===0||verifiedGrade>=inst.min_grade;
+   if(qualifying){
+    const result=await db.prepare("UPDATE education_applications SET status='accepted',reviewed_at=CURRENT_TIMESTAMP WHERE id=? AND status='submitted' AND (SELECT COUNT(*) FROM education_applications WHERE institution_id=? AND status='accepted') < ?").bind(id,inst.id,inst.capacity).run();
+    status=result.meta.changes?'accepted':'rejected';
+   }else status='rejected';
+   if(status==='rejected')await db.prepare("UPDATE education_applications SET status='rejected',reviewed_at=CURRENT_TIMESTAMP WHERE id=? AND status='submitted'").bind(id).run();
+   await audit(db,user.id,'education_automated_review','education_application',id,{institution_id:inst.id,status,previous_grade:verifiedGrade});
+  }
+  await audit(db,user.id,'education_apply','education_application',id,{institution_id:inst.id,level:inst.level});
+  return json({id,status},201);
  }
  if(method==='GET'&&path==='/api/education/applications'){
-  const r=manage?await db.prepare('SELECT a.*,i.name institution_name,i.level FROM education_applications a JOIN education_institutions i ON i.id=a.institution_id ORDER BY a.created_at DESC LIMIT 200').all():await db.prepare('SELECT a.*,i.name institution_name,i.level FROM education_applications a JOIN education_institutions i ON i.id=a.institution_id WHERE a.student_id=? ORDER BY a.created_at DESC LIMIT 100').bind(user.id).all();const botRequests=await sharedRows(db,"SELECT a.*,a.target_id institution_id,a.applicant_id student_id FROM shared_service_applications a WHERE a.service='education' AND (?=1 OR a.applicant_id=?) ORDER BY a.created_at DESC LIMIT 100",[manage?1:0,user.id]);const institutionIds=[...new Set(botRequests.map(x=>x.target_id))];const institutionNames=new Map();if(institutionIds.length){const institutionRows=await sharedRows(env.SIMULATION_DB||db,'SELECT i.id,i.name,CASE WHEN i.kind=\'university\' THEN \'university\' WHEN d.level IN (\'primary\',\'middle\',\'secondary\') THEN d.level ELSE \'primary\' END level FROM saliyah_sim_institutions i LEFT JOIN saliyah_sim_education_details d ON d.institution_id=i.id WHERE i.id IN ('+institutionIds.map(()=>'?').join(',')+')',institutionIds);for(const institution of institutionRows)institutionNames.set(institution.id,institution)}const bots=botRequests.map(x=>({...x,institution_name:institutionNames.get(x.target_id)?.name||'مؤسسة افتراضية',level:institutionNames.get(x.target_id)?.level||'primary'}));return json({applications:[...r.results,...bots]});
+  const sql="SELECT a.*,i.name institution_name,i.level,i.min_grade FROM education_applications a JOIN education_institutions i ON i.id=a.institution_id";
+  const r=manage?await db.prepare(sql+" ORDER BY a.created_at DESC LIMIT 200").all():await db.prepare(sql+" WHERE a.student_id=? ORDER BY a.created_at DESC LIMIT 100").bind(user.id).all();
+  return json({applications:r.results});
  }
  if(method==='POST'&&path==='/api/education/review'){
-  if(!manage)return json({error:'غير مخول'},403);const b=await input(req);if(!b||!validText(b.id,10,80)||!['accepted','rejected'].includes(b.status))return json({error:'بيانات غير صالحة'},400);
-  const row=await db.prepare('SELECT a.*,i.capacity,i.min_grade,i.level FROM education_applications a JOIN education_institutions i ON i.id=a.institution_id WHERE a.id=?').bind(b.id).first();if(!row)return json({error:'الطلب غير موجود'},404);if(row.status!=='submitted')return json({error:'سبقت مراجعة الطلب'},409);
+  if(!manage)return json({error:'غير مخول'},403);const b=await input(req);
+  if(!b||!validText(b.id,10,80)||!['accepted','rejected'].includes(b.status))return json({error:'بيانات غير صالحة'},400);
+  const row=await db.prepare('SELECT a.*,i.capacity,i.min_grade,i.level FROM education_applications a JOIN education_institutions i ON i.id=a.institution_id WHERE a.id=?').bind(b.id).first();
+  if(!row)return json({error:'الطلب غير موجود'},404);
+  if(row.status!=='submitted')return json({error:'سبقت مراجعة الطلب'},409);
   if(b.status==='accepted'){
-   if(row.level!=='primary'&&(row.previous_grade===null||row.previous_grade<row.min_grade))return json({error:'الدرجة أقل من شرط القبول'},409);
-   // Atomic capacity check: the UPDATE only succeeds while accepted count is below capacity.
-   const r=await db.prepare("UPDATE education_applications SET status='accepted',reviewed_by=?,reviewed_at=CURRENT_TIMESTAMP WHERE id=? AND status='submitted' AND (SELECT COUNT(*) FROM education_applications WHERE institution_id=? AND status='accepted') < ?").bind(user.id,b.id,row.institution_id,row.capacity).run();if(!r.meta.changes)return json({error:'اكتملت المقاعد أو سبق اعتماد الطلب'},409);
+   if(row.level!=='primary'&&(row.previous_grade===null||row.previous_grade<Math.max(70,row.min_grade)))return json({error:'الدرجات أقل من الحد المطلوب لهذه المدرسة'},409);
+   const r=await db.prepare("UPDATE education_applications SET status='accepted',reviewed_by=?,reviewed_at=CURRENT_TIMESTAMP WHERE id=? AND status='submitted' AND (SELECT COUNT(*) FROM education_applications WHERE institution_id=? AND status='accepted') < ? AND NOT EXISTS (SELECT 1 FROM education_applications a JOIN education_institutions i ON i.id=a.institution_id WHERE a.student_id=? AND a.status='accepted' AND i.level=?)").bind(user.id,b.id,row.institution_id,row.capacity,row.student_id,row.level).run();
+   if(!r.meta.changes)return json({error:'اكتملت المقاعد أو سبق قبول الطالب في المرحلة'},409);
   }else{const r=await db.prepare("UPDATE education_applications SET status='rejected',reviewed_by=?,reviewed_at=CURRENT_TIMESTAMP WHERE id=? AND status='submitted'").bind(user.id,b.id).run();if(!r.meta.changes)return json({error:'سبق اعتماد الطلب'},409)}
   await audit(db,user.id,'education_review','education_application',b.id,{status:b.status});return json({ok:true});
  }
  if(method==='POST'&&path==='/api/education/grade'){
-  if(!manage)return json({error:'غير مخول'},403);const b=await input(req);if(!b||!validText(b.application_id,10,80)||typeof b.grade!=='number'||b.grade<0||b.grade>100||!Number.isFinite(b.grade)||!(b.retest===undefined||typeof b.retest==='boolean'))return json({error:'درجة غير صالحة'},400);
-  const row=await db.prepare("SELECT id FROM education_applications WHERE id=? AND status='accepted'").bind(b.application_id).first();if(!row)return json({error:'لا يوجد قبول معتمد'},404);
+  if(!manage)return json({error:'غير مخول'},403);const b=await input(req);
+  if(!b||!validText(b.application_id,10,80)||typeof b.grade!=='number'||b.grade<0||b.grade>100||!Number.isFinite(b.grade)||!(b.retest===undefined||typeof b.retest==='boolean'))return json({error:'درجة غير صالحة'},400);
+  const row=await db.prepare("SELECT id FROM education_applications WHERE id=? AND status='accepted'").bind(b.application_id).first();
+  if(!row)return json({error:'لا يوجد قبول معتمد'},404);
   const prior=await db.prepare('SELECT * FROM education_grades WHERE application_id=?').bind(b.application_id).first();
-  if(b.retest){if(!prior||prior.original_grade<55||prior.original_grade>=70||prior.retest_grade!==null)return json({error:'الإعادة متاحة مرة واحدة للدرجات من 55 إلى أقل من 70'},409);await db.prepare('UPDATE education_grades SET retest_grade=?,recorded_by=?,updated_at=CURRENT_TIMESTAMP WHERE application_id=?').bind(b.grade,user.id,b.application_id).run();}
-  else{if(prior)return json({error:'الدرجة الأصلية مسجلة؛ استخدم اختبار الإعادة عند الاستحقاق'},409);await db.prepare('INSERT INTO education_grades(id,application_id,original_grade,recorded_by) VALUES(?,?,?,?)').bind(random(),b.application_id,b.grade,user.id).run()}
-  await audit(db,user.id,'education_grade','education_application',b.application_id,{grade:b.grade,retest:!!b.retest});return json({ok:true});
+  if(b.retest){
+   if(!prior||prior.original_grade>=70||prior.retest_grade!==null)return json({error:'إعادة الاختبار متاحة مرة واحدة فقط لمن درجته أقل من 70'},409);
+   const x=await db.prepare('UPDATE education_grades SET retest_grade=?,recorded_by=?,updated_at=CURRENT_TIMESTAMP WHERE application_id=? AND retest_grade IS NULL').bind(b.grade,user.id,b.application_id).run();if(!x.meta.changes)return json({error:'تم تسجيل الإعادة مسبقاً'},409);
+  }else{
+   if(prior)return json({error:'الدرجة الأصلية مسجلة؛ لا يمكن تعديلها أو استبدالها'},409);
+   await db.prepare('INSERT INTO education_grades(id,application_id,original_grade,recorded_by) VALUES(?,?,?,?)').bind(random(),b.application_id,b.grade,user.id).run();
+  }
+  await audit(db,user.id,'education_grade','education_application',b.application_id,{grade:b.grade,retest:!!b.retest});
+  return json({ok:true,result:educationRating(b.grade),passed:b.grade>=70});
  }
  if(method==='GET'&&path==='/api/education/transcript'){
-  const r=manage?await db.prepare('SELECT g.*,a.student_id,i.name institution_name FROM education_grades g JOIN education_applications a ON a.id=g.application_id JOIN education_institutions i ON i.id=a.institution_id ORDER BY g.updated_at DESC LIMIT 200').all():await db.prepare('SELECT g.*,a.student_id,i.name institution_name FROM education_grades g JOIN education_applications a ON a.id=g.application_id JOIN education_institutions i ON i.id=a.institution_id WHERE a.student_id=? ORDER BY g.updated_at DESC').bind(user.id).all();return json({grades:r.results.map(x=>({...x,final_grade:x.retest_grade??x.original_grade}))});
+  const sql='SELECT g.*,a.student_id,i.name institution_name,i.level FROM education_grades g JOIN education_applications a ON a.id=g.application_id JOIN education_institutions i ON i.id=a.institution_id';
+  const r=manage?await db.prepare(sql+' ORDER BY g.updated_at DESC LIMIT 200').all():await db.prepare(sql+' WHERE a.student_id=? ORDER BY g.updated_at DESC').bind(user.id).all();
+  return json({grades:r.results.map(x=>({...x,final_grade:x.retest_grade??x.original_grade,result:educationRating(x.retest_grade??x.original_grade),passed:(x.retest_grade??x.original_grade)>=70}))});
+ }
+ if(method==='GET'&&path==='/api/education/bot-enrollments'){
+  if(!manage)return json({error:'غير مخول'},403);
+  const rows=await sharedRows(db,"SELECT e.id,e.citizen_id,c.name student_name,i.name institution_name,e.status,e.enrolled_at FROM saliyah_sim_enrollments e LEFT JOIN saliyah_sim_citizens c ON c.id=e.citizen_id LEFT JOIN saliyah_sim_institutions i ON i.id=e.institution_id ORDER BY e.enrolled_at DESC LIMIT 100");
+  return json({enrollments:rows});
  }
  return json({error:'مسار غير معروف'},404);
 }
