@@ -1,7 +1,7 @@
 name: Audit and regression tests
 on:
   push:
-    branches: [audit-fixes-2026-11-22]
+    branches: [main, audit-fixes-2026-11-22]
   pull_request:
     branches: [main]
 jobs:
@@ -17,6 +17,7 @@ jobs:
           node --check src/worker.js
           node --check public/app.js
           node --check tests/audit-regressions.mjs
+          node --check tests/d1-distribution.mjs
       - name: Run tests
         run: npm test
       - name: Release preflight
