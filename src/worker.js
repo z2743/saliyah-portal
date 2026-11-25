@@ -661,45 +661,35 @@ const royalInventoryTables={
 };
 // King's read-only identity resolver. Names come from existing fictional people/companies;
 // technical identifiers stay in the database for joins and audit integrity.
-async function resolveRoyalBotNames(db, rows) {
+async function resolveRoyalBotNames(db,rows){
  if(!rows?.length)return rows||[];
- const keys=['citizen_id','founder_id','owner_id','seller_id','buyer_id','partner_a','partner_b','suspect_id','bot_owner_id','employee_id','student_id','author_bot_id','lawyer_id','officer','judge','actor_id','target_id','recipient_id','reviewed_by','company_id','institution_id','job_id','account_id','related_account_id','recipient_account_id','from_account_id'];
- const idValues=new Set();
- for(const row of rows)for(const key of keys){
-  const v=row[key];
-  if(typeof v==='string'&&v.length>0&&v.length<=160)idValues.add(v);
- }
- if(!idValues.size)return rows;
- const ids=[...idValues];
+ const isReference=key=>key==='id'||key.endsWith('_id')||['partner_a','partner_b','officer','judge'].includes(key);
+ const ids=[...new Set(rows.flatMap(row=>Object.entries(row).filter(([key,val])=>isReference(key)&&typeof val==='string'&&val.length>0&&val.length<=160).map(([,val])=>val)))];
+ if(!ids.length)return rows;
  const names=new Map();
- const lookup=[
-  ['saliyah_sim_citizens','name'],
-  ['saliyah_sim_companies','name'],
-  ['saliyah_sim_legal_bots','name'],
-  ['x_profiles','display_name'],
-  ['saliyah_sim_institutions','name'],
-  ['saliyah_sim_jobs','title'],
-  ['saliyah_sim_bank_accounts','account_number'],
-  ['users','username']
- ];
- for(const [table,column] of lookup){
-  for(let i=0;i<ids.length;i+=75){
-   const chunk=ids.slice(i,i+75);
-   try{
-    const records=await db.prepare('SELECT id,'+column+' AS resolved_name FROM '+table+' WHERE id IN ('+chunk.map(()=>'?').join(',')+')').bind(...chunk).all();
-    for(const record of records.results)if(record.resolved_name&&!names.has(record.id))names.set(record.id,record.resolved_name);
-   }catch(error){if(!String(error).includes('no such table'))console.error('royal_bot_name_lookup_failed',table,String(error).slice(0,120))}
+ // A single indexed lookup per 64 record IDs is cheaper than querying each table separately.
+ for(let i=0;i<ids.length;i+=64){
+  const chunk=ids.slice(i,i+64);
+  const sql='WITH targets(id) AS (VALUES '+chunk.map(()=>'(?)').join(',')+') SELECT t.id,COALESCE(c.name,co.name,l.name,x.display_name,i.name,j.title,a.account_number,u.username) AS resolved_name FROM targets t LEFT JOIN saliyah_sim_citizens c ON c.id=t.id LEFT JOIN saliyah_sim_companies co ON co.id=t.id LEFT JOIN saliyah_sim_legal_bots l ON l.id=t.id LEFT JOIN x_profiles x ON x.id=t.id LEFT JOIN saliyah_sim_institutions i ON i.id=t.id LEFT JOIN saliyah_sim_jobs j ON j.id=t.id LEFT JOIN saliyah_sim_bank_accounts a ON a.id=t.id LEFT JOIN users u ON u.id=t.id';
+  try{
+   const found=await db.prepare(sql).bind(...chunk).all();
+   for(const item of found.results)if(item.resolved_name)names.set(item.id,item.resolved_name);
+  }catch(error){
+   console.error('royal_bot_name_lookup_failed',String(error).slice(0,160));
+   // Preserve read-only records even if a name table is missing.
   }
  }
  return rows.map(row=>{
-  const result={...row};
-  for(const key of keys){
-   const id=row[key],name=names.get(id);
-   if(name)result[key+'_name']=name;
+  const named={...row};
+  for(const [key,id] of Object.entries(row)){
+   if(!isReference(key))continue;
+   const name=names.get(id);
+   if(name)named[key+'_name']=name;
   }
-  return result;
+  return named;
  });
 }
+
 const royalServiceRecords={"education":[["المؤسسات التعليمية","saliyah_sim_institutions"],["الطلاب والتسجيل","saliyah_sim_enrollments"],["تفاصيل المؤسسات","saliyah_sim_education_details"]],"banking":[["الحسابات البنكية","saliyah_sim_bank_accounts"],["الحركات المالية","saliyah_sim_bank_transactions"],["تحويلات المواطنين إلى البوتات","saliyah_sim_public_payments"]],"bank-admin":[["الحسابات البنكية","saliyah_sim_bank_accounts"],["الحركات المالية","saliyah_sim_bank_transactions"]],"civil":[["السكان","saliyah_sim_citizens"],["الهويات","saliyah_sim_identities"],["الزواج","saliyah_sim_marriages"],["الأبناء","saliyah_sim_children"]],"registry":[["الهويات","saliyah_sim_identities"]],"family-cards":[["بطاقات العائلة","saliyah_sim_family_cards"]],"commerce":[["الشركات","saliyah_sim_companies"],["ملكية أسهم الشركات","saliyah_sim_shares"],["صفقات المواطنين مع البوتات","saliyah_market_trades"]],"company-treasury":[["الحسابات البنكية","saliyah_sim_bank_accounts"]],"company-staff":[["الوظائف","saliyah_sim_jobs"],["طلبات التوظيف","saliyah_sim_job_applications"]],"jobs":[["الوظائف","saliyah_sim_jobs"],["طلبات التوظيف","saliyah_sim_job_applications"]],"jobs-admin":[["الوظائف","saliyah_sim_jobs"],["طلبات التوظيف","saliyah_sim_job_applications"]],"payroll":[["الحركات المالية","saliyah_sim_bank_transactions"],["قرارات الرواتب","saliyah_sim_company_payroll_decisions"]],"courts":[["القضايا العمالية","saliyah_sim_labor_cases"],["المحاكمات","saliyah_sim_trials"],["المذكرات","saliyah_sim_labor_filings"]],"security":[["البلاغات","saliyah_sim_incidents"]],"borders":[["حركة المنافذ","saliyah_sim_border_events"]],"land":[["العقارات","saliyah_sim_properties"],["الصفقات","saliyah_sim_property_trades"],["شراء المواطن من البوت","saliyah_sim_public_property_trades"]],"state-budgets":[["المشاريع","saliyah_projects"]],"telecom":[["خطوط الاتصالات","telecom_lines"],["عمليات الشحن","telecom_purchases"],["الرسائل","telecom_sms"],["شرائح الكيانات الافتراضية","saliyah_sim_public_phones"],["رسائل البوتات","saliyah_sim_phone_sms"],["المراسلات الآلية","saliyah_sim_public_contacts"]],"pos":[["نقاط البيع","pos_merchants"],["عمليات نقاط البيع","pos_payments"]],"absher":[["أصول أبشر","absher_assets"],["طلبات أبشر","absher_requests"]],"health":[["المواعيد الصحية","health_appointments"],["العيادات","health_clinics"]],"municipality":[["تصاريح البلدية","municipal_permits"],["التفتيش","municipal_inspections"]],"installments":[["خطط الأقساط","installment_plans"],["دفعات الأقساط","installment_payments"],["المستحقات","installment_dues"]]};
 // Royal D1 distribution report. Read-only: reconciles legacy payroll authority with finance snapshots.
 if(method==='GET'&&path==='/api/admin/royal-audit'){
@@ -714,9 +704,13 @@ if(method==='GET'&&path==='/api/admin/royal-audit'){
  ];
  const rows=await Promise.all(types.map(async([table,label])=>{
   const source=table==='national_alert_history'?(env.ARCHIVE_DB||db):db;
-  try{const data=await source.prepare('SELECT * FROM '+table+' ORDER BY rowid DESC LIMIT 20').all();const safeRows=data.results.map(row=>Object.fromEntries(Object.entries(row).filter(([key])=>!/(password|token|secret|credential|cookie|salt|otp)/i.test(key))));const namedRows=await resolveRoyalBotNames(db,safeRows);return {type:table,label,rows:namedRows}}
+  try{const data=await source.prepare('SELECT * FROM '+table+' ORDER BY rowid DESC LIMIT 20').all();const safeRows=data.results.map(row=>Object.fromEntries(Object.entries(row).filter(([key])=>!/(password|token|secret|credential|cookie|salt|otp)/i.test(key))));return {type:table,label,rows:safeRows}}
   catch(e){return {type:table,label,rows:[],error:String(e?.message||e).slice(0,140)}}
  }));
+ const allRows=rows.flatMap(group=>group.rows);
+ const named=await resolveRoyalBotNames(db,allRows);
+ let cursor=0;
+ for(const group of rows){group.rows=named.slice(cursor,cursor+group.rows.length);cursor+=group.rows.length}
  return json({ok:true,groups:rows,read_only:true});
 }
 if(method==='GET'&&path==='/api/admin/d1-inventory'){
