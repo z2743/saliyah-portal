@@ -659,6 +659,43 @@ const royalInventoryTables={
  AVIATION_DB:['saliyah_sim_tourists'],
  ARCHIVE_DB:['national_alert_history']
 };
+// King's read-only identity resolver. Names come from existing fictional people/companies;
+// technical identifiers stay in the database for joins and audit integrity.
+async function resolveRoyalBotNames(db, rows) {
+ if(!rows?.length)return rows||[];
+ const keys=['citizen_id','founder_id','owner_id','seller_id','buyer_id','partner_a','partner_b','suspect_id','bot_owner_id','employee_id','student_id','author_bot_id','lawyer_id','officer','judge','actor_id','target_id','recipient_id','reviewed_by'];
+ const idValues=new Set();
+ for(const row of rows)for(const key of keys){
+  const v=row[key];
+  if(typeof v==='string'&&v.length>0&&v.length<=160)idValues.add(v);
+ }
+ if(!idValues.size)return rows;
+ const ids=[...idValues];
+ const names=new Map();
+ const lookup=[
+  ['saliyah_sim_citizens','name'],
+  ['saliyah_sim_companies','name'],
+  ['saliyah_sim_legal_bots','name'],
+  ['x_profiles','display_name']
+ ];
+ for(const [table,column] of lookup){
+  for(let i=0;i<ids.length;i+=75){
+   const chunk=ids.slice(i,i+75);
+   try{
+    const records=await db.prepare('SELECT id,'+column+' AS resolved_name FROM '+table+' WHERE id IN ('+chunk.map(()=>'?').join(',')+')').bind(...chunk).all();
+    for(const record of records.results)if(record.resolved_name&&!names.has(record.id))names.set(record.id,record.resolved_name);
+   }catch(error){if(!String(error).includes('no such table'))console.error('royal_bot_name_lookup_failed',table,String(error).slice(0,120))}
+  }
+ }
+ return rows.map(row=>{
+  const result={...row};
+  for(const key of keys){
+   const id=row[key],name=names.get(id);
+   if(name)result[key+'_name']=name;
+  }
+  return result;
+ });
+}
 const royalServiceRecords={"education":[["المؤسسات التعليمية","saliyah_sim_institutions"],["الطلاب والتسجيل","saliyah_sim_enrollments"],["تفاصيل المؤسسات","saliyah_sim_education_details"]],"banking":[["الحسابات البنكية","saliyah_sim_bank_accounts"],["الحركات المالية","saliyah_sim_bank_transactions"],["تحويلات المواطنين إلى البوتات","saliyah_sim_public_payments"]],"bank-admin":[["الحسابات البنكية","saliyah_sim_bank_accounts"],["الحركات المالية","saliyah_sim_bank_transactions"]],"civil":[["السكان","saliyah_sim_citizens"],["الهويات","saliyah_sim_identities"],["الزواج","saliyah_sim_marriages"],["الأبناء","saliyah_sim_children"]],"registry":[["الهويات","saliyah_sim_identities"]],"family-cards":[["بطاقات العائلة","saliyah_sim_family_cards"]],"commerce":[["الشركات","saliyah_sim_companies"],["ملكية أسهم الشركات","saliyah_sim_shares"],["صفقات المواطنين مع البوتات","saliyah_market_trades"]],"company-treasury":[["الحسابات البنكية","saliyah_sim_bank_accounts"]],"company-staff":[["الوظائف","saliyah_sim_jobs"],["طلبات التوظيف","saliyah_sim_job_applications"]],"jobs":[["الوظائف","saliyah_sim_jobs"],["طلبات التوظيف","saliyah_sim_job_applications"]],"jobs-admin":[["الوظائف","saliyah_sim_jobs"],["طلبات التوظيف","saliyah_sim_job_applications"]],"payroll":[["الحركات المالية","saliyah_sim_bank_transactions"],["قرارات الرواتب","saliyah_sim_company_payroll_decisions"]],"courts":[["القضايا العمالية","saliyah_sim_labor_cases"],["المحاكمات","saliyah_sim_trials"],["المذكرات","saliyah_sim_labor_filings"]],"security":[["البلاغات","saliyah_sim_incidents"]],"borders":[["حركة المنافذ","saliyah_sim_border_events"]],"land":[["العقارات","saliyah_sim_properties"],["الصفقات","saliyah_sim_property_trades"],["شراء المواطن من البوت","saliyah_sim_public_property_trades"]],"state-budgets":[["المشاريع","saliyah_projects"]],"telecom":[["خطوط الاتصالات","telecom_lines"],["عمليات الشحن","telecom_purchases"],["الرسائل","telecom_sms"],["شرائح الكيانات الافتراضية","saliyah_sim_public_phones"],["رسائل البوتات","saliyah_sim_phone_sms"],["المراسلات الآلية","saliyah_sim_public_contacts"]],"pos":[["نقاط البيع","pos_merchants"],["عمليات نقاط البيع","pos_payments"]],"absher":[["أصول أبشر","absher_assets"],["طلبات أبشر","absher_requests"]],"health":[["المواعيد الصحية","health_appointments"],["العيادات","health_clinics"]],"municipality":[["تصاريح البلدية","municipal_permits"],["التفتيش","municipal_inspections"]],"installments":[["خطط الأقساط","installment_plans"],["دفعات الأقساط","installment_payments"],["المستحقات","installment_dues"]]};
 // Royal D1 distribution report. Read-only: reconciles legacy payroll authority with finance snapshots.
 if(method==='GET'&&path==='/api/admin/royal-audit'){
@@ -673,7 +710,7 @@ if(method==='GET'&&path==='/api/admin/royal-audit'){
  ];
  const rows=await Promise.all(types.map(async([table,label])=>{
   const source=table==='national_alert_history'?(env.ARCHIVE_DB||db):db;
-  try{const data=await source.prepare('SELECT * FROM '+table+' ORDER BY rowid DESC LIMIT 20').all();const safeRows=data.results.map(row=>Object.fromEntries(Object.entries(row).filter(([key])=>!/(password|token|secret|credential|cookie|salt|otp)/i.test(key))));return {type:table,label,rows:safeRows}}
+  try{const data=await source.prepare('SELECT * FROM '+table+' ORDER BY rowid DESC LIMIT 20').all();const safeRows=data.results.map(row=>Object.fromEntries(Object.entries(row).filter(([key])=>!/(password|token|secret|credential|cookie|salt|otp)/i.test(key))));const namedRows=await resolveRoyalBotNames(db,safeRows);return {type:table,label,rows:namedRows}}
   catch(e){return {type:table,label,rows:[],error:String(e?.message||e).slice(0,140)}}
  }));
  return json({ok:true,groups:rows,read_only:true});
@@ -735,7 +772,7 @@ if(method==='GET'&&path==='/api/admin/service-bots'){
  saliyah_sim_company_payroll_decisions:'SELECT * FROM saliyah_sim_company_payroll_decisions ORDER BY decided_at DESC LIMIT ? OFFSET ?'
  };
  const recordDb=['saliyah_sim_institutions','saliyah_sim_education_details'].includes(table)?(env.SIMULATION_DB||db):db; // All financial records use the authoritative DB ledger until migration is atomic
- try{const query=table==='saliyah_sim_bank_accounts'?'SELECT * FROM saliyah_sim_bank_accounts ORDER BY id LIMIT ? OFFSET ?':table==='saliyah_sim_bank_transactions'?'SELECT * FROM saliyah_sim_bank_transactions ORDER BY created_at DESC,id DESC LIMIT ? OFFSET ?':queries[table];const r=await recordDb.prepare(query||('SELECT * FROM '+table+' ORDER BY rowid LIMIT ? OFFSET ?')).bind(26,offset).all();if(table==='saliyah_sim_education_details'){const ids=[...new Set(r.results.map(row=>row.institution_id))];if(ids.length){const institutes=await (env.SIMULATION_DB||db).prepare('SELECT id,name FROM saliyah_sim_institutions WHERE id IN ('+ids.map(()=>'?').join(',')+')').bind(...ids).all();const names=new Map(institutes.results.map(x=>[x.id,x.name]));for(const row of r.results)row.institution_name=names.get(row.institution_id)||'مؤسسة افتراضية'}}if(table==='saliyah_sim_bank_transactions'){const ids=[...new Set(r.results.map(row=>row.account_id).filter(Boolean))];if(ids.length){const accounts=await db.prepare('SELECT id,account_number,owner_type,owner_id FROM saliyah_sim_bank_accounts WHERE id IN ('+ids.map(()=>'?').join(',')+')').bind(...ids).all();const byId=new Map(accounts.results.map(x=>[x.id,x]));const names=new Map();for(const [type,tableName] of [['citizen','saliyah_sim_citizens'],['company','saliyah_sim_companies']]){const owners=accounts.results.filter(row=>row.owner_type===type).map(row=>row.owner_id);if(owners.length){const people=await db.prepare('SELECT id,name FROM '+tableName+' WHERE id IN ('+owners.map(()=>'?').join(',')+')').bind(...owners).all();for(const person of people.results)names.set(type+':'+person.id,person.name)}}for(const row of r.results){const account=byId.get(row.account_id);row.account_number=account?.account_number||'';row.owner_name=account?(names.get(account.owner_type+':'+account.owner_id)||'مجهول'):'مجهول'}}}if(table==='saliyah_sim_bank_accounts'){const names=new Map();for(const [type,ownerTable] of [['citizen','saliyah_sim_citizens'],['company','saliyah_sim_companies']]){const ids=[...new Set(r.results.filter(row=>row.owner_type===type).map(row=>row.owner_id))];if(ids.length){const owners=await db.prepare('SELECT id,name FROM '+ownerTable+' WHERE id IN ('+ids.map(()=>'?').join(',')+')').bind(...ids).all();for(const owner of owners.results)names.set(type+':'+owner.id,owner.name)}}for(const row of r.results)row.owner_name=names.get(row.owner_type+':'+row.owner_id)||'مجهول'}const safeRows=r.results.slice(0,25).map(row=>Object.fromEntries(Object.entries(row).filter(([key])=>!/(password|token|secret|credential|cookie|salt|otp)/i.test(key))));return json({groups:group.map(x=>x[0]),rows:safeRows,more:r.results.length>25})}catch(e){if(String(e).includes('no such table'))return json({groups:group.map(x=>x[0]),rows:[],unavailable:true});throw e}
+ try{const query=table==='saliyah_sim_bank_accounts'?'SELECT * FROM saliyah_sim_bank_accounts ORDER BY id LIMIT ? OFFSET ?':table==='saliyah_sim_bank_transactions'?'SELECT * FROM saliyah_sim_bank_transactions ORDER BY created_at DESC,id DESC LIMIT ? OFFSET ?':queries[table];const r=await recordDb.prepare(query||('SELECT * FROM '+table+' ORDER BY rowid LIMIT ? OFFSET ?')).bind(26,offset).all();if(table==='saliyah_sim_education_details'){const ids=[...new Set(r.results.map(row=>row.institution_id))];if(ids.length){const institutes=await (env.SIMULATION_DB||db).prepare('SELECT id,name FROM saliyah_sim_institutions WHERE id IN ('+ids.map(()=>'?').join(',')+')').bind(...ids).all();const names=new Map(institutes.results.map(x=>[x.id,x.name]));for(const row of r.results)row.institution_name=names.get(row.institution_id)||'مؤسسة افتراضية'}}if(table==='saliyah_sim_bank_transactions'){const ids=[...new Set(r.results.map(row=>row.account_id).filter(Boolean))];if(ids.length){const accounts=await db.prepare('SELECT id,account_number,owner_type,owner_id FROM saliyah_sim_bank_accounts WHERE id IN ('+ids.map(()=>'?').join(',')+')').bind(...ids).all();const byId=new Map(accounts.results.map(x=>[x.id,x]));const names=new Map();for(const [type,tableName] of [['citizen','saliyah_sim_citizens'],['company','saliyah_sim_companies']]){const owners=accounts.results.filter(row=>row.owner_type===type).map(row=>row.owner_id);if(owners.length){const people=await db.prepare('SELECT id,name FROM '+tableName+' WHERE id IN ('+owners.map(()=>'?').join(',')+')').bind(...owners).all();for(const person of people.results)names.set(type+':'+person.id,person.name)}}for(const row of r.results){const account=byId.get(row.account_id);row.account_number=account?.account_number||'';row.owner_name=account?(names.get(account.owner_type+':'+account.owner_id)||'مجهول'):'مجهول'}}}if(table==='saliyah_sim_bank_accounts'){const names=new Map();for(const [type,ownerTable] of [['citizen','saliyah_sim_citizens'],['company','saliyah_sim_companies']]){const ids=[...new Set(r.results.filter(row=>row.owner_type===type).map(row=>row.owner_id))];if(ids.length){const owners=await db.prepare('SELECT id,name FROM '+ownerTable+' WHERE id IN ('+ids.map(()=>'?').join(',')+')').bind(...ids).all();for(const owner of owners.results)names.set(type+':'+owner.id,owner.name)}}for(const row of r.results)row.owner_name=names.get(row.owner_type+':'+row.owner_id)||'مجهول'}const safeRows=r.results.slice(0,25).map(row=>Object.fromEntries(Object.entries(row).filter(([key])=>!/(password|token|secret|credential|cookie|salt|otp)/i.test(key))));const namedRows=await resolveRoyalBotNames(db,safeRows);return json({groups:group.map(x=>x[0]),rows:namedRows,more:r.results.length>25})}catch(e){if(String(e).includes('no such table'))return json({groups:group.map(x=>x[0]),rows:[],unavailable:true});throw e}
 }
 
 // X Al-Saliyah: profiles are bound to authenticated accounts; ministry verification
@@ -1096,7 +1133,7 @@ if(method==='GET'&&path==='/api/admin/simulation/citizens'){
  const [citizens,identities,companies,jobs,applications,enrollments,marriages,children,events,posts,profiles,projects,latest]=await Promise.all([
   db.prepare("SELECT COUNT(*) n FROM saliyah_sim_citizens").first(),
   db.prepare("SELECT status,COUNT(*) n FROM saliyah_sim_identities GROUP BY status").all(),
-  db.prepare("SELECT id,name,activity,location,capital,status,founder_id,created_at FROM saliyah_sim_companies ORDER BY created_at DESC LIMIT 100").all(),
+  db.prepare("SELECT c.id,c.name,c.activity,c.location,c.capital,c.status,c.founder_id,f.name founder_name,c.created_at FROM saliyah_sim_companies c LEFT JOIN saliyah_sim_citizens f ON f.id=c.founder_id ORDER BY c.created_at DESC LIMIT 100").all(),
   db.prepare("SELECT j.id,j.title,j.salary,j.status,c.name company FROM saliyah_sim_jobs j JOIN saliyah_sim_companies c ON c.id=j.company_id ORDER BY j.created_at DESC LIMIT 100").all(),
   db.prepare("SELECT a.id,a.status,a.created_at,c.name citizen,j.title job FROM saliyah_sim_job_applications a JOIN saliyah_sim_citizens c ON c.id=a.citizen_id JOIN saliyah_sim_jobs j ON j.id=a.job_id ORDER BY a.created_at DESC LIMIT 100").all(),
   db.prepare("SELECT COUNT(*) n FROM saliyah_sim_enrollments").first(),
