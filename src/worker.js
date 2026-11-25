@@ -783,7 +783,7 @@ if(method==='GET'&&path==='/api/simulation/security'){
 if(method==='POST'&&path==='/api/admin/simulation/run'){
  if(!user||user.role!=='king')return json({error:'للملك فقط'},403);
  const now=Math.floor(Date.now()/3600000);
- const previous=await db.prepare("SELECT value FROM saliyah_sim_settings WHERE key='last_manual_run'").first();
+ const previous=await (env.SIMULATION_DB||db).prepare("SELECT value FROM saliyah_sim_settings WHERE key='last_manual_run'").first();
  if(previous&&Number(previous.value)===now)return json({error:'تم تشغيل المحاكاة يدويًا هذه الساعة، انتظر الساعة التالية'},429);
  if(true)return json({error:'المحاكاة والبوتات متوقفة مؤقتاً بأمر الملك'},503);
  try{await runSaliyahGovernment(db,env.AVIATION_DB);await db.prepare("INSERT INTO saliyah_sim_settings(key,value) VALUES('last_manual_run',?) ON CONFLICT(key) DO UPDATE SET value=excluded.value").bind(String(now)).run();await audit(db,user.id,'simulation_manual_run','simulation',String(now),{hour:now});return json({ok:true,hour:now});}
@@ -862,11 +862,11 @@ if(method==='GET'&&path==='/api/admin/simulation/citizens'){
   db.prepare("SELECT COUNT(*) n FROM x_posts").first(),
   db.prepare("SELECT COUNT(*) n FROM x_profiles").first(),
   db.prepare("SELECT status,COUNT(*) n FROM saliyah_projects GROUP BY status").all(),
-  db.prepare("SELECT key,value FROM saliyah_sim_settings WHERE key LIKE 'last_%' OR key LIKE 'simulation_health%' ORDER BY key").all()
+  (env.SIMULATION_DB||db).prepare("SELECT key,value FROM saliyah_sim_settings WHERE key LIKE 'last_%' OR key LIKE 'simulation_health%' ORDER BY key").all()
  ]);
  return json({ok:true,citizens:citizens.n,identities:identities.results,companies:companies.results,jobs:jobs.results,applications:applications.results,enrollments:enrollments.n,marriages:marriages.n,children:children.n,events:events.results,x_posts:posts.n,x_profiles:profiles.n,projects:projects.results,diagnostics:Object.fromEntries(latest.results.map(x=>[x.key,x.value]))});
 }
-if(method==='GET'&&path==='/api/simulation/diagnostics'){if(!user||user.role!=='king')return json({error:'للملك فقط'},403);const rows=await db.prepare("SELECT key,value FROM saliyah_sim_settings WHERE key LIKE 'last_%' ORDER BY key").all();return json({ok:true,diagnostics:Object.fromEntries(rows.results.map(x=>[x.key,x.value]))})}
+if(method==='GET'&&path==='/api/simulation/diagnostics'){if(!user||user.role!=='king')return json({error:'للملك فقط'},403);const rows=await (env.SIMULATION_DB||db).prepare("SELECT key,value FROM saliyah_sim_settings WHERE key LIKE 'last_%' ORDER BY key").all();return json({ok:true,diagnostics:Object.fromEntries(rows.results.map(x=>[x.key,x.value]))})}
 if(method==='GET'&&path==='/api/simulation/status'){
  const [citizens,projects]=await Promise.all([db.prepare('SELECT COUNT(*) n FROM saliyah_sim_citizens').first(),db.prepare('SELECT status,COUNT(*) n FROM saliyah_projects GROUP BY status').all()]);
  const companies=await db.prepare('SELECT status,COUNT(*) n FROM saliyah_sim_companies GROUP BY status').all();const jobs=await db.prepare('SELECT COUNT(*) n FROM saliyah_sim_jobs').first();return json({simulated_citizens:citizens.n,projects:projects.results,companies:companies.results,simulated_jobs:jobs.n,automated_ministries:botMinisters.length,human_ministries:['الخارجية','الداخلية']});
