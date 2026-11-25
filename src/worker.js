@@ -679,7 +679,8 @@ async function resolveRoyalBotNames(db, rows) {
   ['x_profiles','display_name'],
   ['saliyah_sim_institutions','name'],
   ['saliyah_sim_jobs','title'],
-  ['saliyah_sim_bank_accounts','account_number']
+  ['saliyah_sim_bank_accounts','account_number'],
+  ['users','username']
  ];
  for(const [table,column] of lookup){
   for(let i=0;i<ids.length;i+=75){
