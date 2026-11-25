@@ -89,3 +89,65 @@ BEGIN
  SET units=units-NEW.units
  WHERE NEW.direction='sell' AND company_id=NEW.company_id AND owner_id='human:'||NEW.user_id;
 END;
+
+-- Direct fictional payments from a real human account in the portal to a bot bank account.
+CREATE TABLE IF NOT EXISTS saliyah_sim_public_payments(
+ id TEXT PRIMARY KEY,
+ user_id TEXT NOT NULL REFERENCES users(id),
+ from_account_id TEXT NOT NULL REFERENCES bank_accounts(id),
+ recipient_account_id TEXT NOT NULL REFERENCES saliyah_sim_bank_accounts(id),
+ amount INTEGER NOT NULL CHECK(amount BETWEEN 1 AND 100000000),
+ memo TEXT NOT NULL DEFAULT '',
+ created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+CREATE INDEX IF NOT EXISTS idx_sim_public_payments_user ON saliyah_sim_public_payments(user_id,created_at DESC);
+CREATE TRIGGER IF NOT EXISTS saliyah_sim_public_payment_guard
+BEFORE INSERT ON saliyah_sim_public_payments
+BEGIN
+ SELECT CASE WHEN NOT EXISTS(SELECT 1 FROM bank_accounts WHERE id=NEW.from_account_id AND user_id=NEW.user_id AND balance>=NEW.amount)
+   THEN RAISE(ABORT,'sim_payment_insufficient_funds') END;
+ SELECT CASE WHEN NOT EXISTS(SELECT 1 FROM saliyah_sim_bank_accounts WHERE id=NEW.recipient_account_id AND status='active')
+   THEN RAISE(ABORT,'sim_payment_recipient_missing') END;
+END;
+CREATE TRIGGER IF NOT EXISTS saliyah_sim_public_payment_apply
+AFTER INSERT ON saliyah_sim_public_payments
+BEGIN
+ UPDATE bank_accounts SET balance=balance-NEW.amount WHERE id=NEW.from_account_id AND user_id=NEW.user_id;
+ UPDATE saliyah_sim_bank_accounts SET balance=balance+NEW.amount WHERE id=NEW.recipient_account_id;
+ INSERT INTO saliyah_sim_bank_transactions(id,account_id,kind,amount,description,related_account_id)
+ VALUES('human-pay-'||NEW.id,NEW.recipient_account_id,'human_payment',NEW.amount,NEW.memo,NEW.from_account_id);
+END;
+
+-- Human residents can also buy listed properties that were offered by fictional citizens.
+CREATE TABLE IF NOT EXISTS saliyah_sim_public_property_trades(
+ id TEXT PRIMARY KEY,
+ property_id TEXT NOT NULL UNIQUE REFERENCES saliyah_sim_properties(id),
+ user_id TEXT NOT NULL REFERENCES users(id),
+ user_account_id TEXT NOT NULL REFERENCES bank_accounts(id),
+ seller_id TEXT NOT NULL REFERENCES saliyah_sim_citizens(id),
+ price INTEGER NOT NULL CHECK(price>0),
+ created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+CREATE INDEX IF NOT EXISTS idx_sim_public_properties_user ON saliyah_sim_public_property_trades(user_id,created_at DESC);
+CREATE TRIGGER IF NOT EXISTS saliyah_sim_public_property_guard
+BEFORE INSERT ON saliyah_sim_public_property_trades
+BEGIN
+ SELECT CASE WHEN NOT EXISTS (
+  SELECT 1 FROM saliyah_sim_properties WHERE id=NEW.property_id AND owner_id=NEW.seller_id AND status='listed' AND price=NEW.price
+ ) THEN RAISE(ABORT,'sim_property_unavailable') END;
+ SELECT CASE WHEN NOT EXISTS (
+  SELECT 1 FROM bank_accounts WHERE id=NEW.user_account_id AND user_id=NEW.user_id AND balance>=NEW.price
+ ) THEN RAISE(ABORT,'sim_property_insufficient_funds') END;
+ SELECT CASE WHEN NOT EXISTS (
+  SELECT 1 FROM saliyah_sim_bank_accounts WHERE owner_type='citizen' AND owner_id=NEW.seller_id AND status='active'
+ ) THEN RAISE(ABORT,'sim_property_seller_account_missing') END;
+END;
+CREATE TRIGGER IF NOT EXISTS saliyah_sim_public_property_apply
+AFTER INSERT ON saliyah_sim_public_property_trades
+BEGIN
+ UPDATE bank_accounts SET balance=balance-NEW.price WHERE id=NEW.user_account_id AND user_id=NEW.user_id;
+ UPDATE saliyah_sim_bank_accounts SET balance=balance+NEW.price WHERE owner_type='citizen' AND owner_id=NEW.seller_id;
+ UPDATE saliyah_sim_properties SET owner_id='human:'||NEW.user_id,status='owned',sold_at=CURRENT_TIMESTAMP WHERE id=NEW.property_id AND owner_id=NEW.seller_id AND status='listed';
+ INSERT INTO saliyah_sim_property_trades(id,property_id,seller_id,buyer_id,price)
+ VALUES('human-property-'||NEW.id,NEW.property_id,NEW.seller_id,'human:'||NEW.user_id,NEW.price);
+END;
