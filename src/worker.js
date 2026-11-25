@@ -311,7 +311,7 @@ async function runSaliyahGovernment(db,aviationDb){
  if(seller){
   await db.prepare("INSERT OR IGNORE INTO saliyah_sim_properties(id,owner_id,kind,location,price,status) VALUES(?,?,?,?,?,'listed')").bind(propertyId,seller,['شقة','فيلا','محل تجاري','أرض'][hour%4],['شقة','فيلا','أرض'].includes(['شقة','فيلا','محل تجاري','أرض'][hour%4])?(Math.floor(hour/6)%2===0?'السجادة':'عقار'):'المتجار',55000+(hour%9)*18000).run();
  }
- const listed=await db.prepare("SELECT id,owner_id,price FROM saliyah_sim_properties WHERE status='listed' ORDER BY created_at LIMIT 1").first();
+ const listed=await db.prepare("SELECT id,owner_id,price FROM saliyah_sim_properties WHERE status='listed' AND id NOT LIKE 'housing-%' ORDER BY created_at LIMIT 1").first();
  if(listed&&adults.length>1){
   const buyer=adults.find(x=>x.id!==listed.owner_id);
   if(buyer){
@@ -1111,8 +1111,20 @@ if(method==='POST'&&path==='/api/admin/simulation/companies/decision'){
 }
 if(method==='GET'&&path==='/api/admin/simulation/projects'){
  if(!user||user.role!=='king')return json({error:'للملك فقط'},403);
- const rows=await db.prepare('SELECT * FROM saliyah_projects ORDER BY created_at DESC LIMIT 100').all();
+ const rows=await db.prepare("SELECT p.*,h.status construction_status,h.started_at construction_started_at,h.completed_at construction_completed_at,(SELECT COUNT(*) FROM saliyah_housing_units u WHERE u.project_id=p.id) housing_units FROM saliyah_projects p LEFT JOIN saliyah_housing_projects h ON h.project_id=p.id ORDER BY p.created_at DESC LIMIT 100").all();
  return json({projects:rows.results});
+}
+if(method==='POST'&&path==='/api/admin/simulation/projects/complete'){
+ if(!user||user.role!=='king')return json({error:'للملك فقط'},403);
+ const b=await input(req);if(!validText(b?.id,5,120))return json({error:'حدد المشروع السكني'},400);
+ const project=await db.prepare("SELECT p.id,p.title,h.status FROM saliyah_projects p JOIN saliyah_housing_projects h ON h.project_id=p.id WHERE p.id=? AND p.project_type='housing' AND p.status='approved'").bind(b.id).first();
+ if(!project)return json({error:'مشروع سكني معتمد غير موجود'},404);
+ if(project.status==='completed'){const count=await db.prepare('SELECT COUNT(*) n FROM saliyah_housing_units WHERE project_id=?').bind(project.id).first();return json({ok:true,status:'completed',units:count?.n||0,already_completed:true})}
+ const done=await db.prepare("UPDATE saliyah_housing_projects SET status='completed',completed_at=CURRENT_TIMESTAMP WHERE project_id=? AND status='building'").bind(project.id).run();
+ if(!done.meta.changes)return json({error:'حالة البناء تغيرت؛ حدث الصفحة'},409);
+ const count=await db.prepare('SELECT COUNT(*) n FROM saliyah_housing_units WHERE project_id=?').bind(project.id).first();
+ await audit(db,user.id,'housing_project_completed','saliyah_project',project.id,{units:count?.n||0});
+ return json({ok:true,status:'completed',units:count?.n||0});
 }
 if(method==='POST'&&path==='/api/admin/simulation/projects/decision'){
  if(!user||user.role!=='king')return json({error:'للملك فقط'},403);
@@ -1378,8 +1390,8 @@ if(method==='POST'&&path==='/api/sim-market/trade'){
  return json({ok:true,id,units:b.units,unit_price:company.unit_price,total:b.units*company.unit_price,simulated:true},201);
 }
 if(method==='GET'&&path==='/api/sim-market/properties'){
- const listed=await db.prepare("SELECT p.id,p.kind,p.location,p.price,p.created_at,p.owner_id,c.name seller_name FROM saliyah_sim_properties p JOIN saliyah_sim_citizens c ON c.id=p.owner_id JOIN saliyah_sim_bank_accounts b ON b.owner_type='citizen' AND b.owner_id=p.owner_id AND b.status='active' WHERE p.status='listed' ORDER BY p.created_at DESC,p.id LIMIT 100").all();
- const mine=user?(await db.prepare("SELECT id,kind,location,price,status FROM saliyah_sim_properties WHERE owner_id=? ORDER BY created_at DESC LIMIT 100").bind('human:'+user.id).all()).results:[];
+ const listed=await db.prepare("SELECT p.id,p.kind,p.location,p.price,p.created_at,p.owner_id,c.name seller_name,h.project_id,h.unit_number,h.unit_type,h.area_sqm,h.bedrooms,h.bathrooms,h.parking,h.floor,h.features,pr.title project_name,build.status construction_status FROM saliyah_sim_properties p JOIN saliyah_sim_citizens c ON c.id=p.owner_id JOIN saliyah_sim_bank_accounts b ON b.owner_type='citizen' AND b.owner_id=p.owner_id AND b.status='active' LEFT JOIN saliyah_housing_units h ON h.property_id=p.id LEFT JOIN saliyah_projects pr ON pr.id=h.project_id LEFT JOIN saliyah_housing_projects build ON build.project_id=h.project_id WHERE p.status='listed' ORDER BY p.created_at DESC,p.id LIMIT 100").all();
+ const mine=user?(await db.prepare("SELECT p.id,p.kind,p.location,p.price,p.status,h.unit_number,h.unit_type,h.area_sqm,h.bedrooms,h.bathrooms,h.parking,h.floor,h.features,pr.title project_name FROM saliyah_sim_properties p LEFT JOIN saliyah_housing_units h ON h.property_id=p.id LEFT JOIN saliyah_projects pr ON pr.id=h.project_id WHERE p.owner_id=? ORDER BY p.created_at DESC LIMIT 100").bind('human:'+user.id).all()).results:[];
  return json({listed:listed.results.map(x=>({...x,registration_number:'SIM-PR-'+x.id})),mine,simulated:true});
 }
 if(method==='POST'&&path==='/api/sim-market/property/buy'){
