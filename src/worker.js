@@ -516,6 +516,26 @@ if(path==='/api/national-alert'){
  return json({error:'طريقة غير مسموحة'},405);
 }
 
+
+const royalServiceRecords={"education":[["المؤسسات التعليمية","saliyah_sim_institutions"],["الطلاب والتسجيل","saliyah_sim_enrollments"],["تفاصيل المؤسسات","saliyah_sim_education_details"]],"banking":[["الحسابات البنكية","saliyah_sim_bank_accounts"],["الحركات المالية","saliyah_sim_bank_transactions"]],"bank-admin":[["الحسابات البنكية","saliyah_sim_bank_accounts"],["الحركات المالية","saliyah_sim_bank_transactions"]],"civil":[["السكان","saliyah_sim_citizens"],["الهويات","saliyah_sim_identities"],["الزواج","saliyah_sim_marriages"],["الأبناء","saliyah_sim_children"]],"registry":[["الهويات","saliyah_sim_identities"]],"family-cards":[["بطاقات العائلة","saliyah_sim_family_cards"]],"commerce":[["الشركات","saliyah_sim_companies"]],"company-treasury":[["الحسابات البنكية","saliyah_sim_bank_accounts"]],"company-staff":[["الوظائف","saliyah_sim_jobs"],["طلبات التوظيف","saliyah_sim_job_applications"]],"jobs":[["الوظائف","saliyah_sim_jobs"],["طلبات التوظيف","saliyah_sim_job_applications"]],"jobs-admin":[["الوظائف","saliyah_sim_jobs"],["طلبات التوظيف","saliyah_sim_job_applications"]],"payroll":[["الحركات المالية","saliyah_sim_bank_transactions"],["قرارات الرواتب","saliyah_sim_company_payroll_decisions"]],"courts":[["القضايا العمالية","saliyah_sim_labor_cases"],["المحاكمات","saliyah_sim_trials"],["المذكرات","saliyah_sim_labor_filings"]],"security":[["البلاغات","saliyah_sim_incidents"]],"borders":[["حركة المنافذ","saliyah_sim_border_events"]],"land":[["العقارات","saliyah_sim_properties"],["الصفقات","saliyah_sim_property_trades"]],"state-budgets":[["المشاريع","saliyah_projects"]],"telecom":[],"pos":[],"absher":[],"health":[],"municipality":[],"installments":[]};
+if(method==='GET'&&path==='/api/admin/service-bots'){
+ if(user?.role!=='king')return json({error:'للملك فقط'},403);
+ const service=u.searchParams.get('service'),group=royalServiceRecords[service];
+ if(!Array.isArray(group))return json({error:'خدمة غير معروفة'},400);
+ const index=Number(u.searchParams.get('group')||0),offset=Number(u.searchParams.get('offset')||0);
+ if(!Number.isInteger(index)||index<0||!Number.isSafeInteger(offset)||offset<0||offset>100000)return json({error:'صفحة غير صالحة'},400);
+ if(!group.length)return json({groups:[],rows:[]});
+ if(!group[index])return json({error:'سجل غير معروف'},400);
+ const table=group[index][1];
+ const queries={
+ saliyah_sim_enrollments:'SELECT e.*,c.name citizen_name,i.name institution_name FROM saliyah_sim_enrollments e LEFT JOIN saliyah_sim_citizens c ON c.id=e.citizen_id LEFT JOIN saliyah_sim_institutions i ON i.id=e.institution_id ORDER BY e.id LIMIT ? OFFSET ?',
+ saliyah_sim_identities:'SELECT e.*,c.name citizen_name FROM saliyah_sim_identities e LEFT JOIN saliyah_sim_citizens c ON c.id=e.citizen_id ORDER BY e.id LIMIT ? OFFSET ?',
+ saliyah_sim_bank_accounts:"SELECT a.*,COALESCE(c.name,b.name) owner_name FROM saliyah_sim_bank_accounts a LEFT JOIN saliyah_sim_citizens c ON a.owner_type='citizen' AND c.id=a.owner_id LEFT JOIN saliyah_sim_companies b ON a.owner_type='company' AND b.id=a.owner_id ORDER BY a.id LIMIT ? OFFSET ?",
+ saliyah_sim_education_details:'SELECT d.*,i.name institution_name FROM saliyah_sim_education_details d LEFT JOIN saliyah_sim_institutions i ON i.id=d.institution_id ORDER BY d.institution_id LIMIT ? OFFSET ?'
+ };
+ try{const r=await db.prepare(queries[table]||('SELECT * FROM '+table+' ORDER BY rowid LIMIT ? OFFSET ?')).bind(26,offset).all();return json({groups:group.map(x=>x[0]),rows:r.results.slice(0,25),more:r.results.length>25})}catch(e){if(String(e).includes('no such table'))return json({groups:group.map(x=>x[0]),rows:[],unavailable:true});throw e}
+}
+
 // X Al-Saliyah: profiles are bound to authenticated accounts; ministry verification
 // is granted only for a ministry assignment recorded by the government.
 if(method==='GET'&&path==='/api/aviation/tourists'){
