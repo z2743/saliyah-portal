@@ -25,7 +25,7 @@ assert.match(ui,/xAutoPay/);
 assert.match(worker,/runXCreatorAutoPayouts/);
 assert.match(worker,/async scheduled\(event,env,ctx\)\{[\s\S]*?hour%4!==0/);
 assert.match(worker,/\(\)=>runSaliyahGovernment\(env\.DB,env\.AVIATION_DB\)/);
-assert.match(worker,/\(\)=>runSimContactReplies\(env\.DB\)/);
+assert.match(worker,/\(\)=>runSimContactReplies\(env\.DB,env\.AVIATION_DB\)/);
 assert.doesNotMatch(worker,/simulation_paused_by_royal_order/);
 assert.doesNotMatch(worker,/if\(!halfHour && hour%4===0\)try\{/);
 assert.doesNotMatch(worker,/\['x_rewards',runXCreatorAutoPayouts\]/);
