@@ -262,6 +262,7 @@ async function runSaliyahGovernment(db,aviationDb){
  for(let i=0;i<3;i++){
   const seq=hour*3+i, id='citizen-'+seq, name=citizens[seq%citizens.length]+' الصالي';
   await db.prepare("INSERT OR IGNORE INTO saliyah_sim_citizens(id,name,occupation,created_at) VALUES(?,?,?,CURRENT_TIMESTAMP)").bind(id,name,['باحث عن عمل','طالب','تاجر','موظف'][seq%4]).run();
+  await db.prepare("INSERT OR IGNORE INTO saliyah_sim_bank_accounts(id,owner_type,owner_id,account_number,bank_name,balance) VALUES(?,'citizen',? ,?,'البنك الصالي',800)").bind('sim-bank-c-'+id,id,'SC-SIM-'+id).run();
   // Automated low-risk fictional identity record; no real citizen document is issued.
   await db.prepare("INSERT OR IGNORE INTO saliyah_sim_identities(id,citizen_id,status,issued_at,expires_at) VALUES(?,?,'issued',CURRENT_TIMESTAMP,datetime('now','+14 days'))").bind('sim-id-'+seq,id).run();
   const openJob=await db.prepare("SELECT id FROM saliyah_sim_jobs WHERE status='open' ORDER BY created_at DESC LIMIT 1").first();
