@@ -519,6 +519,29 @@ if(path==='/api/national-alert'){
 }
 
 
+// Supplement the royal register with actual human-facing services as well as bot activity.
+const royalActualServiceRecords={
+ education:[['طلبات الطلاب الحقيقيين','education_applications'],['درجات الطلاب','education_grades'],['المدارس والجامعات','education_institutions']],
+ banking:[['الحسابات البنكية الحقيقية','bank_accounts'],['التحويلات','bank_transfers'],['البطاقات','bank_cards']],
+ 'bank-admin':[['الحسابات البنكية الحقيقية','bank_accounts'],['التسويات','bank_adjustments']],
+ civil:[['المواطنون','citizen_profiles'],['طلبات الأحوال','civil_intake'],['المستندات','documents']],
+ commerce:[['الشركات الحقيقية','commerce_companies'],['فروع الشركات','commerce_branches']],
+ jobs:[['طلبات التوظيف البشرية','job_applications'],['الوظائف','vacancies']],
+ payroll:[['صرف الرواتب الحقيقي','payroll_payments'],['رواتب الشركات','company_salary_payments']],
+ courts:[['القضايا الحقيقية','court_cases'],['جلسات المحاكم','court_hearings']],
+ security:[['البلاغات الأمنية','police_reports']],
+ borders:[['حركات الحدود','border_movements'],['البيانات الجمركية','customs_declarations']],
+ land:[['العقارات الحقيقية','land_parcels'],['نقل الملكية','land_transfers']],
+ telecom:[['خطوط الاتصالات الحقيقية','telecom_lines'],['عمليات الشحن','telecom_purchases']],
+ pos:[['نقاط البيع الحقيقية','pos_merchants'],['المدفوعات','pos_payments']],
+ absher:[['المركبات والأصول','absher_assets'],['الطلبات','absher_requests']],
+ health:[['العيادات','health_clinics'],['المواعيد','health_appointments']],
+ municipality:[['التصاريح','municipal_permits'],['التفتيش','municipal_inspections']],
+ installments:[['خطط الأقساط','installment_plans'],['الدفعات','installment_payments']],
+ 'state-budgets':[['طلبات الميزانية','state_budget_requests'],['حركات الميزانية','state_budget_events']],
+ 'company-treasury':[['خزائن الشركات','company_treasuries'],['حركات الخزائن','company_treasury_movements']],
+ 'company-staff':[['العاملون بالشركات','company_employees']]
+};
 const royalServiceRecords={"education":[["المؤسسات التعليمية","saliyah_sim_institutions"],["الطلاب والتسجيل","saliyah_sim_enrollments"],["تفاصيل المؤسسات","saliyah_sim_education_details"]],"banking":[["الحسابات البنكية","saliyah_sim_bank_accounts"],["الحركات المالية","saliyah_sim_bank_transactions"]],"bank-admin":[["الحسابات البنكية","saliyah_sim_bank_accounts"],["الحركات المالية","saliyah_sim_bank_transactions"]],"civil":[["السكان","saliyah_sim_citizens"],["الهويات","saliyah_sim_identities"],["الزواج","saliyah_sim_marriages"],["الأبناء","saliyah_sim_children"]],"registry":[["الهويات","saliyah_sim_identities"]],"family-cards":[["بطاقات العائلة","saliyah_sim_family_cards"]],"commerce":[["الشركات","saliyah_sim_companies"]],"company-treasury":[["الحسابات البنكية","saliyah_sim_bank_accounts"]],"company-staff":[["الوظائف","saliyah_sim_jobs"],["طلبات التوظيف","saliyah_sim_job_applications"]],"jobs":[["الوظائف","saliyah_sim_jobs"],["طلبات التوظيف","saliyah_sim_job_applications"]],"jobs-admin":[["الوظائف","saliyah_sim_jobs"],["طلبات التوظيف","saliyah_sim_job_applications"]],"payroll":[["الحركات المالية","saliyah_sim_bank_transactions"],["قرارات الرواتب","saliyah_sim_company_payroll_decisions"]],"courts":[["القضايا العمالية","saliyah_sim_labor_cases"],["المحاكمات","saliyah_sim_trials"],["المذكرات","saliyah_sim_labor_filings"]],"security":[["البلاغات","saliyah_sim_incidents"]],"borders":[["حركة المنافذ","saliyah_sim_border_events"]],"land":[["العقارات","saliyah_sim_properties"],["الصفقات","saliyah_sim_property_trades"]],"state-budgets":[["المشاريع","saliyah_projects"]],"telecom":[["خطوط الاتصالات","telecom_lines"],["عمليات الشحن","telecom_purchases"],["الرسائل","telecom_sms"]],"pos":[["نقاط البيع","pos_merchants"],["عمليات نقاط البيع","pos_payments"]],"absher":[["أصول أبشر","absher_assets"],["طلبات أبشر","absher_requests"]],"health":[["المواعيد الصحية","health_appointments"],["العيادات","health_clinics"]],"municipality":[["تصاريح البلدية","municipal_permits"],["التفتيش","municipal_inspections"]],"installments":[["خطط الأقساط","installment_plans"],["دفعات الأقساط","installment_payments"],["المستحقات","installment_dues"]]};
 // Royal D1 distribution report. Read-only: reconciles legacy payroll authority with finance snapshots.
 if(method==='GET'&&path==='/api/admin/d1-distribution'){
@@ -547,9 +570,10 @@ if(method==='GET'&&path==='/api/admin/d1-distribution'){
 }
 if(method==='GET'&&path==='/api/admin/service-bots'){
  if(user?.role!=='king')return json({error:'للملك فقط'},403);
- const service=u.searchParams.get('service'),group=royalServiceRecords[service];
+ const service=u.searchParams.get('service'),group=[...(royalServiceRecords[service]||[]),...(royalActualServiceRecords[service]||[])];
  if(!Array.isArray(group))return json({error:'خدمة غير معروفة'},400);
  const index=Number(u.searchParams.get('group')||0),offset=Number(u.searchParams.get('offset')||0);
+ const canViewReal=user.role==='king'; // Real-person records are never available to bot actors
  if(!Number.isInteger(index)||index<0||!Number.isSafeInteger(offset)||offset<0||offset>100000)return json({error:'صفحة غير صالحة'},400);
  if(!group.length)return json({groups:[],rows:[]});
  if(!group[index])return json({error:'سجل غير معروف'},400);
