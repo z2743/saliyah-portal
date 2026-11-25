@@ -1102,7 +1102,7 @@ if(method==='GET'&&path==='/api/admin/simulation/citizens'){
   db.prepare("SELECT COUNT(*) n FROM saliyah_sim_enrollments").first(),
   db.prepare("SELECT COUNT(*) n FROM saliyah_sim_marriages").first(),
   db.prepare("SELECT COUNT(*) n FROM saliyah_sim_children").first(),
-  db.prepare("SELECT id,citizen_id,kind AS event_type,description,created_at FROM saliyah_sim_life_events ORDER BY created_at DESC LIMIT 100").all(),
+  db.prepare("SELECT e.id,e.citizen_id,COALESCE(c.name,'مواطن غير مسجل') AS citizen_name,e.kind AS event_type,e.description,e.created_at FROM saliyah_sim_life_events e LEFT JOIN saliyah_sim_citizens c ON c.id=e.citizen_id ORDER BY e.created_at DESC LIMIT 100").all(),
   db.prepare("SELECT COUNT(*) n FROM x_posts").first(),
   db.prepare("SELECT COUNT(*) n FROM x_profiles").first(),
   db.prepare("SELECT status,COUNT(*) n FROM saliyah_projects GROUP BY status").all(),
