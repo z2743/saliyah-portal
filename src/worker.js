@@ -22,6 +22,37 @@ const fictionalFamilyNames=['العتيبي','القحطاني','الشمري','
 const fictionalBotName=n=>fictionalFirstNames[(n*7+3)%fictionalFirstNames.length]+' '+fictionalFamilyNames[(n*11+5)%fictionalFamilyNames.length];
 // Ministers are fictional bot personas with human-style names; the automated flag stays visible.
 const botMinisters=ministries.filter(m=>m.id!==0&&m.id!==1).map(m=>({...m,minister:fictionalBotName(m.id)+' بن '+fictionalFirstNames[(m.id*3+1)%fictionalFirstNames.length]+' 🤖',automated:true}));
+// Simulated replies are intentionally labeled as automation; they never impersonate real residents.
+async function runSimContactReplies(db){
+ const pending=(await db.prepare("SELECT id,target_type,target_id,message FROM saliyah_sim_public_contacts WHERE status='pending_bot' ORDER BY created_at LIMIT 16").all()).results;
+ if(!pending.length)return 0;
+ const targetQueries={
+  citizens:'SELECT name FROM saliyah_sim_citizens WHERE id=?',
+  companies:'SELECT name FROM saliyah_sim_companies WHERE id=?',
+  institutions:'SELECT name FROM saliyah_sim_institutions WHERE id=?',
+  jobs:'SELECT title name FROM saliyah_sim_jobs WHERE id=?',
+  x:"SELECT display_name name FROM x_profiles WHERE id=? AND kind='bot'",
+  lawyers:'SELECT name FROM saliyah_sim_legal_bots WHERE id=?',
+  properties:"SELECT kind||' في '||location name FROM saliyah_sim_properties WHERE id=?"
+ };
+ const replies=[];
+ for(const message of pending){
+  const sql=targetQueries[message.target_type];if(!sql)continue;
+  const target=await db.prepare(sql).bind(message.target_id).first();
+  const name=target?.name||'جهة افتراضية';
+  const original=String(message.message||'');
+  let guidance='اطّلع على ملفي وخدماتي في دليل سكان ومنشآت الصالية.';
+  if(/وظيف|توظيف|راتب|عمل/.test(original))guidance='الوظائف والتقديم عليها موجودة في خدمة التوظيف في البوابة.';
+  else if(/مدرس|جامع|تعليم|تسجيل|دراس/.test(original))guidance='معلومات المدارس والجامعات والتقديم موجودة في خدمة التعليم.';
+  else if(/سهم|أسهم|تداول|استثمار/.test(original))guidance='تستطيع الاطلاع على الأسهم والصفقات من سوق الأسهم الصالي الافتراضي.';
+  else if(/عقار|شراء|إيجار|أرض/.test(original))guidance='العقارات المعروضة والتملك موجودان في سوق العقارات الافتراضي.';
+  else if(/بنك|تحويل|حساب/.test(original))guidance='أرقام الحسابات الافتراضية الظاهرة في الدليل تقبل التحويلات الداخلية المسموح بها.';
+  const reply='🤖 رد آلي من '+name+': وصلت رسالتك في المملكة الصالية. '+guidance;
+  replies.push(db.prepare("UPDATE saliyah_sim_public_contacts SET status='replied',bot_reply=?,replied_at=CURRENT_TIMESTAMP WHERE id=? AND status='pending_bot'").bind(reply,message.id));
+ }
+ if(replies.length)await db.batch(replies);
+ return replies.length;
+}
 async function runSaliyahGovernment(db,aviationDb){
  const hour=Math.floor(Date.now()/3600000);
  const roles=['موظف خدمة عملاء','موظف أحوال مدنية','معلم','ممرض','محاسب','موظف اتصالات','موظف بلدية','موظف بريد','فني صيانة','موظف نقل'];
@@ -258,7 +289,7 @@ async function runSaliyahGovernment(db,aviationDb){
  }
  if(companies.length&&adults.length){
   const company=companies[hour%companies.length],buyer=adults[hour%adults.length];
-  const holding=await db.prepare("SELECT id,owner_id,units FROM saliyah_sim_shares WHERE company_id=? AND units>=10 ORDER BY units DESC LIMIT 1").bind(company.id).first();
+  const holding=await db.prepare("SELECT id,owner_id,units FROM saliyah_sim_shares WHERE company_id=? AND units>=10 AND owner_id NOT LIKE 'human:%' ORDER BY units DESC LIMIT 1").bind(company.id).first();
   if(holding&&holding.owner_id!==buyer.id){
    const tradeId='share-trade-'+hour;
    const inserted=await db.prepare("INSERT OR IGNORE INTO saliyah_sim_share_trades(id,company_id,seller_id,buyer_id,units,price_per_unit) VALUES(?,?,?,?,10,?)").bind(tradeId,company.id,holding.owner_id,buyer.id,Math.max(1,Math.round(company.capital/1000))).run();
@@ -506,6 +537,7 @@ export default {
   if(hour%4!==0||new Date(event.scheduledTime).getUTCMinutes()!==0)return;
   await runSaliyahGovernment(env.DB,env.AVIATION_DB);
   await generateXBotActivity(env.DB);
+  await runSimContactReplies(env.DB);
   await runXCreatorAutoPayouts(env.DB);
  },async fetch(req,env){const u=new URL(req.url);if(u.pathname==='/simulation.html'){if(!env.DB)return new Response('Unavailable',{status:503});const royal=await actor(req,env.DB);if(royal?.role!=='king')return new Response('هذه الصفحة مخصصة للملك فقط',{status:403,headers:{'content-type':'text/plain; charset=utf-8','cache-control':'no-store'}});const asset=await env.ASSETS.fetch(req);const headers=new Headers(asset.headers);headers.set('Cache-Control','no-store, max-age=0');return new Response(asset.body,{status:asset.status,statusText:asset.statusText,headers})}if(!u.pathname.startsWith('/api/'))return env.ASSETS.fetch(req);try{if(!env.DB)return json({error:'Database binding missing'},503);const db=env.DB;const method=req.method;const path=u.pathname;const user=(path==='/api/auth/login'||path==='/api/setup/king'||path==='/api/setup/status'||path==='/api/setup/recover-owner'||path==='/api/auth/citizen/register')?null:await actor(req,db);if(method!=='GET'&&method!=='HEAD'){const origin=req.headers.get('origin');const site=req.headers.get('sec-fetch-site');if((origin&&origin!==u.origin)||(site&&site!=='same-origin'&&site!=='none'))return json({error:'مصدر الطلب غير مسموح'},403);}
 
@@ -1101,7 +1133,8 @@ if(user && !['GET','HEAD','OPTIONS'].includes(method)){
  const blockedPrefixes=[
   '/api/absher/','/api/commerce/','/api/land/','/api/municipality/',
   '/api/telecom/','/api/banking/','/api/pos/','/api/installments/',
-  '/api/education/','/api/company/','/api/citizen/profile/phone'
+  '/api/education/','/api/company/','/api/citizen/profile/phone',
+  '/api/sim-market/','/api/sim-directory/payment','/api/sim-directory/contact'
  ];
  const blockedExact=new Set(['/api/requests','/api/registry/applications','/api/civil/family-cards']);
  const isBlocked=blockedPrefixes.some(prefix=>path.startsWith(prefix))||blockedExact.has(path);
@@ -1180,7 +1213,7 @@ const can=async permission=>user.role==='king'||!!(await db.prepare('SELECT 1 FR
 // Human and bot accounts share ONE D1 transaction boundary for simulated transfers,
 // stock purchases and property sales. Database triggers validate and apply mutations atomically.
 if(method==='GET'&&path==='/api/sim-market'){
- const companies=await db.prepare("SELECT c.id,c.name,c.activity,c.location,c.capital,c.status,MAX(1,CAST(ROUND(c.capital/1000.0) AS INTEGER)) unit_price,(SELECT h.owner_id FROM saliyah_sim_shares h JOIN saliyah_sim_bank_accounts a ON a.owner_type='citizen' AND a.owner_id=h.owner_id AND a.status='active' WHERE h.company_id=c.id AND h.units>0 ORDER BY h.units DESC LIMIT 1) counterparty_id,(SELECT MAX(h.units) FROM saliyah_sim_shares h JOIN saliyah_sim_bank_accounts a ON a.owner_type='citizen' AND a.owner_id=h.owner_id AND a.status='active' WHERE h.company_id=c.id AND h.units>0) available_units,(SELECT MAX(a.balance) FROM saliyah_sim_shares h JOIN saliyah_sim_bank_accounts a ON a.owner_type='citizen' AND a.owner_id=h.owner_id AND a.status='active' WHERE h.company_id=c.id) bot_bid_balance FROM saliyah_sim_companies c WHERE c.status='approved' ORDER BY c.name LIMIT 100").all();
+ const companies=await db.prepare("SELECT c.id,c.name,c.activity,c.location,c.capital,c.status,MAX(1,CAST(ROUND(c.capital/1000.0) AS INTEGER)) unit_price,(SELECT h.owner_id FROM saliyah_sim_shares h JOIN saliyah_sim_bank_accounts a ON a.owner_type='citizen' AND a.owner_id=h.owner_id AND a.status='active' WHERE h.company_id=c.id AND h.units>0 ORDER BY h.units DESC LIMIT 1) counterparty_id,(SELECT MAX(h.units) FROM saliyah_sim_shares h JOIN saliyah_sim_bank_accounts a ON a.owner_type='citizen' AND a.owner_id=h.owner_id AND a.status='active' WHERE h.company_id=c.id AND h.units>0) available_units,(SELECT a.balance FROM saliyah_sim_shares h JOIN saliyah_sim_bank_accounts a ON a.owner_type='citizen' AND a.owner_id=h.owner_id AND a.status='active' WHERE h.company_id=c.id AND h.units>0 ORDER BY h.units DESC LIMIT 1) bot_bid_balance FROM saliyah_sim_companies c WHERE c.status='approved' ORDER BY c.name LIMIT 100").all();
  const portfolio=user?(await db.prepare("SELECT h.company_id,c.name company_name,h.units,MAX(1,CAST(ROUND(c.capital/1000.0) AS INTEGER)) unit_price FROM saliyah_sim_shares h JOIN saliyah_sim_companies c ON c.id=h.company_id WHERE h.owner_id=? AND h.units>0 ORDER BY c.name").bind('human:'+user.id).all()).results:[];
  const accounts=user?(await db.prepare('SELECT id,bank,balance FROM bank_accounts WHERE user_id=? ORDER BY bank').bind(user.id).all()).results:[];
  const trades=user?(await db.prepare("SELECT t.id,t.company_id,c.name company_name,t.direction,t.units,t.unit_price,t.created_at,b.name counterparty_name FROM saliyah_market_trades t JOIN saliyah_sim_companies c ON c.id=t.company_id LEFT JOIN saliyah_sim_citizens b ON b.id=t.bot_owner_id WHERE t.user_id=? ORDER BY t.created_at DESC,t.id DESC LIMIT 35").bind(user.id).all()).results:[];
