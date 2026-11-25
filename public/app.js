@@ -416,21 +416,42 @@ async function readinessPage(){
 async function enforcementPage(){
  if(!me){location.hash='#/login';return}
  try{
+ let autoLift=0,autoLiftError='';
+ if(me.role==='king'){
+  try{const sync=await post('/enforcement/reconcile',{});autoLift=Number(sync.lifted||0)}catch(err){autoLiftError=err.message}
+ }
  const r=await api('/enforcement/cases');
  const names={1:'الداخلية',3:'العدل',7:'المالية'};
  const statuses={pending:'بانتظار الاعتماد',approved:'معتمدة',rejected:'مرفوضة'};
  const actions={debt:'مطالبة مالية',service_suspension:'طلب إيقاف خدمات',both:'مطالبة مالية وطلب إيقاف خدمات'};
- page('المديونيات وإيقاف الخدمات',`<div class="notice">تُسجل المعاملات لأي مستخدم بالاسم أو رقم الهوية أو الإقامة أو الجواز. بعد اعتماد الملك يُفعّل إيقاف بعض الخدمات الاختيارية ويمكن رفعه بقرار مسجل. لا يوجد خصم بنكي تلقائي.</div><form id="enforcementNew" class="card form"><h3>فتح معاملة جديدة</h3><label class="field">اسم المستخدم أو رقم الوثيقة<input class="input" name="subject_identifier" placeholder="أدخل اسم المستخدم أو رقم الهوية أو الإقامة أو الجواز" required minlength="3"></label><label class="field">نوع المعاملة<select class="input" name="action" id="enforcementAction"><option value="debt">مطالبة مالية</option><option value="service_suspension">طلب إيقاف خدمات</option><option value="both">مطالبة مالية + طلب إيقاف خدمات</option></select></label><label class="field" id="enforcementAmountWrap">المبلغ بالريال الصالي<input class="input" name="amount" type="number" min="0" max="100000000" value="0" required></label><label class="field">الوزارة المختصة<select class="input" name="ministry_id">${r.ministries.map(id=>`<option value="${id}">${names[id]}</option>`).join('')}</select></label><label class="field">السبب ورقم المعاملة<textarea class="input" name="reason" minlength="10" maxlength="500" required></textarea></label><button class="btn gold">رفع المعاملة للاعتماد</button><p role="status"></p></form><h2>المعاملات المسجلة</h2>${r.cases.map(x=>`<div class="card"><b>${safe(x.subject_username)}</b><p>${safe(x.residency_number||'')} · ${safe(actions[x.action]||'مطالبة مالية')}</p><p>المبلغ: ${safe(x.amount)} ريال صالي</p><p>${safe(x.reason)}</p><p>الحالة: ${safe(statuses[x.status]||x.status)} · الوزارة: ${safe(names[x.ministry_id]||'')}</p>${me.role==='king'&&x.status==='pending'?`<button class="btn decisionEnforcement" data-id="${safe(x.id)}" data-decision="approved">اعتماد</button> <button class="btn outline decisionEnforcement" data-id="${safe(x.id)}" data-decision="rejected">رفض</button>`:''}</div>`).join('')||'<p>لا توجد معاملات.</p>'}<h2>حالة إيقاف الخدمات</h2>${(r.suspensions||[]).map(h=>`<div class="card"><b>${safe(h.subject_username)}</b><p>${safe(h.reason)}</p><p>${h.status==='active'?'إيقاف خدمات نشط':'تم رفع الإيقاف'}</p>${me.role==='king'&&h.status==='active'?`<button class="btn liftEnforcement" data-id="${safe(h.id)}">رفع الإيقاف</button>`:''}</div>`).join('')||'<p>لا توجد إيقافات.</p>'}`);
+ page('المديونيات وإيقاف الخدمات',`<div class="notice">تُسجل المعاملات بالاسم أو رقم الوثيقة. تُحصّل المديونيات النشطة آليًا من الإيداعات، ويرتفع إيقاف الخدمات المرتبط بالدين عند اكتمال السداد. الإيقاف المستقل لا يُرفع إلا بقرار إداري.</div>${autoLift?`<p role="status" class="notice">رُفع \${autoLift} إيقاف خدمات تلقائيًا بعد التحقق من السداد.</p>`:''}${autoLiftError?`<p role="alert" class="notice">تعذر تحديث الإيقافات تلقائيًا: \${safe(autoLiftError)}</p>`:''}<form id="enforcementNew" class="card form"><h3>فتح معاملة جديدة</h3><label class="field">اسم المستخدم أو رقم الوثيقة<input class="input" name="subject_identifier" placeholder="أدخل اسم المستخدم أو رقم الهوية أو الإقامة أو الجواز" required minlength="3"></label><label class="field">نوع المعاملة<select class="input" name="action" id="enforcementAction"><option value="debt">مطالبة مالية</option><option value="service_suspension">طلب إيقاف خدمات</option><option value="both">مطالبة مالية + طلب إيقاف خدمات</option></select></label><label class="field" id="enforcementAmountWrap">المبلغ بالريال الصالي<input class="input" name="amount" type="number" min="0" max="100000000" value="0" required></label><label class="field">الوزارة المختصة<select class="input" name="ministry_id">${r.ministries.map(id=>`<option value="${id}">${names[id]}</option>`).join('')}</select></label><label class="field">السبب ورقم المعاملة<textarea class="input" name="reason" minlength="10" maxlength="500" required></textarea></label><button class="btn gold">رفع المعاملة للاعتماد</button><p role="status"></p></form><h2>المعاملات المسجلة</h2>${r.cases.map(x=>`<div class="card"><b>${safe(x.subject_username)}</b><p>${safe(x.residency_number||'')} · ${safe(actions[x.action]||'مطالبة مالية')}</p><p>المبلغ: ${safe(x.amount)} ريال صالي</p><p>${safe(x.reason)}</p><p>الحالة: ${safe(statuses[x.status]||x.status)} · الوزارة: ${safe(names[x.ministry_id]||'')}</p>${me.role==='king'&&x.status==='pending'?`<button class="btn decisionEnforcement" data-id="${safe(x.id)}" data-decision="approved">اعتماد</button> <button class="btn outline decisionEnforcement" data-id="${safe(x.id)}" data-decision="rejected">رفض</button>`:''}</div>`).join('')||'<p>لا توجد معاملات.</p>'}<h2>حالة إيقاف الخدمات</h2>${(r.suspensions||[]).map(h=>`<div class="card"><b>${safe(h.subject_username)}</b><p>${safe(h.reason)}</p><p>${h.status==='active'?'إيقاف خدمات نشط':'تم رفع الإيقاف'}</p>${h.case_action==='both'&&h.debt_status==='paid'?'<p>المديونية مسددة بالكامل.</p>':''}${me.role==='king'&&h.status==='active'?`<button type="button" class="btn liftEnforcement" data-id="${safe(h.id)}">رفع الإيقاف</button><form class="liftEnforcementForm form" data-id="${safe(h.id)}" hidden><label class="field">سبب رفع الإيقاف<textarea class="input" name="reason" minlength="5" maxlength="500" required>قرار ملكي برفع إيقاف الخدمات</textarea></label><div class="actions"><button type="submit" class="btn gold">تأكيد رفع الإيقاف</button><button type="button" class="btn outline cancelLiftEnforcement">إلغاء</button></div><p role="status"></p></form>`:''}</div>`).join('')||'<p>لا توجد إيقافات.</p>'}`);
  const form=document.querySelector('#enforcementNew'),action=form.querySelector('#enforcementAction'),amount=form.querySelector('[name=amount]');
  const sync=()=>{const suspended=action.value==='service_suspension';amount.disabled=suspended;amount.required=!suspended;if(suspended)amount.value='0';else amount.min='1'};
  action.onchange=sync;sync();
  form.onsubmit=async e=>{e.preventDefault();try{const b=Object.fromEntries(new FormData(form));b.amount=Number(b.amount||0);b.ministry_id=Number(b.ministry_id);await post('/enforcement/cases',b);await enforcementPage()}catch(err){form.querySelector('[role=status]').textContent=err.message}};
- document.querySelectorAll('.liftEnforcement').forEach(b=>b.onclick=async()=>{const reason=prompt('سبب رفع الإيقاف (5 أحرف على الأقل)');if(!reason)return;try{await post('/enforcement/lift',{id:b.dataset.id,reason});await enforcementPage()}catch(err){alert(err.message)}});
+ app.onsubmit=async e=>{
+  const form=e.target.closest?.('.liftEnforcementForm');if(!form)return;
+  e.preventDefault();const status=form.querySelector('[role=status]');
+  const reason=String(form.querySelector('[name=reason]').value||'').trim();
+  if(reason.length<5){status.textContent='اكتب سببًا لا يقل عن 5 أحرف.';return}
+  const buttons=form.querySelectorAll('button');buttons.forEach(b=>b.disabled=true);
+  status.textContent='جارٍ رفع إيقاف الخدمات...';
+  try{await post('/enforcement/lift',{id:form.dataset.id,reason});await enforcementPage()}
+  catch(err){status.textContent='تعذر رفع الإيقاف: '+err.message;buttons.forEach(b=>b.disabled=false)}
+ };
  // Delegated handler: works even when the case cards are re-rendered.
  const decisions=document.querySelectorAll('.decisionEnforcement');
  decisions.forEach(btn=>btn.setAttribute('type','button'));
  app.onclick=async e=>{
-  const btn=e.target.closest('.decisionEnforcement');
+  const target=e.target instanceof Element?e.target:e.target?.parentElement;
+  const lift=target?.closest('.liftEnforcement');
+  if(lift&&app.contains(lift)&&!lift.disabled){
+   e.preventDefault();const form=lift.closest('.card').querySelector('.liftEnforcementForm');
+   form.hidden=!form.hidden;if(!form.hidden)form.querySelector('[name=reason]').focus();return;
+  }
+  const cancel=target?.closest('.cancelLiftEnforcement');
+  if(cancel&&app.contains(cancel)){e.preventDefault();cancel.closest('.liftEnforcementForm').hidden=true;return}
+  const btn=target?.closest('.decisionEnforcement');
   if(!btn||!app.contains(btn)||btn.disabled)return;
   e.preventDefault();
   const id=btn.dataset.id,decision=btn.dataset.decision;
