@@ -24,7 +24,7 @@ assert.match(ui,/المبلغ بالريال الصالي/);
 assert.match(ui,/xAutoPay/);
 assert.match(worker,/runXCreatorAutoPayouts/);
 assert.match(worker,/async scheduled\(event,env,ctx\)\{[\s\S]*?hour%4!==0/);
-assert.match(worker,/await runSaliyahGovernment\(env\.DB,env\.AVIATION_DB\)/);
+assert.match(worker,/\(\)=>runSaliyahGovernment\(env\.DB,env\.AVIATION_DB\)/);
 assert.match(worker,/await runSimContactReplies\(env\.DB\)/);
 assert.doesNotMatch(worker,/simulation_paused_by_royal_order/);
 assert.doesNotMatch(worker,/if\(!halfHour && hour%4===0\)try\{/);
