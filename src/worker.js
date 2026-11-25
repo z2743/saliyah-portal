@@ -484,22 +484,30 @@ export default {
 
 
 if(path==='/api/national-alert'){
+ const missing=e=>String(e).includes('no such table: national_alert_history');
  if(method==='GET'){
-  let alert=null;
-  try{alert=await db.prepare('SELECT title,body,severity,expires_at,updated_at FROM national_alert WHERE id=1 AND expires_at>?').bind(Date.now()).first()}catch(e){if(!String(e).includes('no such table: national_alert'))throw e}
-  return json({alert});
+  const history=u.searchParams.get('history')==='1';
+  if(history&&user?.role!=='king')return json({error:'غير مخول'},403);
+  try{
+   const rows=await db.prepare(history?'SELECT * FROM national_alert_history ORDER BY updated_at DESC LIMIT 100':'SELECT id,title,body,severity,target,expires_at,updated_at FROM national_alert_history WHERE cancelled=0 AND expires_at>? ORDER BY updated_at DESC LIMIT 100').bind(...(history?[]:[Date.now()])).all();
+   return json({alerts:rows.results});
+  }catch(e){if(missing(e))return json({alerts:[]});throw e}
  }
  if(method==='POST'){
   if(user?.role!=='king')return json({error:'غير مخول'},403);
   const b=await input(req);
-  if(!b)return json({error:'بيانات غير صالحة'},400);
-  if(b.action!=='cancel'&&!(b.action==='publish'&&validText(b.title,1,160)&&validText(b.body,1,3000)&&['info','warning','urgent'].includes(b.severity)&&Number.isInteger(b.hours)&&b.hours>=1&&b.hours<=168))return json({error:'بيانات التنبيه غير صالحة'},400);
-  await db.prepare("CREATE TABLE IF NOT EXISTS national_alert (id INTEGER PRIMARY KEY CHECK(id=1), title TEXT NOT NULL, body TEXT NOT NULL, severity TEXT NOT NULL, expires_at INTEGER NOT NULL, updated_at INTEGER NOT NULL)").run();
-  const now=Date.now();
-  if(b.action==='cancel')await db.prepare('DELETE FROM national_alert WHERE id=1').run();
-  else await db.prepare('INSERT INTO national_alert(id,title,body,severity,expires_at,updated_at) VALUES(1,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET title=excluded.title,body=excluded.body,severity=excluded.severity,expires_at=excluded.expires_at,updated_at=excluded.updated_at').bind(b.title.trim(),b.body.trim(),b.severity,now+b.hours*3600000,now).run();
-  await audit(db,user.id,'national_alert_'+b.action,'national_alert','1',{severity:b.severity});
-  return json({ok:true});
+  if(!b||!['publish','cancel'].includes(b.action))return json({error:'بيانات غير صالحة'},400);
+  if(b.action==='publish'&&!(validText(b.title,1,160)&&validText(b.body,1,3000)&&['info','warning','urgent'].includes(b.severity)&&['all','sajjadah','mutajjar','aqar'].includes(b.target)&&Number.isInteger(b.hours)&&b.hours>=1&&b.hours<=168))return json({error:'بيانات التنبيه غير صالحة'},400);
+  if((b.id!=null&&!validText(b.id,1,80))||(b.action==='cancel'&&!b.id))return json({error:'معرف غير صالح'},400);
+  await db.prepare("CREATE TABLE IF NOT EXISTS national_alert_history (id TEXT PRIMARY KEY, title TEXT NOT NULL, body TEXT NOT NULL, severity TEXT NOT NULL, target TEXT NOT NULL, expires_at INTEGER NOT NULL, updated_at INTEGER NOT NULL, cancelled INTEGER NOT NULL DEFAULT 0)").run();
+  await db.prepare("CREATE INDEX IF NOT EXISTS national_alert_history_updated ON national_alert_history(updated_at DESC)").run();
+  const now=Date.now(),id=b.id||random();
+  if(b.action==='cancel'||b.id){
+   const result=b.action==='cancel'?await db.prepare('UPDATE national_alert_history SET cancelled=1,updated_at=? WHERE id=? AND cancelled=0 AND expires_at>?').bind(now,id,now).run():await db.prepare('UPDATE national_alert_history SET title=?,body=?,severity=?,target=?,expires_at=?,updated_at=? WHERE id=? AND cancelled=0 AND expires_at>?').bind(b.title.trim(),b.body.trim(),b.severity,b.target,now+b.hours*3600000,now,id,now).run();
+   if(!result.meta.changes)return json({error:'التنبيه غير نشط أو غير موجود'},409);
+  }else await db.prepare('INSERT INTO national_alert_history(id,title,body,severity,target,expires_at,updated_at) VALUES(?,?,?,?,?,?,?)').bind(id,b.title.trim(),b.body.trim(),b.severity,b.target,now+b.hours*3600000,now).run();
+  await audit(db,user.id,'national_alert_'+b.action,'national_alert',id,{severity:b.severity,target:b.target});
+  return json({ok:true,id});
  }
  return json({error:'طريقة غير مسموحة'},405);
 }
