@@ -23,7 +23,7 @@ const fictionalBotName=n=>fictionalFirstNames[(n*7+3)%fictionalFirstNames.length
 // Ministers are fictional bot personas with human-style names; the automated flag stays visible.
 const botMinisters=ministries.filter(m=>m.id!==0&&m.id!==1).map(m=>({...m,minister:fictionalBotName(m.id)+' بن '+fictionalFirstNames[(m.id*3+1)%fictionalFirstNames.length]+' 🤖',automated:true}));
 // Simulated replies are intentionally labeled as automation; they never impersonate real residents.
-async function runSimContactReplies(db){
+async function runSimContactReplies(db,aviationDb=null){
  const pending=(await db.prepare("SELECT id,target_type,target_id,message FROM saliyah_sim_public_contacts WHERE status='pending_bot' ORDER BY created_at LIMIT 16").all()).results;
  if(!pending.length)return 0;
  const targetQueries={
@@ -33,12 +33,16 @@ async function runSimContactReplies(db){
   jobs:'SELECT title name FROM saliyah_sim_jobs WHERE id=?',
   x:"SELECT display_name name FROM x_profiles WHERE id=? AND kind='bot'",
   lawyers:'SELECT name FROM saliyah_sim_legal_bots WHERE id=?',
-  properties:"SELECT kind||' في '||location name FROM saliyah_sim_properties WHERE id=?"
+  properties:"SELECT kind||' في '||location name FROM saliyah_sim_properties WHERE id=?",
+  tourists:"SELECT name FROM saliyah_sim_tourists WHERE id=?",
+  projects:"SELECT title name FROM saliyah_projects WHERE id=? AND proposed_by='bot'",
+  banking:"SELECT account_number name FROM saliyah_sim_bank_accounts WHERE id=?",
+  shares:"SELECT c.name FROM saliyah_sim_shares h JOIN saliyah_sim_companies c ON c.id=h.company_id WHERE h.id=?"
  };
  const replies=[];
  for(const message of pending){
   const sql=targetQueries[message.target_type];if(!sql)continue;
-  const target=await db.prepare(sql).bind(message.target_id).first();
+  const target=await (message.target_type==='tourists'?(aviationDb||db):db).prepare(sql).bind(message.target_id).first();
   const name=target?.name||'جهة افتراضية';
   const original=String(message.message||'');
   let guidance='اطّلع على ملفي وخدماتي في دليل سكان ومنشآت الصالية.';
@@ -536,7 +540,7 @@ export default {
   const hour=Math.floor(event.scheduledTime/3600000);
   if(hour%4!==0||new Date(event.scheduledTime).getUTCMinutes()!==0)return;
   // A failing subsystem must not prevent other fictional residents from replying.
-  const phases=[['government',()=>runSaliyahGovernment(env.DB,env.AVIATION_DB)],['x_bots',()=>generateXBotActivity(env.DB)],['citizen_contacts',()=>runSimContactReplies(env.DB)],['creator_rewards',()=>runXCreatorAutoPayouts(env.DB)]];
+  const phases=[['government',()=>runSaliyahGovernment(env.DB,env.AVIATION_DB)],['x_bots',()=>generateXBotActivity(env.DB)],['citizen_contacts',()=>runSimContactReplies(env.DB,env.AVIATION_DB)],['creator_rewards',()=>runXCreatorAutoPayouts(env.DB)]];
   for(const [label,run] of phases)try{await run()}catch(error){console.error('simulation_phase_failed',label,String(error).slice(0,220))}
  },async fetch(req,env){const u=new URL(req.url);if(u.pathname==='/simulation.html'){if(!env.DB)return new Response('Unavailable',{status:503});const royal=await actor(req,env.DB);if(royal?.role!=='king')return new Response('هذه الصفحة مخصصة للملك فقط',{status:403,headers:{'content-type':'text/plain; charset=utf-8','cache-control':'no-store'}});const asset=await env.ASSETS.fetch(req);const headers=new Headers(asset.headers);headers.set('Cache-Control','no-store, max-age=0');return new Response(asset.body,{status:asset.status,statusText:asset.statusText,headers})}if(!u.pathname.startsWith('/api/'))return env.ASSETS.fetch(req);try{if(!env.DB)return json({error:'Database binding missing'},503);const db=env.DB;const method=req.method;const path=u.pathname;const user=(path==='/api/auth/login'||path==='/api/setup/king'||path==='/api/setup/status'||path==='/api/setup/recover-owner'||path==='/api/auth/citizen/register')?null:await actor(req,db);if(method!=='GET'&&method!=='HEAD'){const origin=req.headers.get('origin');const site=req.headers.get('sec-fetch-site');if((origin&&origin!==u.origin)||(site&&site!=='same-origin'&&site!=='none'))return json({error:'مصدر الطلب غير مسموح'},403);}
 
@@ -1295,10 +1299,16 @@ if(method==='POST'&&path==='/api/sim-directory/contact'){
   jobs:"SELECT 1 FROM saliyah_sim_jobs WHERE id=?",
   x:"SELECT 1 FROM x_profiles WHERE id=? AND kind='bot'",
   lawyers:"SELECT 1 FROM saliyah_sim_legal_bots WHERE id=?",
-  properties:"SELECT 1 FROM saliyah_sim_properties WHERE id=? AND owner_id NOT LIKE 'human:%'"
+  properties:"SELECT 1 FROM saliyah_sim_properties WHERE id=? AND owner_id NOT LIKE 'human:%'",
+  tourists:"SELECT 1 FROM saliyah_sim_tourists WHERE id=?",
+  projects:"SELECT 1 FROM saliyah_projects WHERE id=? AND proposed_by='bot'",
+  banking:"SELECT 1 FROM saliyah_sim_bank_accounts WHERE id=?",
+  shares:"SELECT 1 FROM saliyah_sim_shares WHERE id=?"
  };
  if(!b||!Object.hasOwn(sources,b.type)||!validText(b.id,5,120)||!validText(b.message,5,1000))return json({error:'الجهة أو الرسالة غير صالحة'},400);
- if(!(await db.prepare(sources[b.type]).bind(b.id).first()))return json({error:'الكيان الافتراضي غير موجود'},404);
+ const source=b.type==='tourists'?env.AVIATION_DB:db;
+ if(!source)return json({error:'قاعدة السياح غير متصلة'},503);
+ if(!(await source.prepare(sources[b.type]).bind(b.id).first()))return json({error:'الكيان الافتراضي غير موجود'},404);
  const sent=await db.prepare("SELECT COUNT(*) n FROM saliyah_sim_public_contacts WHERE user_id=? AND created_at>=datetime('now','-1 day')").bind(user.id).first();
  if(Number(sent.n)>=20)return json({error:'الحد اليومي 20 رسالة لحماية D1 من الاستنزاف'},429);
  const id=random();
