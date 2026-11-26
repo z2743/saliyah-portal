@@ -741,6 +741,40 @@ async function completeAviationBooking(db,aviationDb,bookingId,userId){
   return {ok:true,booking:{...row,status:'confirmed',payment_status:'paid'}};
  }catch(e){console.error('aviation_booking_completion_failed',String(e).slice(0,180));return {error:'تم حفظ الدفع ولم يؤكد الحجز بعد؛ ستتم إعادة المحاولة تلقائياً'}};
 }
+const DAILY_AIR_ROUTES=[
+ ['RUH',85,450,'saliyah-airlines'],['JED',105,399,'flyadeal-saliyah'],['DOH',80,490,'saliyah-airlines'],['DXB',120,520,'flyadeal-saliyah'],
+ ['AUH',115,510,'saliyah-airlines'],['KWI',95,370,'flyadeal-saliyah'],['BAH',75,360,'flyadeal-saliyah'],['MCT',145,430,'saliyah-airlines'],
+ ['CAI',180,650,'flyadeal-saliyah'],['IST',270,1100,'saliyah-airlines'],['LHR',415,2550,'saliyah-airlines'],['NRT',600,3550,'saliyah-airlines'],
+ ['CDG',395,2400,'saliyah-airlines'],['FRA',375,2300,'saliyah-airlines']
+];
+async function ensureAviationRollingSchedule(aviationDb){
+ if(!aviationDb)return;
+ const key='last_daily_schedule_generated',today=new Date().toISOString().slice(0,10);
+ const last=await aviationDb.prepare("SELECT value FROM aviation_settings WHERE key=?").bind(key).first();
+ if(last?.value===today)return;
+ const seed=new Date(Date.now()+86400000),min=new Date('2026-11-28T00:00:00Z');
+ const start=new Date(Date.UTC(seed.getUTCFullYear(),seed.getUTCMonth(),seed.getUTCDate()));
+ if(start<min)start.setTime(min.getTime());
+ for(let day=0;day<7;day++){
+  const d=new Date(start.getTime()+day*86400000),date=d.toISOString().slice(0,10),stmts=[];
+  for(let i=0;i<DAILY_AIR_ROUTES.length;i++){
+   const [destination,minutes,price,airline]=DAILY_AIR_ROUTES[i],prefix=airline==='flyadeal-saliyah'?'FS':'SY';
+   const eco=prefix==='FS'?180:destination==='NRT'?310:280,business=prefix==='FS'?0:destination==='NRT'?50:30;
+   const outbound=new Date(d.getTime()+ (3*60+i*50)*60000),arrival=new Date(outbound.getTime()+minutes*60000);
+   const back=new Date(arrival.getTime()+120*60000),returnArrival=new Date(back.getTime()+minutes*60000);
+   const fmt=x=>x.toISOString().replace('T',' ').slice(0,19);
+   for(const [leg,origin,finish,depart,land,number] of [
+    ['out','SJD',destination,outbound,arrival,prefix+(101+i)],
+    ['return',destination,'SJD',back,returnArrival,prefix+(301+i)]
+   ]){
+    const id='airport-'+date+'-'+destination+'-'+leg;
+    stmts.push(aviationDb.prepare("INSERT OR IGNORE INTO aviation_flights(id,airline_id,number,origin_code,destination_code,departure_at,arrival_at,price_economy,seats_economy,seats_business,status) VALUES(?,?,?,?,?,?,?,?,?,?,'scheduled')").bind(id,airline,number,origin,finish,fmt(depart),fmt(land),price,eco,business));
+   }
+  }
+  if(stmts.length)await aviationDb.batch(stmts);
+ }
+ await aviationDb.prepare("INSERT INTO aviation_settings(key,value) VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value").bind(key,today).run();
+}
 async function reconcileAviationCancelledFlights(db,aviationDb){
  if(!aviationDb)return;
  const cancelled=(await aviationDb.prepare("SELECT b.id,b.user_id,b.status,b.payment_status FROM aviation_bookings b JOIN aviation_flights f ON f.id=b.flight_id WHERE f.status='cancelled' AND b.status IN ('pending','confirmed') ORDER BY b.created_at LIMIT 25").all()).results;
@@ -803,7 +837,7 @@ export default {
   const hour=Math.floor(event.scheduledTime/3600000);
   if(hour%4!==0||new Date(event.scheduledTime).getUTCMinutes()!==0){try{await runSimEmployeeServices(env.DB)}catch(error){console.error('sim_staff_cycle_failed',String(error).slice(0,220))}try{await reconcileEmployeeResignations(env.DB)}catch(error){console.error('resignation_cycle_failed',String(error).slice(0,220))}try{await reconcileAviationPayments(env.DB,env.AVIATION_DB)}catch(error){console.error('aviation_payment_cycle_failed',String(error).slice(0,220))}try{await reconcileAviationCancelledFlights(env.DB,env.AVIATION_DB)}catch(error){console.error('aviation_cancellation_cycle_failed',String(error).slice(0,220))}try{await runSharedCompanySalaryPayments(env.DB)}catch(error){console.error('shared_company_payroll_cycle_failed',String(error).slice(0,220))}return;}
   // A failing subsystem must not prevent other fictional residents from replying.
-  const phases=[['government',()=>runSaliyahGovernment(env.DB,env.AVIATION_DB)],['citizen_services',()=>runSimEmployeeServices(env.DB)],['x_bots',()=>generateXBotActivity(env.DB)],['citizen_contacts',()=>runSimContactReplies(env.DB,env.AVIATION_DB)],['creator_rewards',()=>runXCreatorAutoPayouts(env.DB)]];
+  const phases=[['government',()=>runSaliyahGovernment(env.DB,env.AVIATION_DB)],['citizen_services',()=>runSimEmployeeServices(env.DB)],['x_bots',()=>generateXBotActivity(env.DB)],['citizen_contacts',()=>runSimContactReplies(env.DB,env.AVIATION_DB)],['creator_rewards',()=>runXCreatorAutoPayouts(env.DB)],['aviation_schedule',()=>ensureAviationRollingSchedule(env.AVIATION_DB)]];
   for(const [label,run] of phases)try{await run()}catch(error){console.error('simulation_phase_failed',label,String(error).slice(0,220))}
  },async fetch(req,env){const u=new URL(req.url);if(u.pathname==='/simulation.html'){if(!env.DB)return new Response('Unavailable',{status:503});const royal=await actor(req,env.DB);if(royal?.role!=='king')return new Response('هذه الصفحة مخصصة للملك فقط',{status:403,headers:{'content-type':'text/plain; charset=utf-8','cache-control':'no-store'}});const asset=await env.ASSETS.fetch(req);const headers=new Headers(asset.headers);headers.set('Cache-Control','no-store, max-age=0');return new Response(asset.body,{status:asset.status,statusText:asset.statusText,headers})}if(!u.pathname.startsWith('/api/'))return env.ASSETS.fetch(req);try{if(!env.DB)return json({error:'Database binding missing'},503);const db=env.DB;const method=req.method;const path=u.pathname;const user=(path==='/api/auth/login'||path==='/api/setup/king'||path==='/api/setup/status'||path==='/api/setup/recover-owner'||path==='/api/auth/citizen/register')?null:await actor(req,db);if(method!=='GET'&&method!=='HEAD'){const origin=req.headers.get('origin');const site=req.headers.get('sec-fetch-site');if((origin&&origin!==u.origin)||(site&&site!=='same-origin'&&site!=='none'))return json({error:'مصدر الطلب غير مسموح'},403);}
 
