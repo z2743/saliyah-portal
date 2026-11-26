@@ -2080,10 +2080,11 @@ if(path.startsWith('/api/company/operations/')){
   const candidates=await db.prepare("SELECT b.id,b.name,b.occupation FROM saliyah_sim_citizens b WHERE NOT EXISTS(SELECT 1 FROM company_bot_hires h WHERE h.bot_id=b.id AND h.status='active') ORDER BY b.name LIMIT 120").all();
   const vacancies=await db.prepare("SELECT v.* FROM company_vacancies v JOIN commerce_companies c ON c.id=v.company_id WHERE c.owner_id=? ORDER BY v.created_at DESC LIMIT 120").bind(user.id).all();
   const applications=await db.prepare("SELECT a.*,v.company_id,v.title,u.username applicant FROM company_vacancy_applications a JOIN company_vacancies v ON v.id=a.vacancy_id JOIN commerce_companies c ON c.id=v.company_id JOIN users u ON u.id=a.applicant_id WHERE c.owner_id=? OR a.applicant_id=? ORDER BY a.created_at DESC LIMIT 160").bind(user.id,user.id).all();
+  const botApplications=await db.prepare("SELECT a.*,v.company_id,v.title,b.name applicant,b.occupation,'bot' applicant_type FROM company_bot_vacancy_applications a JOIN company_vacancies v ON v.id=a.vacancy_id JOIN commerce_companies c ON c.id=v.company_id JOIN saliyah_sim_citizens b ON b.id=a.bot_id WHERE c.owner_id=? ORDER BY a.created_at DESC LIMIT 160").bind(user.id).all();
   const orders=await db.prepare("SELECT o.id,o.catalog_id,o.buyer_id,o.quantity,o.unit_price,o.total,o.status,o.created_at,p.title,p.company_id,c.name company_name,u.username buyer FROM company_catalog_orders o JOIN company_catalog p ON p.id=o.catalog_id JOIN commerce_companies c ON c.id=p.company_id JOIN users u ON u.id=o.buyer_id WHERE c.owner_id=? OR o.buyer_id=? ORDER BY o.created_at DESC LIMIT 160").bind(user.id,user.id).all();
   const botPayments=await db.prepare("SELECT p.id,p.period_start,p.amount,h.company_id,b.name bot_name FROM company_bot_salary_payments p JOIN company_bot_hires h ON h.id=p.hire_id JOIN saliyah_sim_citizens b ON b.id=h.bot_id JOIN commerce_companies c ON c.id=h.company_id WHERE c.owner_id=? ORDER BY p.created_at DESC LIMIT 100").bind(user.id).all();
   const accounts=await db.prepare("SELECT id,bank,balance FROM bank_accounts WHERE user_id=? ORDER BY bank").bind(user.id).all();
-  return json({companies:companies.results,branches:branches.results,catalog:catalog.results,bots:bots.results,candidates:candidates.results,vacancies:vacancies.results,applications:applications.results,orders:orders.results,bot_payments:botPayments.results,accounts:accounts.results});
+  return json({companies:companies.results,branches:branches.results,catalog:catalog.results,bots:bots.results,candidates:candidates.results,vacancies:vacancies.results,applications:[...applications.results.map(x=>({...x,applicant_type:'human'})),...botApplications.results],orders:orders.results,bot_payments:botPayments.results,accounts:accounts.results});
  }
  if(method!=='POST')return json({error:'طريقة غير مسموحة'},405);
  const b=await input(req);if(!b)return json({error:'طلب غير صالح'},400);
@@ -2154,19 +2155,49 @@ if(path.startsWith('/api/company/operations/')){
  }
  if(suffix==='vacancy/apply'){
   if(!validText(b.id,10,80)||!validText(b.statement,10,2000))return json({error:'أكمل بيانات طلب التوظيف'},400);
-  const v=await db.prepare("SELECT v.id,c.owner_id FROM company_vacancies v JOIN commerce_companies c ON c.id=v.company_id WHERE v.id=? AND v.status='open' AND c.status='approved'").bind(b.id).first();
+  const v=await db.prepare("SELECT v.id,c.owner_id FROM company_vacancies v JOIN commerce_companies c ON c.id=v.company_id WHERE v.id=? AND v.status='open' AND c.status='approved' AND NOT EXISTS(SELECT 1 FROM company_bot_vacancy_applications a WHERE a.vacancy_id=v.id AND a.status='accepted') AND NOT EXISTS(SELECT 1 FROM company_vacancy_applications a WHERE a.vacancy_id=v.id AND a.status='accepted')").bind(b.id).first();
   if(!v||v.owner_id===user.id)return json({error:'لا يمكنك التقديم على هذه الوظيفة'},409);
   const id=random();try{await db.prepare("INSERT INTO company_vacancy_applications(id,vacancy_id,applicant_id,statement) VALUES(?,?,?,?)").bind(id,b.id,user.id,b.statement.trim()).run()}catch{return json({error:'سبق التقديم على هذه الوظيفة'},409)}
   await audit(db,user.id,'company_vacancy_apply','company_vacancy_application',id,{});return json({ok:true,id},201);
  }
  if(suffix==='vacancy/decide'){
-  if(!validText(b.id,10,80)||!['reviewing','accepted','rejected'].includes(b.status))return json({error:'القرار غير صالح'},400);
-  const app=await db.prepare("SELECT a.id,a.applicant_id,a.status,v.company_id,v.title,v.weekly_salary FROM company_vacancy_applications a JOIN company_vacancies v ON v.id=a.vacancy_id JOIN commerce_companies c ON c.id=v.company_id WHERE a.id=? AND c.owner_id=? AND c.status='approved'").bind(b.id,user.id).first();
+  if(!validText(b.id,10,300)||!['reviewing','accepted','rejected'].includes(b.status))return json({error:'القرار غير صالح'},400);
+  // Bot applications and human applications compete for the same published seat.
+  const bot=await db.prepare("SELECT a.id,a.bot_id,a.vacancy_id,a.status,v.company_id,v.title,v.weekly_salary FROM company_bot_vacancy_applications a JOIN company_vacancies v ON v.id=a.vacancy_id JOIN commerce_companies c ON c.id=v.company_id WHERE a.id=? AND c.owner_id=? AND c.status='approved'").bind(b.id,user.id).first();
+  if(bot){
+   if(!['submitted','reviewing'].includes(bot.status))return json({error:'صدر قرار نهائي على طلب البوت'},409);
+   if(b.status==='accepted'){
+    const hire='open-job-hire-'+bot.id;
+    try{
+     const result=await db.batch([
+      db.prepare("UPDATE company_bot_vacancy_applications SET status='accepted',reviewed_at=CURRENT_TIMESTAMP WHERE id=? AND status IN ('submitted','reviewing')").bind(bot.id),
+      db.prepare("INSERT INTO company_bot_hires(id,company_id,bot_id,position,weekly_salary) VALUES(?,?,?,?,?)").bind(hire,bot.company_id,bot.bot_id,bot.title,bot.weekly_salary),
+      db.prepare("UPDATE company_vacancies SET status='closed' WHERE id=? AND status='open'").bind(bot.vacancy_id),
+      db.prepare("UPDATE saliyah_sim_citizens SET occupation=? WHERE id=?").bind(bot.title,bot.bot_id)
+     ]);
+     if(!result[0].meta?.changes||!result[2].meta?.changes)throw Error('لم يعد الشاغر متاحًا');
+    }catch(err){console.error('open_vacancy_bot_hire_failed',String(err).slice(0,130));return json({error:'الشاغر مشغول أو لدى البوت وظيفة أخرى'},409)}
+    await audit(db,user.id,'company_open_job_bot_hire','company_bot_hires',hire,{vacancy_id:bot.vacancy_id,bot_id:bot.bot_id});
+    return json({ok:true,hire_id:hire,applicant_type:'bot'});
+   }
+   const r=await db.prepare("UPDATE company_bot_vacancy_applications SET status=?,reviewed_at=CURRENT_TIMESTAMP WHERE id=? AND status IN ('submitted','reviewing')").bind(b.status,bot.id).run();
+   if(!r.meta.changes)return json({error:'عولج الطلب مسبقًا'},409);
+   await audit(db,user.id,'company_bot_vacancy_review','company_bot_vacancy_applications',bot.id,{status:b.status});return json({ok:true});
+  }
+  const app=await db.prepare("SELECT a.id,a.vacancy_id,a.applicant_id,a.status,v.company_id,v.title,v.weekly_salary FROM company_vacancy_applications a JOIN company_vacancies v ON v.id=a.vacancy_id JOIN commerce_companies c ON c.id=v.company_id WHERE a.id=? AND c.owner_id=? AND c.status='approved'").bind(b.id,user.id).first();
   if(!app||!['submitted','reviewing'].includes(app.status))return json({error:'طلب التوظيف غير متاح'},409);
   if(b.status==='accepted'){
    const id=random();
-   try{await db.batch([db.prepare("INSERT INTO company_employees(id,company_id,employee_id,position,salary) VALUES(?,?,?,?,?)").bind(id,app.company_id,app.applicant_id,app.title,app.weekly_salary),db.prepare("UPDATE company_vacancy_applications SET status='accepted',reviewed_at=CURRENT_TIMESTAMP WHERE id=? AND status IN ('submitted','reviewing')").bind(app.id)])}catch{return json({error:'يوجد عقد آخر للمرشح أو تعذر إصدار عرض العمل'},409)}
-   await audit(db,user.id,'company_vacancy_offer','employment',id,{application_id:app.id});return json({ok:true,employment_id:id});
+   try{
+    const result=await db.batch([
+      db.prepare("UPDATE company_vacancy_applications SET status='accepted',reviewed_at=CURRENT_TIMESTAMP WHERE id=? AND status IN ('submitted','reviewing')").bind(app.id),
+      db.prepare("INSERT INTO company_employees(id,company_id,employee_id,position,salary) VALUES(?,?,?,?,?)").bind(id,app.company_id,app.applicant_id,app.title,app.weekly_salary),
+      db.prepare("UPDATE company_vacancies SET status='closed' WHERE id=? AND status='open'").bind(app.vacancy_id)
+    ]);
+    if(!result[0].meta?.changes||!result[2].meta?.changes)throw Error('لم يعد الشاغر متاحًا');
+   }catch(err){console.error('open_vacancy_human_offer_failed',String(err).slice(0,130));return json({error:'الشاغر مشغول أو يوجد عرض وظيفي آخر للمرشح'},409)}
+   await db.prepare("INSERT INTO notifications(id,user_id,subject,body) VALUES(?,?,?,?)").bind(random(),app.applicant_id,'عرض وظيفي جديد','وصل عرض توظيف من شركتك المختارة؛ يمكنك قبوله أو رفضه من صفحة العقود').run();
+   await audit(db,user.id,'company_vacancy_offer','employment',id,{application_id:app.id});return json({ok:true,employment_id:id,applicant_type:'human'});
   }
   const r=await db.prepare("UPDATE company_vacancy_applications SET status=?,reviewed_at=CURRENT_TIMESTAMP WHERE id=? AND status IN ('submitted','reviewing')").bind(b.status,b.id).run();
   if(!r.meta.changes)return json({error:'تمت معالجة الطلب'},409);
