@@ -675,11 +675,92 @@ const AIRPORT_STAFF_TARGETS=[
  ['planning','العمليات والتخطيط',115],
  ['cargo','الشحن والمناولة',160]
 ];
+const AIRPORT_ROUTE_SEEDS=[
+ ['RUH','الرياض'],['JED','جدة'],['DOH','الدوحة'],['DXB','دبي'],['AUH','أبوظبي'],['KWI','الكويت'],['BAH','البحرين'],['MCT','مسقط'],['CAI','القاهرة'],['IST','إسطنبول'],['LHR','لندن هيثرو'],['NRT','طوكيو ناريتا'],['CDG','باريس'],['FRA','فرانكفورت']
+];
+const AIRPORT_FLEET=[
+ ['saliyah-airlines','B777-300',10,'passenger'],['saliyah-airlines','B747-8',5,'passenger'],['saliyah-airlines','A330-300',15,'passenger'],['saliyah-airlines','A320',20,'passenger'],['saliyah-airlines','B777F',5,'cargo'],['saliyah-airlines','B747-8F',10,'cargo'],['flyadeal-saliyah','A320',25,'passenger']
+];
+async function airportStaffCoverage(db,aviationDb){
+ const staff=(await aviationDb.prepare("SELECT category,COUNT(*) n FROM aviation_staff WHERE status='active' AND qualified=1 GROUP BY category").all()).results;
+ const counts=new Map(staff.map(x=>[x.category,Number(x.n)||0]));
+ return AIRPORT_STAFF_TARGETS.map(([category,label,required])=>({category,label,required,active:counts.get(category)||0,ready:(counts.get(category)||0)>=required}));
+}
+async function runSharedCompanySalaryPayments(db){
+ const rows=(await db.prepare("SELECT c.id contract_id,c.created_at hired_at,c.employee_id,a.target_id job_id,j.salary,j.company_id,co.payroll_weeks,ca.id payer,ea.id payee FROM employment_contracts c JOIN shared_service_applications a ON a.id=c.application_id AND a.service='jobs' AND a.status='accepted' JOIN saliyah_sim_jobs j ON j.id=a.target_id JOIN saliyah_sim_companies co ON co.id=j.company_id AND co.status='approved' JOIN saliyah_sim_bank_accounts ca ON ca.owner_type='company' AND ca.owner_id=j.company_id AND ca.status='active' JOIN bank_accounts ea ON ea.id=(SELECT x.id FROM bank_accounts x WHERE x.user_id=c.employee_id ORDER BY CASE x.bank WHEN 'saliyah' THEN 0 ELSE 1 END LIMIT 1) WHERE c.active=1 AND j.salary>0 ORDER BY c.id LIMIT 25").all()).results;
+ const now=new Date(),monday=new Date(Date.UTC(now.getUTCFullYear(),now.getUTCMonth(),now.getUTCDate()));
+ monday.setUTCDate(monday.getUTCDate()-(monday.getUTCDay()+6)%7);
+ for(const item of rows){
+  const weeks=Number(item.payroll_weeks)===2?2:1;
+  const amount=Number(item.salary)*weeks;
+  if(!Number.isSafeInteger(amount)||amount<1)continue;
+  for(let lag=3;lag>=1;lag--){
+   const start=new Date(monday.getTime()-lag*7*86400000),period=start.toISOString().slice(0,10);
+   if(Date.parse(item.hired_at+'Z')>start.getTime())continue;
+   if(weeks===2&&Math.floor(start.getTime()/604800000)%2!==0)continue;
+   const leave=await db.prepare("SELECT 1 FROM employment_leave_requests WHERE contract_id=? AND kind='unpaid' AND status='approved' AND start_date<=date(?,'+'||?||' days') AND end_date>=? LIMIT 1").bind(item.contract_id,period,weeks*7-1,period).first();
+   if(leave)continue;
+   const id='salary-real-'+item.contract_id+'-'+period;
+   if(await db.prepare('SELECT 1 FROM shared_company_salary_payments WHERE id=?').bind(id).first())continue;
+   try{
+    await db.prepare("INSERT OR IGNORE INTO shared_company_salary_payments(id,contract_id,company_id,company_account_id,employee_account_id,period_start,amount) VALUES(?,?,?,?,?,?,?)").bind(id,item.contract_id,item.company_id,item.payer,item.payee,period,amount).run();
+   }catch(e){console.error('shared_company_salary_failed',String(e).slice(0,170));break}
+  }
+ }
+}
+async function reconcileEmployeeResignations(db){
+ const requests=(await db.prepare("SELECT r.id,r.contract_id,r.employee_id,r.status,r.created_at,r.defer_until FROM employment_resignations r JOIN employment_contracts c ON c.id=r.contract_id AND c.employee_id=r.employee_id WHERE r.status IN ('submitted','deferred') AND c.active=1 AND (r.status='submitted' AND r.created_at<=datetime('now','-30 days') OR r.status='deferred' AND r.defer_until<=datetime('now')) LIMIT 30").all()).results;
+ for(const r of requests){
+  await db.batch([
+   db.prepare("UPDATE employment_resignations SET status='accepted',resolved_at=CURRENT_TIMESTAMP,review_note=COALESCE(review_note,'انتهت مدة طلب الاستقالة') WHERE id=? AND status IN ('submitted','deferred')").bind(r.id),
+   db.prepare("UPDATE employment_contracts SET active=0 WHERE id=? AND employee_id=? AND active=1").bind(r.contract_id,r.employee_id)
+  ]);
+ }
+ return requests.length;
+}
+async function validateAviationPassenger(db,userId,travelDate){
+ const banned=await db.prepare("SELECT 1 FROM enforcement_cases_v2 WHERE subject_user_id=? AND status='approved' AND action IN ('service_suspension','both') LIMIT 1").bind(userId).first();
+ if(banned)return {error:'خدمات المسافر موقوفة، راجع الجهة المختصة قبل الحجز'};
+ const passport=await db.prepare("SELECT d.id,d.number,d.full_name,d.expires_at FROM documents d WHERE d.created_by=? AND d.type='passport' AND d.status='valid' AND d.expires_at>=? ORDER BY d.expires_at DESC LIMIT 1").bind(userId,travelDate).first();
+ if(!passport)return {error:'يلزم وجود جواز سفر صالح حتى تاريخ الرحلة'};
+ const circular=await db.prepare("SELECT 1 FROM circulars WHERE document_id=? AND status='active' AND (expires_at IS NULL OR expires_at>=date('now')) LIMIT 1").bind(passport.id).first();
+ if(circular)return {error:'يوجد تعميم نشط على الجواز، لا يمكن إتمام إجراءات السفر'};
+ return {passport};
+}
+async function completeAviationBooking(db,aviationDb,bookingId,userId){
+ const row=await aviationDb.prepare("SELECT b.id,b.reference,b.status,b.payment_status,b.price,b.flight_id,b.user_id,b.bank_account_id,f.airline_id,f.status flight_status FROM aviation_bookings b JOIN aviation_flights f ON f.id=b.flight_id WHERE b.id=? AND b.user_id=?").bind(bookingId,userId).first();
+ if(!row)return {error:'الحجز غير موجود'};
+ if(row.status==='confirmed'&&row.payment_status==='paid')return {ok:true,booking:row};
+ if(row.status!=='pending'||!['unpaid','debited'].includes(row.payment_status))return {error:'الحجز غير متاح للإتمام'};
+ if(row.flight_status!=='scheduled')return {error:'الرحلة لم تعد مجدولة'};
+ const payment=await db.prepare("SELECT booking_id,status FROM aviation_payment_ledger WHERE booking_id=? AND user_id=?").bind(row.id,userId).first();
+ if(!payment||payment.status==='refunded')return {error:'لم يتم خصم سعر التذكرة'};
+ try{
+  const done=await aviationDb.prepare("UPDATE aviation_bookings SET status='confirmed',payment_status='paid',paid_at=CURRENT_TIMESTAMP WHERE id=? AND user_id=? AND status='pending' AND payment_status IN ('unpaid','debited')").bind(row.id,userId).run();
+  if(done.meta.changes)await db.prepare("UPDATE aviation_payment_ledger SET status='confirmed',confirmed_at=CURRENT_TIMESTAMP WHERE booking_id=? AND status='debited'").bind(row.id).run();
+  return {ok:true,booking:{...row,status:'confirmed',payment_status:'paid'}};
+ }catch(e){console.error('aviation_booking_completion_failed',String(e).slice(0,180));return {error:'تم حفظ الدفع ولم يؤكد الحجز بعد؛ ستتم إعادة المحاولة تلقائياً'}};
+}
+async function reconcileAviationPayments(db,aviationDb){
+ if(!aviationDb)return;
+ const ledgers=(await db.prepare("SELECT booking_id,user_id FROM aviation_payment_ledger WHERE status='debited' ORDER BY created_at LIMIT 15").all()).results;
+ for(const ledger of ledgers)try{
+  const row=await aviationDb.prepare("SELECT id,status,flight_id FROM aviation_bookings WHERE id=?").bind(ledger.booking_id).first();
+  if(row?.status==='confirmed'){await db.prepare("UPDATE aviation_payment_ledger SET status='confirmed',confirmed_at=CURRENT_TIMESTAMP WHERE booking_id=? AND status='debited'").bind(ledger.booking_id).run();continue}
+  if(row?.status==='pending'){const done=await completeAviationBooking(db,aviationDb,ledger.booking_id,ledger.user_id);if(done.ok)continue}
+  if(!row||row.status==='cancelled'){await db.prepare("UPDATE aviation_payment_ledger SET status='refunded',refunded_at=CURRENT_TIMESTAMP WHERE booking_id=? AND status='debited'").bind(ledger.booking_id).run()}
+ }catch(e){console.error('aviation_payment_reconciliation_failed',String(e).slice(0,180))}
+ const pending=(await aviationDb.prepare("SELECT id FROM aviation_bookings WHERE status='pending' AND created_at<datetime('now','-20 minutes') ORDER BY created_at LIMIT 30").all()).results;
+ for(const b of pending)try{
+  const paid=await db.prepare("SELECT status FROM aviation_payment_ledger WHERE booking_id=?").bind(b.id).first();
+  if(!paid)await aviationDb.prepare("UPDATE aviation_bookings SET status='cancelled' WHERE id=? AND status='pending'").bind(b.id).run();
+ }catch(e){console.error('aviation_pending_release_failed',String(e).slice(0,180))}
+}
 async function airportReadiness(db,aviationDb){
  if(!aviationDb)return {ready:false,reason:'قاعدة الطيران غير متصلة',checks:[]};
  const [setting,staff,flights,bookings,boarding,completedFlights,activeAirlines]=await Promise.all([
   aviationDb.prepare("SELECT value FROM aviation_settings WHERE key='opening_authorized'").first(),
-  aviationDb.prepare("SELECT category,COUNT(*) n FROM aviation_staff WHERE status='active' GROUP BY category").all(),
+  aviationDb.prepare("SELECT category,COUNT(*) n FROM aviation_staff WHERE status='active' AND qualified=1 GROUP BY category").all(),
   aviationDb.prepare("SELECT COUNT(*) n FROM aviation_flights WHERE status='scheduled' AND departure_at>datetime('now')").first(),
   aviationDb.prepare("SELECT COUNT(*) n FROM aviation_bookings WHERE status='confirmed'").first(),
   aviationDb.prepare("SELECT COUNT(*) n FROM aviation_boarding_passes").first(),
@@ -693,7 +774,7 @@ async function airportReadiness(db,aviationDb){
  const kingAuthorized=setting?.value==='1';
  const airlineReady=Number(activeAirlines?.n||0)>=2;
  const flightReady=Number(flights?.n||0)>0;
- const bookingOperationsReady=false; // No unsafe booking/payment or document-check implementation yet.
+ const bookingOperationsReady=Number((await aviationDb.prepare("SELECT COUNT(*) n FROM aviation_settings WHERE key='operations_validated' AND value='1'").first())?.n||0)===1;
  return {ready:constructionComplete&&staffComplete&&kingAuthorized&&airlineReady&&flightReady&&bookingOperationsReady,booking_operations_ready:bookingOperationsReady,construction_complete:constructionComplete,construction_end:AIRPORT_CONSTRUCTION_END,staffing,staff_complete:staffComplete,royal_authorization:kingAuthorized,airlines_ready:airlineReady,scheduled_flights:Number(flights?.n||0),confirmed_bookings:Number(bookings?.n||0),boarding_passes:Number(boarding?.n||0),completed_flights:Number(completedFlights?.n||0),reason:constructionComplete?'التشغيل مشروط بالتوظيف والاعتماد والرحلات المجدولة':'البناء لم يكتمل بعد'};
 }
 async function seedAviationCatalog(db){
@@ -709,7 +790,7 @@ export default {
  async scheduled(event,env,ctx){
   // Royal authorization: resume conservatively, once every four hours.
   const hour=Math.floor(event.scheduledTime/3600000);
-  if(hour%4!==0||new Date(event.scheduledTime).getUTCMinutes()!==0){try{await runSimEmployeeServices(env.DB)}catch(error){console.error('sim_staff_cycle_failed',String(error).slice(0,220))}return;}
+  if(hour%4!==0||new Date(event.scheduledTime).getUTCMinutes()!==0){try{await runSimEmployeeServices(env.DB)}catch(error){console.error('sim_staff_cycle_failed',String(error).slice(0,220))}try{await reconcileEmployeeResignations(env.DB)}catch(error){console.error('resignation_cycle_failed',String(error).slice(0,220))}try{await reconcileAviationPayments(env.DB,env.AVIATION_DB)}catch(error){console.error('aviation_payment_cycle_failed',String(error).slice(0,220))}try{await runSharedCompanySalaryPayments(env.DB)}catch(error){console.error('shared_company_payroll_cycle_failed',String(error).slice(0,220))}return;}
   // A failing subsystem must not prevent other fictional residents from replying.
   const phases=[['government',()=>runSaliyahGovernment(env.DB,env.AVIATION_DB)],['citizen_services',()=>runSimEmployeeServices(env.DB)],['x_bots',()=>generateXBotActivity(env.DB)],['citizen_contacts',()=>runSimContactReplies(env.DB,env.AVIATION_DB)],['creator_rewards',()=>runXCreatorAutoPayouts(env.DB)]];
   for(const [label,run] of phases)try{await run()}catch(error){console.error('simulation_phase_failed',label,String(error).slice(0,220))}
@@ -952,6 +1033,62 @@ if(path.startsWith('/api/aviation/')){
  const aviationDb=env.AVIATION_DB;
  if(!aviationDb)return json({error:'قاعدة بيانات الطيران غير متصلة'},503);
  if(method==='GET'&&path==='/api/aviation/readiness')return json(await airportReadiness(db,aviationDb));
+ 
+ if(method==='GET'&&path==='/api/aviation/routes')return json({routes:AIRPORT_ROUTE_SEEDS.map(([code,name])=>({code,name})),fleet:AIRPORT_FLEET.map(([airline,aircraft,units,kind])=>({airline,aircraft,units,kind}))});
+ if(method==='GET'&&path==='/api/aviation/admin'){
+  if(!user||user.role!=='king')return json({error:'للملك فقط'},403);
+  const readiness=await airportReadiness(db,aviationDb);
+  const [staff,flights,airlines,settings]=await Promise.all([
+   aviationDb.prepare("SELECT id,name,category,status,employee_user_id,sim_citizen_id,qualified,training_score,license_number,appointed_at FROM aviation_staff ORDER BY created_at DESC LIMIT 100").all(),
+   aviationDb.prepare("SELECT id,number,airline_id,origin_code,destination_code,departure_at,arrival_at,status FROM aviation_flights ORDER BY departure_at LIMIT 100").all(),
+   aviationDb.prepare("SELECT id,name,code,kind,enabled FROM aviation_airlines").all(),
+   aviationDb.prepare("SELECT key,value FROM aviation_settings WHERE key IN ('opening_authorized','operations_validated')").all()
+  ]);
+  return json({readiness,staff:staff.results,flights:flights.results,airlines:airlines.results,settings:settings.results});
+ }
+ if(method==='POST'&&path==='/api/aviation/admin/staff'){
+  if(!user||user.role!=='king')return json({error:'للملك فقط'},403);
+  const b=await input(req);if(!b||!validText(b.name,3,120)||!AIRPORT_STAFF_TARGETS.some(x=>x[0]===b.category)||typeof b.employee_user_id!=='string'||!validText(b.employee_user_id,10,80))return json({error:'بيانات تعيين الموظف ناقصة'},400);
+  const employee=await db.prepare("SELECT id FROM users WHERE id=?").bind(b.employee_user_id).first();
+  if(!employee)return json({error:'الموظف غير مسجل في المملكة'},404);
+  const existing=await aviationDb.prepare("SELECT id FROM aviation_staff WHERE employee_user_id=? AND category=?").bind(employee.id,b.category).first();
+  if(existing)return json({error:'هذا الموظف معين في نفس التخصص'},409);
+  const id=random();
+  await aviationDb.prepare("INSERT INTO aviation_staff(id,name,category,employee_user_id,status,appointed_at) VALUES(?,?,?,?,'active',CURRENT_TIMESTAMP)").bind(id,b.name.trim(),b.category,employee.id).run();
+  await audit(db,user.id,'aviation_staff_appoint','aviation_staff',id,{category:b.category});
+  return json({ok:true,id},201);
+ }
+ if(method==='POST'&&path==='/api/aviation/admin/staff/qualify'){
+  if(!user||user.role!=='king')return json({error:'للملك فقط'},403);
+  const b=await input(req);
+  if(!b||!validText(b.id,10,80)||!Number.isInteger(b.score)||b.score<0||b.score>100||!validText(b.license_number,6,48))return json({error:'بيانات اختبار وتوثيق الموظف غير صالحة'},400);
+  const result=await aviationDb.prepare("UPDATE aviation_staff SET qualified=?,training_score=?,license_number=?,training_completed_at=CURRENT_TIMESTAMP WHERE id=?").bind(b.score>=70?1:0,b.score,b.license_number.trim(),b.id).run();
+  if(!result.meta.changes)return json({error:'الموظف غير موجود'},404);
+  await audit(db,user.id,'aviation_staff_qualified','aviation_staff',b.id,{qualified:b.score>=70,score:b.score});
+  return json({ok:true,qualified:b.score>=70});
+ }
+ if(method==='POST'&&path==='/api/aviation/admin/staff/status'){
+  if(!user||user.role!=='king')return json({error:'للملك فقط'},403);
+  const b=await input(req);if(!b||!validText(b.id,10,80)||!['active','inactive'].includes(b.status))return json({error:'طلب غير صالح'},400);
+  const r=await aviationDb.prepare("UPDATE aviation_staff SET status=? WHERE id=?").bind(b.status,b.id).run();
+  if(!r.meta.changes)return json({error:'الموظف غير موجود'},404);
+  await audit(db,user.id,'aviation_staff_status','aviation_staff',b.id,{status:b.status});return json({ok:true});
+ }
+ if(method==='POST'&&path==='/api/aviation/admin/flight'){
+  if(!user||user.role!=='king')return json({error:'للملك فقط'},403);
+  const b=await input(req);if(!b||!validText(b.number,3,12)||!['saliyah-airlines','flyadeal-saliyah'].includes(b.airline_id)||!['RUH','JED','DOH','DXB','AUH','KWI','BAH','MCT','CAI','IST','LHR','NRT','CDG','FRA'].includes(b.destination_code)||typeof b.departure_at!=='string'||typeof b.arrival_at!=='string'||!Number.isFinite(Date.parse(b.departure_at))||!Number.isFinite(Date.parse(b.arrival_at))||Date.parse(b.arrival_at)<=Date.parse(b.departure_at)||!Number.isSafeInteger(b.price_economy)||b.price_economy<1||!Number.isSafeInteger(b.seats_economy)||b.seats_economy<1||b.seats_economy>600||!Number.isSafeInteger(b.seats_business)||b.seats_business<0||b.seats_business>120)return json({error:'بيانات الرحلة غير مكتملة أو غير صحيحة'},400);
+  if(Date.parse(b.departure_at)<=Date.now())return json({error:'يجب أن تكون الرحلة مستقبلية'},400);
+  const id=random();
+  try{await aviationDb.prepare("INSERT INTO aviation_flights(id,airline_id,number,origin_code,destination_code,departure_at,arrival_at,price_economy,seats_economy,seats_business,status) VALUES(?,?,?,'SJD',?,?,?,?,?,?,'draft')").bind(id,b.airline_id,b.number.trim().toUpperCase(),b.destination_code,new Date(b.departure_at).toISOString().replace('T',' ').slice(0,19),new Date(b.arrival_at).toISOString().replace('T',' ').slice(0,19),b.price_economy,b.seats_economy,b.seats_business).run()}catch(e){return json({error:'تعذر إضافة الرحلة أو رقمها مكرر'},409)}
+  await audit(db,user.id,'aviation_flight_draft','aviation_flights',id,{});return json({id,status:'draft'},201);
+ }
+ if(method==='POST'&&path==='/api/aviation/admin/flight/status'){
+  if(!user||user.role!=='king')return json({error:'للملك فقط'},403);
+  const b=await input(req);if(!b||!validText(b.id,10,80)||!['draft','scheduled','cancelled'].includes(b.status))return json({error:'طلب غير صالح'},400);
+  const r=await aviationDb.prepare("UPDATE aviation_flights SET status=? WHERE id=? AND status IN ('draft','scheduled') AND departure_at>datetime('now')").bind(b.status,b.id).run();if(!r.meta.changes)return json({error:'الرحلة غير موجودة أو لا يمكن تعديلها'},409);
+  await audit(db,user.id,'aviation_flight_status','aviation_flights',b.id,{status:b.status});return json({ok:true});
+ }
+
  if(method==='GET'&&path==='/api/aviation/flights'){
   const rows=await aviationDb.prepare("SELECT f.id,f.number,f.origin_code,f.destination_code,f.departure_at,f.arrival_at,f.price_economy,f.seats_economy,f.seats_business,f.status,a.name airline,a.code airline_code FROM aviation_flights f JOIN aviation_airlines a ON a.id=f.airline_id WHERE f.status IN ('scheduled','boarding','departed','arrived') ORDER BY f.departure_at LIMIT 100").all();
   const readiness=await airportReadiness(db,aviationDb);
@@ -964,14 +1101,94 @@ if(path.startsWith('/api/aviation/')){
  }
  if(method==='GET'&&path==='/api/aviation/boarding-passes'){
   if(!user)return json({error:'سجل الدخول لعرض بطاقات الصعود'},401);
-  const rows=await aviationDb.prepare("SELECT p.id,p.booking_id,p.issued_at,p.seat,b.reference,f.number flight_number FROM aviation_boarding_passes p JOIN aviation_bookings b ON b.id=p.booking_id JOIN aviation_flights f ON f.id=b.flight_id WHERE b.user_id=? ORDER BY p.issued_at DESC LIMIT 50").bind(user.id).all();
+  const rows=await aviationDb.prepare("SELECT p.id,p.booking_id,p.issued_at,p.seat,b.reference,f.number flight_number,f.destination_code,f.departure_at FROM aviation_boarding_passes p JOIN aviation_bookings b ON b.id=p.booking_id JOIN aviation_flights f ON f.id=b.flight_id WHERE b.user_id=? ORDER BY p.issued_at DESC LIMIT 50").bind(user.id).all();
   return json({boarding_passes:rows.results});
  }
  if(method==='POST'&&path==='/api/aviation/booking'){
   if(!user)return json({error:'سجل الدخول أولاً'},401);
   const readiness=await airportReadiness(db,aviationDb);
-  if(!readiness.ready)return json({error:'المطار لم يحصل على تصريح التشغيل بعد؛ الحجز مغلق'},409);
-  return json({error:'الحجز غير متاح قبل تفعيل التحقق الكامل من الجوازات والمدفوعات والمقاعد'},503);
+  if(!readiness.ready)return json({error:'المطار غير جاهز للحجوزات، شروط التشغيل لم تكتمل'},409);
+  const b=await input(req);
+  if(!b||!validText(b.flight_id,10,80)||!['economy','business'].includes(b.seat_class)||!validText(b.bank_account_id,10,80)||!validText(b.idempotency_key,12,80))return json({error:'اختر الرحلة والدرجة والحساب البنكي وأعد المحاولة'},400);
+  const existing=await aviationDb.prepare("SELECT id,status,reference,payment_status FROM aviation_bookings WHERE user_id=? AND idempotency_key=?").bind(user.id,b.idempotency_key).first();
+  if(existing){
+   const completed=await completeAviationBooking(db,aviationDb,existing.id,user.id);
+   if(completed.ok)return json({ok:true,id:existing.id,reference:existing.reference,status:'confirmed',already_exists:true});
+   return json({error:completed.error,reference:existing.reference,booking_id:existing.id},409);
+  }
+  const f=await aviationDb.prepare("SELECT f.id,f.airline_id,f.departure_at,f.arrival_at,f.seats_economy,f.seats_business,f.price_economy,f.status,a.kind FROM aviation_flights f JOIN aviation_airlines a ON a.id=f.airline_id WHERE f.id=? AND f.status='scheduled'").bind(b.flight_id).first();
+  if(!f||Date.parse(f.departure_at.replace(' ','T')+'Z')<Date.now()+2*3600000)return json({error:'الرحلة غير متاحة للحجز'},404);
+  if(b.seat_class==='business'&&f.kind!=='full_service')return json({error:'هذه الشركة لا توفر درجة أعمال'},409);
+  const capacity=b.seat_class==='business'?Number(f.seats_business):Number(f.seats_economy);
+  if(capacity<1)return json({error:'لا توجد مقاعد بهذه الدرجة'},409);
+  const passport=await validateAviationPassenger(db,user.id,f.departure_at.slice(0,10));
+  if(passport.error)return json({error:passport.error},409);
+  const account=await db.prepare("SELECT id,balance FROM bank_accounts WHERE id=? AND user_id=?").bind(b.bank_account_id,user.id).first();
+  if(!account)return json({error:'الحساب البنكي لا يخص المستخدم'},403);
+  const price=b.seat_class==='business'?Math.round(Number(f.price_economy)*2.4):Number(f.price_economy);
+  if(!Number.isSafeInteger(price)||account.balance<price)return json({error:'رصيد الحساب غير كافٍ لسعر التذكرة'},409);
+  const id=random(),reference='SY'+id.replace(/-/g,'').slice(0,9).toUpperCase();
+  try{
+   const reserved=await aviationDb.prepare("INSERT INTO aviation_bookings(id,reference,flight_id,user_id,status,seat_class,price,idempotency_key,passport_number,passenger_name,bank_account_id) SELECT ?,?,?,?,'pending',?,?,?,?,?,? WHERE (SELECT COUNT(*) FROM aviation_bookings WHERE flight_id=? AND seat_class=? AND (status='confirmed' OR status='pending' AND created_at>=datetime('now','-20 minutes')))< ? AND EXISTS(SELECT 1 FROM aviation_flights WHERE id=? AND status='scheduled')").bind(id,reference,f.id,user.id,b.seat_class,price,b.idempotency_key,passport.passport.number,passport.passport.full_name,account.id,f.id,b.seat_class,capacity,f.id).run();
+   if(!reserved.meta.changes)return json({error:'المقاعد ممتلئة في هذه الدرجة'},409);
+  }catch(e){console.error('aviation_reservation_failed',String(e).slice(0,180));return json({error:'تعذر حجز المقعد أو تكرار طلب الحجز'},409)}
+  try{await db.prepare("INSERT INTO aviation_payment_ledger(booking_id,airline_id,user_id,bank_account_id,amount) VALUES(?,?,?,?,?)").bind(id,f.airline_id,user.id,account.id,price).run()}
+  catch(e){await aviationDb.prepare("UPDATE aviation_bookings SET status='cancelled' WHERE id=? AND status='pending'").bind(id).run();return json({error:'تعذر خصم سعر التذكرة، تحقق من الرصيد'},409)}
+  const completed=await completeAviationBooking(db,aviationDb,id,user.id);
+  if(!completed.ok)return json({error:completed.error,reference,booking_id:id},503);
+  await audit(db,user.id,'aviation_booking_paid','aviation_bookings',id,{flight_id:f.id,amount:price,account_id:account.id});
+  return json({ok:true,id,reference,status:'confirmed',amount:price},201);
+ }
+ 
+ if(method==='POST'&&path==='/api/aviation/check-in'){
+  if(!user)return json({error:'سجل الدخول أولاً'},401);
+  const b=await input(req);if(!b||!validText(b.booking_id,10,80))return json({error:'رقم الحجز مطلوب'},400);
+  const row=await aviationDb.prepare("SELECT b.id,b.flight_id,b.user_id,b.seat_class,b.passport_number,b.status,b.payment_status,f.departure_at,f.status flight_status,f.seats_economy,f.seats_business FROM aviation_bookings b JOIN aviation_flights f ON f.id=b.flight_id WHERE b.id=? AND b.user_id=?").bind(b.booking_id,user.id).first();
+  if(!row||row.status!=='confirmed'||row.payment_status!=='paid')return json({error:'الحجز غير مؤكد أو لم يُدفع'},409);
+  const payment=await db.prepare("SELECT 1 FROM aviation_payment_ledger WHERE booking_id=? AND user_id=? AND status='confirmed'").bind(row.id,user.id).first();
+  if(!payment)return json({error:'لا يوجد تأكيد بنكي للحجز'},409);
+  const depart=Date.parse(row.departure_at.replace(' ','T')+'Z');
+  if(!Number.isFinite(depart)||depart-Date.now()>24*3600000||depart-Date.now()<45*60000||!['scheduled','boarding'].includes(row.flight_status))return json({error:'تسجيل السفر متاح من 24 ساعة إلى 45 دقيقة قبل الإقلاع'},409);
+  const pass=await db.prepare("SELECT id,number,expires_at FROM documents WHERE created_by=? AND type='passport' AND number=? AND status='valid' AND expires_at>=?").bind(user.id,row.passport_number,row.departure_at.slice(0,10)).first();
+  if(!pass)return json({error:'جواز الحجز غير صالح للسفر'},409);
+  const circular=await db.prepare("SELECT 1 FROM circulars WHERE document_id=? AND status='active' AND (expires_at IS NULL OR expires_at>=date('now')) LIMIT 1").bind(pass.id).first();
+  if(circular)return json({error:'يمنع التعميم الحالي إكمال تسجيل السفر'},409);
+  const already=await aviationDb.prepare("SELECT id,seat,issued_at FROM aviation_boarding_passes WHERE booking_id=?").bind(row.id).first();
+  if(already)return json({ok:true,boarding_pass:already,already_issued:true});
+  const capacity=row.seat_class==='business'?row.seats_business:row.seats_economy;
+  const prefix=row.seat_class==='business'?'B-':'E-';
+  const current=await aviationDb.prepare("SELECT COUNT(*) n FROM aviation_boarding_passes WHERE flight_id=? AND seat LIKE ?").bind(row.flight_id,prefix+'%').first();
+  if(current.n>=capacity)return json({error:'المقاعد المخصصة لهذه الدرجة غير متاحة'},409);
+  const seat=prefix+String(current.n+1).padStart(3,'0'),id=random();
+  try{
+   const result=await aviationDb.batch([
+    aviationDb.prepare("INSERT INTO aviation_boarding_passes(id,booking_id,seat,flight_id) VALUES(?,?,?,?)").bind(id,row.id,seat,row.flight_id),
+    aviationDb.prepare("UPDATE aviation_bookings SET checked_in_at=CURRENT_TIMESTAMP WHERE id=? AND checked_in_at IS NULL").bind(row.id)
+   ]);
+   if(!result[0].meta.changes)return json({error:'تعذر إصدار بطاقة الصعود'},409);
+  }catch(e){console.error('aviation_checkin_failed',String(e).slice(0,160));return json({error:'تعارض في المقعد؛ أعد المحاولة'},409)}
+  await audit(db,user.id,'aviation_checkin','aviation_boarding_passes',id,{booking_id:row.id,seat});
+  return json({ok:true,boarding_pass:{id,seat}},201);
+ }
+ if(method==='POST'&&path==='/api/aviation/board'){
+  if(!user||!(await can('borders')))return json({error:'إتمام الصعود مخصص لموظفي الجوازات'},403);
+  const b=await input(req);if(!b||!validText(b.booking_id,10,80))return json({error:'رقم الحجز مطلوب'},400);
+  const row=await aviationDb.prepare("SELECT b.id,b.user_id,b.flight_id,b.passport_number,b.payment_status,b.status,p.id pass_id,f.departure_at,f.status flight_status FROM aviation_bookings b JOIN aviation_flights f ON f.id=b.flight_id JOIN aviation_boarding_passes p ON p.booking_id=b.id WHERE b.id=?").bind(b.booking_id).first();
+  if(!row||row.status!=='confirmed'||row.payment_status!=='paid')return json({error:'لا توجد بطاقة صعود صالحة'},409);
+  const departure=Date.parse(row.departure_at.replace(' ','T')+'Z');
+  if(!Number.isFinite(departure)||departure-Date.now()>3*3600000||Date.now()>departure+30*60000||!['scheduled','boarding'].includes(row.flight_status))return json({error:'بوابة الصعود خارج المدة المسموحة'},409);
+  const checked=await validateAviationPassenger(db,row.user_id,row.departure_at.slice(0,10));
+  if(checked.error||checked.passport.number!==row.passport_number)return json({error:checked.error||'الجواز لا يطابق الحجز'},409);
+  const done=await aviationDb.prepare("SELECT id,status,border_movement_id FROM aviation_boarding_events WHERE booking_id=?").bind(row.id).first();
+  if(done?.status==='completed')return json({ok:true,border_movement_id:done.border_movement_id,already_boarded:true});
+  const eventId=done?.id||random(),movementId='air-exit-'+row.id;
+  if(!done)await aviationDb.prepare("INSERT INTO aviation_boarding_events(id,booking_id,flight_id,passport_number) VALUES(?,?,?,?)").bind(eventId,row.id,row.flight_id,row.passport_number).run();
+  const border=await db.prepare("SELECT id,post_id,document_id FROM border_movements WHERE id=?").bind(movementId).first();
+  if(border&&(border.post_id!=='airport-sjd'||border.document_id!==checked.passport.id))return json({error:'يوجد تعارض في سجل حركة الجواز'},409);
+  if(!border)await db.prepare("INSERT INTO border_movements(id,post_id,document_id,direction,purpose,actor_id) VALUES(?,'airport-sjd',?,'exit',?,?)").bind(movementId,checked.passport.id,'رحلة '+row.flight_id,user.id).run();
+  await aviationDb.prepare("UPDATE aviation_boarding_events SET status='completed',boarded_at=CURRENT_TIMESTAMP,border_movement_id=? WHERE booking_id=? AND status='pending'").bind(movementId,row.id).run();
+  await audit(db,user.id,'aviation_boarding','aviation_boarding_events',eventId,{booking_id:row.id,movement_id:movementId});
+  return json({ok:true,border_movement_id:movementId},201);
  }
  if(method==='POST'&&path==='/api/aviation/authorize'){
   if(!user||user.role!=='king')return json({error:'قرار افتتاح المطار للملك فقط'},403);
@@ -979,7 +1196,7 @@ if(path.startsWith('/api/aviation/')){
   if(!b||typeof b.authorized!=='boolean')return json({error:'قرار غير صالح'},400);
   if(b.authorized){
    const current=await airportReadiness(db,aviationDb);
-   if(!current.construction_complete||!current.staff_complete||!current.airlines_ready||current.scheduled_flights<1||!current.booking_operations_ready)return json({error:'شروط التشغيل لم تكتمل، لا يمكن فتح المطار',readiness:current},409);
+   if(!current.airlines_ready)return json({error:'لا يمكن اعتماد مطار بدون شركات طيران مسجلة',readiness:current},409);
   }
   await aviationDb.prepare("UPDATE aviation_settings SET value=? WHERE key='opening_authorized'").bind(b.authorized?'1':'0').run();
   await audit(db,user.id,'airport_authorization','aviation_settings','opening_authorized',{authorized:b.authorized});
@@ -2302,15 +2519,85 @@ if(path.startsWith('/api/state-budgets/')){
 if(path.startsWith('/api/payroll/')){
  const admin=user.role==='king';
  if(method==='GET'&&path==='/api/payroll/mine'){
-  const c=await db.prepare('SELECT id,employer,title,salary,active FROM employment_contracts WHERE employee_id=? ORDER BY created_at DESC').bind(user.id).all();
-  const p=await db.prepare('SELECT p.id,p.period,p.amount,p.created_at,c.employer,c.title FROM payroll_payments p JOIN employment_contracts c ON c.id=p.contract_id WHERE c.employee_id=? ORDER BY p.period DESC LIMIT 100').bind(user.id).all();return json({contracts:c.results,payments:p.results});
+  const c=await db.prepare('SELECT id,employer,title,salary,active,created_at FROM employment_contracts WHERE employee_id=? ORDER BY created_at DESC').bind(user.id).all();
+  const p=await db.prepare('SELECT p.id,p.period,p.amount,p.created_at,c.employer,c.title FROM payroll_payments p JOIN employment_contracts c ON c.id=p.contract_id WHERE c.employee_id=? ORDER BY p.period DESC LIMIT 100').bind(user.id).all();const botPay=await db.prepare("SELECT p.id,p.period_start period,p.amount,p.created_at,c.employer,c.title FROM shared_company_salary_payments p JOIN employment_contracts c ON c.id=p.contract_id WHERE c.employee_id=? ORDER BY p.period_start DESC LIMIT 100").bind(user.id).all();return json({contracts:c.results,payments:[...p.results,...botPay.results]});
+ }
+ if(method==='GET'&&path==='/api/payroll/leave/mine'){
+  const rows=await db.prepare("SELECT l.id,l.contract_id,l.kind,l.start_date,l.end_date,l.reason,l.status,l.review_note,l.created_at,c.employer,c.title FROM employment_leave_requests l JOIN employment_contracts c ON c.id=l.contract_id WHERE l.employee_id=? ORDER BY l.created_at DESC LIMIT 100").bind(user.id).all();
+  return json({leaves:rows.results});
+ }
+ if(method==='POST'&&path==='/api/payroll/leave/request'){
+  const b=await input(req);
+  if(!b||!validText(b.contract_id,10,80)||!['annual','sick','unpaid','emergency'].includes(b.kind)||!/^\d{4}-\d{2}-\d{2}$/.test(b.start_date||'')||!/^\d{4}-\d{2}-\d{2}$/.test(b.end_date||'')||b.start_date>b.end_date||!validText(b.reason,5,500))return json({error:'بيانات الإجازة ناقصة أو التواريخ غير صحيحة'},400);
+  const days=Math.round((Date.parse(b.end_date+'T00:00:00Z')-Date.parse(b.start_date+'T00:00:00Z'))/86400000)+1;
+  if(!Number.isFinite(days)||days<1||days>90)return json({error:'مدة الإجازة غير صالحة (1 إلى 90 يوماً)'},400);
+  const c=await db.prepare('SELECT id FROM employment_contracts WHERE id=? AND employee_id=? AND active=1').bind(b.contract_id,user.id).first();
+  if(!c)return json({error:'العقد غير نشط أو لا يخص حسابك'},409);
+  const clash=await db.prepare("SELECT 1 FROM employment_leave_requests WHERE contract_id=? AND status IN ('submitted','approved') AND start_date<=? AND end_date>=? LIMIT 1").bind(c.id,b.end_date,b.start_date).first();
+  if(clash)return json({error:'يوجد طلب إجازة متداخل مع هذه المدة'},409);
+  const id=random();
+  await db.prepare("INSERT INTO employment_leave_requests(id,contract_id,employee_id,kind,start_date,end_date,reason) VALUES(?,?,?,?,?,?,?)").bind(id,c.id,user.id,b.kind,b.start_date,b.end_date,b.reason.trim()).run();
+  await audit(db,user.id,'employment_leave_request','employment_leave_requests',id,{kind:b.kind,start:b.start_date,end:b.end_date});
+  return json({id,status:'submitted'},201);
+ }
+ if(method==='GET'&&path==='/api/payroll/resignations/mine'){
+  const rows=await db.prepare("SELECT r.id,r.contract_id,r.status,r.reason,r.created_at,r.defer_until,r.review_note,r.resolved_at,c.employer,c.title FROM employment_resignations r JOIN employment_contracts c ON c.id=r.contract_id WHERE r.employee_id=? ORDER BY r.created_at DESC LIMIT 50").bind(user.id).all();
+  return json({resignations:rows.results});
+ }
+ if(method==='POST'&&path==='/api/payroll/resign'){
+  const b=await input(req);if(!b||!validText(b.contract_id,10,80)||!validText(b.reason,5,1000))return json({error:'حدد العقد واكتب سبب الاستقالة'},400);
+  const c=await db.prepare('SELECT id,active FROM employment_contracts WHERE id=? AND employee_id=?').bind(b.contract_id,user.id).first();
+  if(!c||!c.active)return json({error:'العقد غير نشط أو غير مملوك لك'},409);
+  const pending=await db.prepare("SELECT id FROM employment_resignations WHERE contract_id=? AND status IN ('submitted','deferred')").bind(c.id).first();
+  if(pending)return json({error:'يوجد طلب استقالة قائم بالفعل'},409);
+  const id=random();try{await db.prepare("INSERT INTO employment_resignations(id,contract_id,employee_id,reason) VALUES(?,?,?,?)").bind(id,c.id,user.id,b.reason.trim()).run()}catch{return json({error:'يوجد طلب استقالة قائم أو حدث تعارض'},409)}
+  await audit(db,user.id,'employment_resign','employment_resignations',id,{contract_id:c.id});
+  return json({id,status:'submitted',review_days:30},201);
+ }
+ if(method==='POST'&&path==='/api/payroll/resign/withdraw'){
+  const b=await input(req);if(!b||!validText(b.id,10,80))return json({error:'رقم الطلب غير صالح'},400);
+  const r=await db.prepare("UPDATE employment_resignations SET status='withdrawn',resolved_at=CURRENT_TIMESTAMP WHERE id=? AND employee_id=? AND status='submitted' AND created_at>=datetime('now','-7 days')").bind(b.id,user.id).run();
+  if(!r.meta.changes)return json({error:'انتهت مدة السحب أو صدر قرار بشأن الطلب'},409);
+  await audit(db,user.id,'employment_resignation_withdraw','employment_resignations',b.id,{});return json({ok:true});
  }
  if(!admin)return json({error:'إدارة الرواتب للملك فقط'},403);
+ if(method==='GET'&&path==='/api/payroll/leave/admin'){
+  const rows=await db.prepare("SELECT l.*,c.employer,c.title,u.username FROM employment_leave_requests l JOIN employment_contracts c ON c.id=l.contract_id JOIN users u ON u.id=l.employee_id ORDER BY l.created_at DESC LIMIT 150").all();
+  return json({leaves:rows.results});
+ }
+ if(method==='POST'&&path==='/api/payroll/leave/decision'){
+  const b=await input(req);if(!b||!validText(b.id,10,80)||!['approved','rejected'].includes(b.decision))return json({error:'قرار غير صالح'},400);
+  const l=await db.prepare("SELECT id,employee_id,status FROM employment_leave_requests WHERE id=? AND status='submitted'").bind(b.id).first();
+  if(!l)return json({error:'الطلب غير موجود أو تم البت فيه'},409);
+  const note=String(b.note||'').trim().slice(0,500);
+  if(b.decision==='rejected'&&!validText(note,5,500))return json({error:'سبب الرفض مطلوب'},400);
+  const result=await db.prepare("UPDATE employment_leave_requests SET status=?,review_note=?,reviewed_by=?,reviewed_at=CURRENT_TIMESTAMP WHERE id=? AND status='submitted'").bind(b.decision,note,user.id,b.id).run();
+  if(!result.meta.changes)return json({error:'تغيرت الحالة؛ حدث الصفحة'},409);
+  await db.prepare("INSERT INTO notifications(id,user_id,subject,body) VALUES(?,?,?,?)").bind(random(),l.employee_id,'قرار طلب إجازة','حالة طلب الإجازة: '+b.decision).run();
+  await audit(db,user.id,'employment_leave_decision','employment_leave_requests',l.id,{decision:b.decision});return json({ok:true});
+ }
+ if(method==='GET'&&path==='/api/payroll/resignations/admin'){
+  const rows=await db.prepare("SELECT r.*,c.employer,c.title,u.username FROM employment_resignations r JOIN employment_contracts c ON c.id=r.contract_id JOIN users u ON u.id=r.employee_id ORDER BY r.created_at DESC LIMIT 150").all();return json({resignations:rows.results});
+ }
+ if(method==='POST'&&path==='/api/payroll/resign/decision'){
+  const b=await input(req);if(!b||!validText(b.id,10,80)||!['accepted','deferred'].includes(b.decision))return json({error:'قرار غير صالح'},400);
+  const r=await db.prepare("SELECT id,status,contract_id,employee_id,created_at FROM employment_resignations WHERE id=? AND status='submitted'").bind(b.id).first();
+  if(!r)return json({error:'الطلب غير موجود أو صدر فيه قرار'},409);
+  const note=String(b.note||'').trim().slice(0,500);
+  if(b.decision==='deferred'&&!validText(note,5,500))return json({error:'سبب تأجيل الاستقالة مطلوب'},400);
+  if(b.decision==='deferred'){
+   const r2=await db.prepare("UPDATE employment_resignations SET status='deferred',review_note=?,defer_until=datetime('now','+60 days') WHERE id=? AND status='submitted'").bind(note,r.id).run();
+   if(!r2.meta.changes)return json({error:'تغيرت حالة الطلب'},409);
+  }else{
+   await db.batch([db.prepare("UPDATE employment_resignations SET status='accepted',review_note=?,resolved_at=CURRENT_TIMESTAMP WHERE id=? AND status='submitted'").bind(note,r.id),db.prepare("UPDATE employment_contracts SET active=0 WHERE id=? AND employee_id=?").bind(r.contract_id,r.employee_id)]);
+  }
+  await audit(db,user.id,'employment_resignation_decision','employment_resignations',r.id,{decision:b.decision});return json({ok:true});
+ }
  if(method==='GET'&&path==='/api/payroll/admin'){
   const budgets=await db.prepare('SELECT * FROM employer_budgets ORDER BY employer').all();
   const accepted=await db.prepare("SELECT a.id,a.applicant_id,u.username,v.employer,v.sector,v.title,v.salary FROM job_applications a JOIN vacancies v ON v.id=a.vacancy_id JOIN users u ON u.id=a.applicant_id LEFT JOIN employment_contracts c ON c.application_id=a.id WHERE a.status='accepted' AND c.id IS NULL ORDER BY a.created_at DESC LIMIT 100").all();
   const contracts=await db.prepare('SELECT c.*,u.username FROM employment_contracts c JOIN users u ON u.id=c.employee_id ORDER BY c.created_at DESC LIMIT 200').all();
-  const payments=await db.prepare('SELECT p.*,c.employer,c.title,u.username FROM payroll_payments p JOIN employment_contracts c ON c.id=p.contract_id JOIN users u ON u.id=c.employee_id ORDER BY p.created_at DESC LIMIT 100').all();return json({budgets:budgets.results,accepted:accepted.results,contracts:contracts.results,payments:payments.results});
+  const payments=await db.prepare('SELECT p.*,c.employer,c.title,u.username FROM payroll_payments p JOIN employment_contracts c ON c.id=p.contract_id JOIN users u ON u.id=c.employee_id ORDER BY p.created_at DESC LIMIT 100').all();const botPay=await db.prepare('SELECT p.id,p.period_start period,p.amount,p.created_at,c.employer,c.title,u.username FROM shared_company_salary_payments p JOIN employment_contracts c ON c.id=p.contract_id JOIN users u ON u.id=c.employee_id ORDER BY p.created_at DESC LIMIT 100').all();return json({budgets:budgets.results,accepted:accepted.results,contracts:contracts.results,payments:[...payments.results,...botPay.results]});
  }
  if(method==='POST'&&path==='/api/payroll/contract'){
   const b=await input(req);if(!b||!validText(b.application_id,10,80))return json({error:'رقم طلب غير صالح'},400);
@@ -2325,7 +2612,7 @@ if(path.startsWith('/api/payroll/')){
  }
  if(method==='POST'&&path==='/api/payroll/contract/status'){
   const b=await input(req);if(!b||!validText(b.id,10,80)||typeof b.active!=='boolean')return json({error:'طلب غير صالح'},400);
-  const r=await db.prepare('UPDATE employment_contracts SET active=? WHERE id=?').bind(b.active?1:0,b.id).run();if(!r.meta.changes)return json({error:'العقد غير موجود'},404);await audit(db,user.id,'employment_status','employment_contract',b.id,{active:b.active});return json({ok:true});
+  if(b.active){const finalResign=await db.prepare("SELECT 1 FROM employment_resignations WHERE contract_id=? AND status='accepted' LIMIT 1").bind(b.id).first();if(finalResign)return json({error:'عقد انتهى بالاستقالة؛ لا يمكن إعادة تفعيله'},409)}const r=await db.prepare('UPDATE employment_contracts SET active=? WHERE id=?').bind(b.active?1:0,b.id).run();if(!r.meta.changes)return json({error:'العقد غير موجود'},404);await audit(db,user.id,'employment_status','employment_contract',b.id,{active:b.active});return json({ok:true});
  }
  if(method==='POST'&&path==='/api/payroll/pay'){
   const b=await input(req);if(!b||!validText(b.contract_id,10,80)||typeof b.period!=='string'||!/^\d{4}-(0[1-9]|1[0-2])$/.test(b.period))return json({error:'رقم العقد أو الشهر غير صالح'},400);
