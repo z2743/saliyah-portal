@@ -582,7 +582,7 @@ async function runSimEmployeeServices(db){
   if(recipient)await db.prepare("INSERT INTO notifications(id,user_id,subject,body) VALUES(?,?,?,?)").bind(crypto.randomUUID(),recipient,subject,message).run();
  };
  if(civil){
-  const rows=(await db.prepare("SELECT id,created_by,full_name,parent_name,birth_date FROM civil_intake WHERE status='recorded' ORDER BY created_at LIMIT 15").all()).results;
+  const rows=(await db.prepare("SELECT id,created_by,full_name,parent_name,birth_date FROM civil_intake WHERE status='recorded' AND length(trim(COALESCE(parent_name,'')))>=2 AND length(COALESCE(birth_date,''))=10 ORDER BY created_at LIMIT 15").all()).results;
   for(const row of rows)try{
    // Incomplete identity submissions stay for human clarification, never blindly approved.
    if(!validText(row.full_name,2,160)||!validText(row.parent_name,2,160)||!/^\d{4}-\d{2}-\d{2}$/.test(row.birth_date||'')||!Number.isFinite(Date.parse(row.birth_date))||row.birth_date>today)continue;
@@ -592,7 +592,7 @@ async function runSimEmployeeServices(db){
   }catch(error){console.error('sim_staff_civil_failed',row.id,String(error).slice(0,180))}
  }
  if(service){
-  const rows=(await db.prepare("SELECT id,created_by,full_name,type,birth_date,expires_at,civil_intake_id FROM document_applications WHERE status='pending' ORDER BY created_at LIMIT 15").all()).results;
+  const rows=(await db.prepare("SELECT id,created_by,full_name,type,birth_date,expires_at,civil_intake_id FROM document_applications a WHERE a.status='pending' AND a.birth_date IS NOT NULL AND a.expires_at>=date('now') AND (a.type='residency' OR EXISTS(SELECT 1 FROM civil_intake c WHERE c.created_by=a.created_by AND c.status='approved' AND c.full_name=a.full_name AND (c.birth_date IS NULL OR c.birth_date=a.birth_date) AND (a.civil_intake_id IS NULL OR c.id=a.civil_intake_id))) ORDER BY a.created_at LIMIT 15").all()).results;
   for(const row of rows)try{
    if(!row.birth_date||!Number.isFinite(Date.parse(row.birth_date))||row.birth_date>today||row.expires_at<today)continue;
    if(row.type==='national_id'||row.type==='passport'){
@@ -628,6 +628,8 @@ async function runSimEmployeeServices(db){
   for(const job of jobs)try{
    const res=await db.prepare("UPDATE shared_service_applications SET status='accepted' WHERE id=? AND status='submitted' AND NOT EXISTS(SELECT 1 FROM shared_service_applications WHERE service='jobs' AND target_id=? AND status='accepted' AND id<>?) AND NOT EXISTS(SELECT 1 FROM saliyah_sim_job_applications WHERE job_id=? AND status='hired')").bind(job.id,job.job_id,job.id,job.job_id).run();
    if(res.meta.changes)await record(service,'jobs',job.id,'accepted','اعتماد وظيفة بشركة آلية',job.applicant_id,'نتيجة طلب العمل','قبلت الشركة الآلية طلب التوظيف. راجع الشركة لإكمال الإجراءات');
+   else{const rejected=await db.prepare("UPDATE shared_service_applications SET status='rejected' WHERE id=? AND status='submitted'").bind(job.id).run();if(rejected.meta.changes)await record(service,'jobs',job.id,'rejected','الوظيفة مشغولة',job.applicant_id,'نتيجة طلب العمل','تعذر قبول الطلب لأن الوظيفة مشغولة')}
+
   }catch(error){console.error('sim_staff_jobs_failed',job.id,String(error).slice(0,180))}
  }
 }
@@ -636,7 +638,7 @@ export default {
  async scheduled(event,env,ctx){
   // Royal authorization: resume conservatively, once every four hours.
   const hour=Math.floor(event.scheduledTime/3600000);
-  if(hour%4!==0||new Date(event.scheduledTime).getUTCMinutes()!==0)return;
+  if(hour%4!==0||new Date(event.scheduledTime).getUTCMinutes()!==0){try{await runSimEmployeeServices(env.DB)}catch(error){console.error('sim_staff_cycle_failed',String(error).slice(0,220))}return;}
   // A failing subsystem must not prevent other fictional residents from replying.
   const phases=[['government',()=>runSaliyahGovernment(env.DB,env.AVIATION_DB)],['citizen_services',()=>runSimEmployeeServices(env.DB)],['x_bots',()=>generateXBotActivity(env.DB)],['citizen_contacts',()=>runSimContactReplies(env.DB,env.AVIATION_DB)],['creator_rewards',()=>runXCreatorAutoPayouts(env.DB)]];
   for(const [label,run] of phases)try{await run()}catch(error){console.error('simulation_phase_failed',label,String(error).slice(0,220))}
