@@ -3383,8 +3383,26 @@ if(path.startsWith('/api/admin/jobs')){
    await audit(db,user.id,'bot_job_review','shared_service_applications',b.id,{status:b.status,contract_id:contract?.id||null});
    return json({ok:true,contract});
   }
-  const row=await db.prepare('SELECT applicant_id,status FROM job_applications WHERE id=?').bind(b.id).first();if(!row)return json({error:'الطلب غير موجود'},404);
-  await db.prepare('UPDATE job_applications SET status=?,updated_at=CURRENT_TIMESTAMP WHERE id=?').bind(b.status,b.id).run();
+  const row=await db.prepare("SELECT a.applicant_id,a.status,v.id vacancy_id,v.title,v.employer,v.salary,v.sector FROM job_applications a JOIN vacancies v ON v.id=a.vacancy_id WHERE a.id=?").bind(b.id).first();
+  if(!row)return json({error:'الطلب غير موجود'},404);
+  if(!['submitted','reviewing'].includes(row.status))return json({error:'صدر قرار نهائي على الطلب'},409);
+  if(b.status==='accepted'){
+   const contractId=random();
+   // Civil aviation and airport operator are fictional employers with a budget.
+   // Only one live employment contract per account and approved application.
+   const existing=await db.prepare("SELECT id FROM employment_contracts WHERE employee_id=? AND active=1 LIMIT 1").bind(row.applicant_id).first();
+   if(existing)return json({error:'المتقدم لديه عقد وظيفي قائم بالفعل؛ يلزم إنهاؤه قبل قبول وظيفة جديدة'},409);
+   await db.prepare("INSERT OR IGNORE INTO employer_budgets(employer,sector,balance) VALUES(?,?,0)").bind(row.employer,row.sector).run();
+   try{
+    await db.batch([
+     db.prepare("UPDATE job_applications SET status='accepted',updated_at=CURRENT_TIMESTAMP WHERE id=? AND status IN ('submitted','reviewing')").bind(b.id),
+     db.prepare("INSERT INTO employment_contracts(id,application_id,employee_id,employer,title,salary) VALUES(?,?,?,?,?,?)").bind(contractId,b.id,row.applicant_id,row.employer,row.title,row.salary)
+    ]);
+   }catch(e){console.error('airport_job_contract_failed',String(e).slice(0,180));return json({error:'تعذر إصدار عقد الوظيفة؛ تحقق من الطلب والموازنة'},409)}
+  }else{
+   const changed=await db.prepare("UPDATE job_applications SET status=?,updated_at=CURRENT_TIMESTAMP WHERE id=? AND status IN ('submitted','reviewing')").bind(b.status,b.id).run();
+   if(!changed.meta.changes)return json({error:'تمت مراجعة الطلب مسبقًا'},409);
+  }
   await db.prepare('INSERT INTO messages(id,sender_id,recipient_id,subject,body) VALUES(?,?,?,?,?)').bind(random(),user.id,row.applicant_id,'تحديث طلب التوظيف',`تغيرت حالة طلب التوظيف ${b.id} إلى ${b.status}`).run();
   await audit(db,user.id,'job_application_status','job_application',b.id,{from:row.status,to:b.status});return json({ok:true});
  }
