@@ -818,6 +818,32 @@ async function reconcileAviationPayments(db,aviationDb){
  }catch(e){console.error('aviation_pending_release_failed',String(e).slice(0,180))}
 }
 
+// Shared employment marketplace: residents apply to the same open vacancies as humans.
+// Bounded inserts, stable IDs, explicit status transitions and database guards.
+async function simulateOpenVacancyApplications(db){
+ const companyVacancies=(await db.prepare("SELECT v.id,v.company_id,v.title,v.description FROM company_vacancies v JOIN commerce_companies c ON c.id=v.company_id WHERE v.status='open' AND c.status='approved' AND (v.branch_id IS NULL OR EXISTS(SELECT 1 FROM commerce_branches br WHERE br.id=v.branch_id AND br.status='approved')) AND NOT EXISTS(SELECT 1 FROM company_vacancy_applications a WHERE a.vacancy_id=v.id AND a.status='accepted') AND NOT EXISTS(SELECT 1 FROM company_bot_vacancy_applications a WHERE a.vacancy_id=v.id AND a.status='accepted') ORDER BY v.created_at,v.id LIMIT 6").all()).results;
+ const publicVacancies=(await db.prepare("SELECT v.id,v.title,v.description FROM vacancies v WHERE v.status='open' AND NOT EXISTS(SELECT 1 FROM job_applications a WHERE a.vacancy_id=v.id AND a.status='accepted') AND NOT EXISTS(SELECT 1 FROM government_bot_vacancy_applications a WHERE a.vacancy_id=v.id AND a.status='accepted') ORDER BY v.created_at,v.id LIMIT 8").all()).results;
+ const vacancies=[...companyVacancies.map(v=>({...v,scope:'company'})),...publicVacancies.map(v=>({...v,scope:'government'}))];
+ let applied=0;
+ for(const job of vacancies){
+  // One person per listing per simulation period, after the listing has existed long enough.
+  // Bots without an active job may apply; they are not auto-appointed.
+  const query=job.scope==='company'
+   ?"SELECT b.id,b.name,b.occupation FROM saliyah_sim_citizens b WHERE b.occupation IN ('باحث عن عمل','موظف','طالب','فني صيانة','محاسب','موظف خدمة عملاء','موظف نقل','ممرض','معلم') AND NOT EXISTS(SELECT 1 FROM company_bot_hires h WHERE h.bot_id=b.id AND h.status='active') AND NOT EXISTS(SELECT 1 FROM government_bot_hires h WHERE h.bot_id=b.id AND h.status='active') AND NOT EXISTS(SELECT 1 FROM company_bot_vacancy_applications a WHERE a.bot_id=b.id AND a.vacancy_id=?) AND NOT EXISTS(SELECT 1 FROM government_bot_vacancy_applications a WHERE a.bot_id=b.id AND a.status IN ('submitted','reviewing','accepted')) ORDER BY b.id LIMIT 1 OFFSET ?"
+   :"SELECT b.id,b.name,b.occupation FROM saliyah_sim_citizens b WHERE b.occupation IN ('باحث عن عمل','موظف','طالب','فني صيانة','محاسب','موظف خدمة عملاء','موظف نقل','ممرض','معلم') AND NOT EXISTS(SELECT 1 FROM company_bot_hires h WHERE h.bot_id=b.id AND h.status='active') AND NOT EXISTS(SELECT 1 FROM government_bot_hires h WHERE h.bot_id=b.id AND h.status='active') AND NOT EXISTS(SELECT 1 FROM government_bot_vacancy_applications a WHERE a.bot_id=b.id AND a.vacancy_id=?) AND NOT EXISTS(SELECT 1 FROM company_bot_vacancy_applications a WHERE a.bot_id=b.id AND a.status IN ('submitted','reviewing','accepted')) ORDER BY b.id LIMIT 1 OFFSET ?";
+  const offset=Math.floor(Math.random()*25);
+  let bot=await db.prepare(query).bind(job.id,offset).first();
+  if(!bot)bot=await db.prepare(query).bind(job.id,0).first();
+  if(!bot)continue;
+  const id='open-apply-'+job.scope+'-'+job.id+'-'+bot.id;
+  const note='أتقدم لوظيفة '+job.title+'، لدي استعداد للتدريب والعمل والالتزام بالشروط المطلوبة. تخصصي الحالي: '+bot.occupation+'.';
+  const target=job.scope==='company'?'company_bot_vacancy_applications':'government_bot_vacancy_applications';
+  const r=await db.prepare("INSERT OR IGNORE INTO "+target+"(id,vacancy_id,bot_id,statement) SELECT ?,?,?,? WHERE NOT EXISTS(SELECT 1 FROM "+target+" WHERE vacancy_id=? AND bot_id=?)").bind(id,job.id,bot.id,note,job.id,bot.id).run();
+  applied+=Number(r.meta?.changes||0);
+ }
+ return applied;
+}
+
 async function runCompanyWeeklyPayroll(db){
  const now=new Date();
  if(now.getUTCDay()!==1)return 0;
@@ -878,6 +904,7 @@ const LIVE_AIRPORT_HTML_SOURCE="<!doctype html><html lang=\"ar\" dir=\"rtl\"><he
 export default {
  async scheduled(event,env,ctx){
   try{await runCompanyWeeklyPayroll(env.DB)}catch(error){console.error('corporate_payroll_cycle_failed',String(error).slice(0,220))}
+  try{await simulateOpenVacancyApplications(env.DB)}catch(error){console.error('open_vacancy_applications_failed',String(error).slice(0,220))}
   // Royal authorization: resume conservatively, once every four hours.
   const hour=Math.floor(event.scheduledTime/3600000);
   if(hour%4!==0||new Date(event.scheduledTime).getUTCMinutes()!==0){try{await runSimEmployeeServices(env.DB)}catch(error){console.error('sim_staff_cycle_failed',String(error).slice(0,220))}try{await reconcileEmployeeResignations(env.DB)}catch(error){console.error('resignation_cycle_failed',String(error).slice(0,220))}try{await reconcileCompanyResignations(env.DB)}catch(error){console.error('company_resignation_cycle_failed',String(error).slice(0,220))}try{await reconcileAviationPayments(env.DB,env.AVIATION_DB)}catch(error){console.error('aviation_payment_cycle_failed',String(error).slice(0,220))}try{await reconcileAviationCancelledFlights(env.DB,env.AVIATION_DB)}catch(error){console.error('aviation_cancellation_cycle_failed',String(error).slice(0,220))}try{await runSharedCompanySalaryPayments(env.DB)}catch(error){console.error('shared_company_payroll_cycle_failed',String(error).slice(0,220))}return;}
