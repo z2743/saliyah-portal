@@ -572,7 +572,33 @@ async function checkSimulationHealth(db){
 }
 // Automated fictional civil servants process REAL citizens' applications without becoming real user accounts.
 // Keep the database writes bounded and separately attributed to named bot employees.
+// One human applicant gets one contract per approved bot-company vacancy.
+async function ensureBotCompanyContract(db,id){
+ const a=await db.prepare("SELECT a.id,a.applicant_id,a.target_id,a.status,j.title,j.salary,c.name employer,c.status company_status FROM shared_service_applications a JOIN saliyah_sim_jobs j ON j.id=a.target_id JOIN saliyah_sim_companies c ON c.id=j.company_id WHERE a.id=? AND a.service='jobs'").bind(id).first();
+ if(!a||a.status!=='accepted'||a.company_status!=='approved')return {ok:false,error:'طلب غير معتمد'};
+ const prior=await db.prepare('SELECT id FROM employment_contracts WHERE application_id=?').bind(id).first();
+ if(prior)return {ok:true,id:prior.id,existing:true};
+ const other=await db.prepare("SELECT 1 FROM employment_contracts ec JOIN shared_service_applications sa ON sa.id=ec.application_id WHERE sa.service='jobs' AND sa.target_id=? AND ec.active=1 LIMIT 1").bind(a.target_id).first();
+ const bot=await db.prepare("SELECT 1 FROM saliyah_sim_job_applications WHERE job_id=? AND status='hired' LIMIT 1").bind(a.target_id).first();
+ if(other||bot)return {ok:false,error:'الوظيفة محجوزة'};
+ const contractId=crypto.randomUUID();
+ try{
+  const results=await db.batch([
+   db.prepare("INSERT OR IGNORE INTO employer_budgets(employer,sector) VALUES(?,'private')").bind(a.employer),
+   db.prepare("INSERT INTO employment_contracts(id,application_id,employee_id,employer,title,salary) SELECT ?,id,applicant_id,?,?,? FROM shared_service_applications WHERE id=? AND service='jobs' AND status='accepted' AND NOT EXISTS(SELECT 1 FROM employment_contracts WHERE application_id=?)").bind(contractId,a.employer,a.title,a.salary,id,id),
+   db.prepare("UPDATE saliyah_sim_jobs SET status='filled' WHERE id=? AND status='open'").bind(a.target_id)
+  ]);
+  if(results[1].meta.changes)return {ok:true,id:contractId};
+ }catch(e){console.error('bot_company_contract_failed',String(e).slice(0,200))}
+ const existing=await db.prepare('SELECT id FROM employment_contracts WHERE application_id=?').bind(id).first();
+ return existing?{ok:true,id:existing.id,existing:true}:{ok:false,error:'تعذر إصدار العقد'};
+}
+async function backfillBotCompanyContracts(db){
+ const pending=(await db.prepare("SELECT a.id FROM shared_service_applications a WHERE a.service='jobs' AND a.status='accepted' AND NOT EXISTS(SELECT 1 FROM employment_contracts c WHERE c.application_id=a.id) ORDER BY a.created_at LIMIT 12").all()).results;
+ for(const a of pending)try{await ensureBotCompanyContract(db,a.id)}catch(e){console.error('bot_company_contract_backfill',String(e).slice(0,180))}
+}
 async function runSimEmployeeServices(db){
+ await backfillBotCompanyContracts(db);
  const people=(await db.prepare("SELECT id,name FROM saliyah_sim_citizens WHERE id IN ('sim-employee-0001','sim-employee-0002','sim-employee-0010')").all()).results;
  const staff=Object.fromEntries(people.map(p=>[p.id,p]));
  const civil=staff['sim-employee-0001'], teacher=staff['sim-employee-0002'], service=staff['sim-employee-0010'];
@@ -627,7 +653,7 @@ async function runSimEmployeeServices(db){
   const jobs=await sharedRows(db,"SELECT a.id,a.applicant_id,j.id job_id FROM shared_service_applications a JOIN saliyah_sim_jobs j ON j.id=a.target_id JOIN saliyah_sim_companies c ON c.id=j.company_id WHERE a.service='jobs' AND a.status='submitted' AND j.status='open' AND c.status='approved' AND c.founder_id IN (SELECT id FROM saliyah_sim_citizens) ORDER BY a.created_at LIMIT 12");
   for(const job of jobs)try{
    const res=await db.prepare("UPDATE shared_service_applications SET status='accepted' WHERE id=? AND status='submitted' AND NOT EXISTS(SELECT 1 FROM shared_service_applications WHERE service='jobs' AND target_id=? AND status='accepted' AND id<>?) AND NOT EXISTS(SELECT 1 FROM saliyah_sim_job_applications WHERE job_id=? AND status='hired')").bind(job.id,job.job_id,job.id,job.job_id).run();
-   if(res.meta.changes)await record(service,'jobs',job.id,'accepted','اعتماد وظيفة بشركة آلية',job.applicant_id,'نتيجة طلب العمل','قبلت الشركة الآلية طلب التوظيف. راجع الشركة لإكمال الإجراءات');
+   if(res.meta.changes){const contract=await ensureBotCompanyContract(db,job.id);await record(service,'jobs',job.id,'accepted',contract.ok?'أصدر عقد العمل':'قبول بانتظار استكمال العقد',job.applicant_id,'نتيجة طلب العمل',contract.ok?'تم قبولك وإصدار عقد العمل لدى الشركة الآلية':'تم قبول طلب التوظيف، وعقد العمل قيد المعالجة')}
    else{const rejected=await db.prepare("UPDATE shared_service_applications SET status='rejected' WHERE id=? AND status='submitted'").bind(job.id).run();if(rejected.meta.changes)await record(service,'jobs',job.id,'rejected','الوظيفة مشغولة',job.applicant_id,'نتيجة طلب العمل','تعذر قبول الطلب لأن الوظيفة مشغولة')}
 
   }catch(error){console.error('sim_staff_jobs_failed',job.id,String(error).slice(0,180))}
@@ -2680,7 +2706,7 @@ if(method==='POST'&&path==='/api/admin/news'){if(!(await can('news')))return jso
 
 // Employment service: publicly browsable vacancies; applications require an account.
 if(method==='GET'&&path==='/api/jobs'){
- const r=await db.prepare("SELECT id,title,employer,sector,description,salary,status,created_at FROM vacancies WHERE status='open' ORDER BY created_at DESC LIMIT 100").all();const bots=await sharedRows(db,"SELECT j.id,j.title,c.name employer,'private' sector,c.description,j.salary,j.status,j.created_at FROM saliyah_sim_jobs j JOIN saliyah_sim_companies c ON c.id=j.company_id WHERE j.status='open' AND c.status='approved' AND NOT EXISTS(SELECT 1 FROM saliyah_sim_job_applications a WHERE a.job_id=j.id AND a.status='hired') ORDER BY j.created_at DESC LIMIT 100");return json({jobs:[...r.results,...bots]});
+ const r=await db.prepare("SELECT id,title,employer,sector,description,salary,status,created_at FROM vacancies WHERE status='open' ORDER BY created_at DESC LIMIT 100").all();const bots=await sharedRows(db,"SELECT j.id,j.title,c.name employer,'private' sector,c.description,j.salary,j.status,j.created_at FROM saliyah_sim_jobs j JOIN saliyah_sim_companies c ON c.id=j.company_id WHERE j.status='open' AND c.status='approved' AND NOT EXISTS(SELECT 1 FROM saliyah_sim_job_applications a WHERE a.job_id=j.id AND a.status='hired') AND NOT EXISTS(SELECT 1 FROM shared_service_applications a WHERE a.service='jobs' AND a.target_id=j.id AND a.status='accepted') ORDER BY j.created_at DESC LIMIT 100");return json({jobs:[...r.results,...bots]});
 }
 if(method==='GET'&&path==='/api/jobs/mine'){
  if(!user)return json({error:'سجل الدخول أولًا'},401);
@@ -2689,14 +2715,14 @@ if(method==='GET'&&path==='/api/jobs/mine'){
 if(method==='POST'&&path==='/api/jobs/apply'){
  if(!user)return json({error:'سجل الدخول أولًا'},401);
  const b=await input(req);if(!b||!validText(b.vacancy_id,10,80)||!validText(b.statement,10,2000))return json({error:'اختر وظيفة واكتب نبذة عن مؤهلاتك'},400);
- const v=await db.prepare("SELECT id FROM vacancies WHERE id=? AND status='open'").bind(b.vacancy_id).first();if(!v){const bot=(await sharedRows(db,"SELECT j.id FROM saliyah_sim_jobs j JOIN saliyah_sim_companies c ON c.id=j.company_id WHERE j.id=? AND j.status='open' AND c.status='approved' AND NOT EXISTS(SELECT 1 FROM saliyah_sim_job_applications a WHERE a.job_id=j.id AND a.status='hired')",[b.vacancy_id]))[0];if(!bot)return json({error:'الوظيفة غير متاحة'},404);const id=random();await db.prepare("CREATE TABLE IF NOT EXISTS shared_service_applications(id TEXT PRIMARY KEY,service TEXT NOT NULL CHECK(service IN ('jobs','education')),target_id TEXT NOT NULL,applicant_id TEXT NOT NULL REFERENCES users(id),statement TEXT,previous_grade REAL,status TEXT NOT NULL DEFAULT 'submitted',created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,UNIQUE(service,target_id,applicant_id));").run();const result=await db.prepare("INSERT OR IGNORE INTO shared_service_applications(id,service,target_id,applicant_id,statement) VALUES(?,'jobs',?,?,?)").bind(id,bot.id,user.id,b.statement.trim()).run();if(!result.meta.changes)return json({error:'سبق التقديم لهذه الوظيفة'},409);return json({id,status:'submitted'},201);}
+ const v=await db.prepare("SELECT id FROM vacancies WHERE id=? AND status='open'").bind(b.vacancy_id).first();if(!v){const bot=(await sharedRows(db,"SELECT j.id FROM saliyah_sim_jobs j JOIN saliyah_sim_companies c ON c.id=j.company_id WHERE j.id=? AND j.status='open' AND c.status='approved' AND NOT EXISTS(SELECT 1 FROM saliyah_sim_job_applications a WHERE a.job_id=j.id AND a.status='hired') AND NOT EXISTS(SELECT 1 FROM shared_service_applications a WHERE a.service='jobs' AND a.target_id=j.id AND a.status='accepted')",[b.vacancy_id]))[0];if(!bot)return json({error:'الوظيفة غير متاحة'},404);const id=random();await db.prepare("CREATE TABLE IF NOT EXISTS shared_service_applications(id TEXT PRIMARY KEY,service TEXT NOT NULL CHECK(service IN ('jobs','education')),target_id TEXT NOT NULL,applicant_id TEXT NOT NULL REFERENCES users(id),statement TEXT,previous_grade REAL,status TEXT NOT NULL DEFAULT 'submitted',created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,UNIQUE(service,target_id,applicant_id));").run();const result=await db.prepare("INSERT OR IGNORE INTO shared_service_applications(id,service,target_id,applicant_id,statement) VALUES(?,'jobs',?,?,?)").bind(id,bot.id,user.id,b.statement.trim()).run();if(!result.meta.changes)return json({error:'سبق التقديم لهذه الوظيفة'},409);return json({id,status:'submitted'},201);}
  const id=random();try{await db.prepare('INSERT INTO job_applications(id,vacancy_id,applicant_id,statement) VALUES(?,?,?,?)').bind(id,v.id,user.id,b.statement.trim()).run()}catch{return json({error:'سبق التقديم لهذه الوظيفة'},409)}
  await audit(db,user.id,'apply_job','job_application',id,{vacancy_id:v.id});return json({id,status:'submitted'},201);
 }
 if(path.startsWith('/api/admin/jobs')){
  if(!user||user.role!=='king')return json({error:'إدارة الوظائف للملك فقط في هذه المرحلة'},403);
  if(method==='GET'&&path==='/api/admin/jobs/applications'){
-  const r=await db.prepare('SELECT a.id,a.status,a.statement,a.created_at,v.title,v.employer,u.username applicant FROM job_applications a JOIN vacancies v ON v.id=a.vacancy_id JOIN users u ON u.id=a.applicant_id ORDER BY a.created_at DESC LIMIT 200').all();return json({applications:r.results});
+  const r=await db.prepare('SELECT a.id,a.status,a.statement,a.created_at,v.title,v.employer,u.username applicant FROM job_applications a JOIN vacancies v ON v.id=a.vacancy_id JOIN users u ON u.id=a.applicant_id ORDER BY a.created_at DESC LIMIT 200').all();const bot=await db.prepare("SELECT a.id,a.status,a.statement,a.created_at,j.title,c.name employer,u.username applicant,'bot_company' source FROM shared_service_applications a JOIN saliyah_sim_jobs j ON j.id=a.target_id JOIN saliyah_sim_companies c ON c.id=j.company_id JOIN users u ON u.id=a.applicant_id WHERE a.service='jobs' ORDER BY a.created_at DESC LIMIT 100").all();return json({applications:[...r.results,...bot.results]});
  }
  if(method==='POST'&&path==='/api/admin/jobs'){
   const b=await input(req);if(!b||!validText(b.title,3,140)||!validText(b.employer,2,140)||!validText(b.description,10,3000)||!['government','private','military'].includes(b.sector)||!Number.isSafeInteger(b.salary)||b.salary<0||b.salary>100000000)return json({error:'بيانات الوظيفة غير صالحة'},400);
@@ -2708,6 +2734,15 @@ if(path.startsWith('/api/admin/jobs')){
  }
  if(method==='POST'&&path==='/api/admin/jobs/application/status'){
   const b=await input(req);if(!b||!validText(b.id,10,80)||!['submitted','reviewing','accepted','rejected'].includes(b.status))return json({error:'طلب غير صالح'},400);
+  const bot=await db.prepare("SELECT applicant_id,status FROM shared_service_applications WHERE service='jobs' AND id=?").bind(b.id).first();
+  if(bot){
+   const updated=await db.prepare("UPDATE shared_service_applications SET status=? WHERE id=? AND service='jobs' AND status IN ('submitted','reviewing')").bind(b.status,b.id).run();
+   if(!updated.meta.changes)return json({error:'صدر قرار نهائي على الطلب'},409);
+   const contract=b.status==='accepted'?await ensureBotCompanyContract(db,b.id):null;
+   await db.prepare('INSERT INTO notifications(id,user_id,subject,body) VALUES(?,?,?,?)').bind(random(),bot.applicant_id,'تحديث طلب التوظيف','حالة الطلب: '+b.status).run();
+   await audit(db,user.id,'bot_job_review','shared_service_applications',b.id,{status:b.status,contract_id:contract?.id||null});
+   return json({ok:true,contract});
+  }
   const row=await db.prepare('SELECT applicant_id,status FROM job_applications WHERE id=?').bind(b.id).first();if(!row)return json({error:'الطلب غير موجود'},404);
   await db.prepare('UPDATE job_applications SET status=?,updated_at=CURRENT_TIMESTAMP WHERE id=?').bind(b.status,b.id).run();
   await db.prepare('INSERT INTO messages(id,sender_id,recipient_id,subject,body) VALUES(?,?,?,?,?)').bind(random(),user.id,row.applicant_id,'تحديث طلب التوظيف',`تغيرت حالة طلب التوظيف ${b.id} إلى ${b.status}`).run();
