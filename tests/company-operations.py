@@ -51,6 +51,7 @@ class CompanyOperationsTests(unittest.TestCase):
         """)
         self.db.executescript((ROOT / "migrations/0082_company_operations.sql").read_text())
         self.db.executescript((ROOT / "migrations/0083_company_weekly_payroll.sql").read_text())
+        self.db.executescript((ROOT / "migrations/0087_catalog_soft_delete.sql").read_text())
         self.db.executescript((ROOT / "migrations/9999_zzzzzzzzzzz_company_salary_weekly_ledger.sql").read_text())
         self.db.executemany("INSERT INTO users(id) VALUES(?)", [("owner",), ("buyer",), ("stranger",)])
         self.db.execute(
@@ -91,6 +92,29 @@ class CompanyOperationsTests(unittest.TestCase):
         self.db.execute("UPDATE commerce_branches SET status='approved' WHERE id='b1'")
         self.purchase("o2",1,100)
         self.assertEqual(self.scalar("SELECT stock FROM company_catalog WHERE id='p1'"),2)
+
+    def test_catalog_soft_delete_preserves_ledger_and_blocks_market_checkout(self):
+        self.purchase("before_delete", 1, 100)
+        self.db.execute("UPDATE company_catalog SET active=0,deleted_at=CURRENT_TIMESTAMP WHERE id='p1'")
+        self.assertEqual(
+            self.scalar("SELECT COUNT(*) FROM company_catalog WHERE id='p1' AND deleted_at IS NOT NULL AND active=0"), 1
+        )
+        self.assertEqual(self.scalar("SELECT COUNT(*) FROM company_catalog_orders WHERE catalog_id='p1'"), 1)
+        self.assertEqual(self.scalar("SELECT balance FROM company_treasuries WHERE company_id='c1'"), 600)
+        self.assertEqual(self.scalar("SELECT balance FROM bank_accounts WHERE id='a1'"), 900)
+        with self.assertRaises(sqlite3.IntegrityError):
+            self.purchase("after_delete", 1, 100)
+        with self.assertRaises(sqlite3.IntegrityError):
+            self.db.execute("UPDATE company_catalog SET active=1,deleted_at=NULL WHERE id='p1'")
+        self.assertEqual(self.scalar("SELECT COUNT(*) FROM company_catalog_orders"), 1)
+
+    def test_catalog_deletion_is_reversible_only_before_removal(self):
+        self.db.execute("UPDATE company_catalog SET active=0 WHERE id='p1'")
+        self.db.execute("UPDATE company_catalog SET active=1 WHERE id='p1'")
+        self.assertEqual(self.scalar("SELECT active FROM company_catalog WHERE id='p1'"),1)
+        self.db.execute("UPDATE company_catalog SET active=0,deleted_at=CURRENT_TIMESTAMP WHERE id='p1'")
+        with self.assertRaises(sqlite3.IntegrityError):
+            self.db.execute("UPDATE company_catalog SET active=1 WHERE id='p1'")
 
     def test_bot_payroll_is_real_transfer_and_idempotent(self):
         self.db.execute("INSERT INTO saliyah_sim_citizens(id,name) VALUES('bot1','Test Bot')")
