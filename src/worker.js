@@ -662,6 +662,48 @@ async function runSimEmployeeServices(db){
  }
 }
 
+
+const AIRPORT_CONSTRUCTION_END='2026-11-27T11:00:00Z';
+const AIRPORT_STAFF_TARGETS=[
+ ['atc','المراقبة الجوية',45],
+ ['airport_ops','تشغيل المطار والبوابات',180],
+ ['ground','الخدمات الأرضية والأمتعة',300],
+ ['security','الأمن والسلامة والطوارئ',160],
+ ['maintenance','الصيانة والهندسة',230],
+ ['pilots','الطيارون',420],
+ ['cabin','الضيافة الجوية',950],
+ ['planning','العمليات والتخطيط',115],
+ ['cargo','الشحن والمناولة',160]
+];
+async function airportReadiness(db,aviationDb){
+ if(!aviationDb)return {ready:false,reason:'قاعدة الطيران غير متصلة',checks:[]};
+ const [setting,staff,flights,bookings,boarding,completedFlights,activeAirlines]=await Promise.all([
+  aviationDb.prepare("SELECT value FROM aviation_settings WHERE key='opening_authorized'").first(),
+  aviationDb.prepare("SELECT category,COUNT(*) n FROM aviation_staff WHERE status='active' GROUP BY category").all(),
+  aviationDb.prepare("SELECT COUNT(*) n FROM aviation_flights WHERE status='scheduled' AND departure_at>datetime('now')").first(),
+  aviationDb.prepare("SELECT COUNT(*) n FROM aviation_bookings WHERE status='confirmed'").first(),
+  aviationDb.prepare("SELECT COUNT(*) n FROM aviation_boarding_passes").first(),
+  aviationDb.prepare("SELECT COUNT(*) n FROM aviation_flights WHERE status='completed'").first(),
+  aviationDb.prepare("SELECT COUNT(*) n FROM aviation_airlines WHERE enabled=1").first()
+ ]);
+ const counts=new Map(staff.results.map(x=>[x.category,Number(x.n)||0]));
+ const staffing=AIRPORT_STAFF_TARGETS.map(([category,label,required])=>({category,label,required,active:counts.get(category)||0,ready:(counts.get(category)||0)>=required}));
+ const constructionComplete=Date.now()>=Date.parse(AIRPORT_CONSTRUCTION_END);
+ const staffComplete=staffing.every(x=>x.ready);
+ const kingAuthorized=setting?.value==='1';
+ const airlineReady=Number(activeAirlines?.n||0)>=2;
+ const flightReady=Number(flights?.n||0)>0;
+ return {ready:constructionComplete&&staffComplete&&kingAuthorized&&airlineReady&&flightReady,construction_complete:constructionComplete,construction_end:AIRPORT_CONSTRUCTION_END,staffing,staff_complete:staffComplete,royal_authorization:kingAuthorized,airlines_ready:airlineReady,scheduled_flights:Number(flights?.n||0),confirmed_bookings:Number(bookings?.n||0),boarding_passes:Number(boarding?.n||0),completed_flights:Number(completedFlights?.n||0),reason:constructionComplete?'التشغيل مشروط بالتوظيف والاعتماد والرحلات المجدولة':'البناء لم يكتمل بعد'};
+}
+async function seedAviationCatalog(db){
+ // Only prepare the two fictional carriers; never open the airport or manufacture reservations.
+ await db.batch([
+  db.prepare("INSERT OR IGNORE INTO aviation_airlines(id,name,code,kind,enabled) VALUES('saliyah-airlines','الخطوط الصالية','SY','full_service',1)"),
+  db.prepare("INSERT OR IGNORE INTO aviation_airlines(id,name,code,kind,enabled) VALUES('flyadeal-saliyah','فلاي أديل الصالية','FS','low_cost',1)"),
+  db.prepare("INSERT OR IGNORE INTO aviation_settings(key,value) VALUES('opening_authorized','0')")
+ ]);
+}
+
 export default {
  async scheduled(event,env,ctx){
   // Royal authorization: resume conservatively, once every four hours.
@@ -904,6 +946,47 @@ if(method==='GET'&&path==='/api/aviation/tourists'){
  const rows=await env.AVIATION_DB.prepare("SELECT id,name,nationality,visa_status,arrival_port,visit_purpose,created_at FROM saliyah_sim_tourists ORDER BY created_at DESC LIMIT 100").all();
  return json({tourists:rows.results});
 }
+
+if(path.startsWith('/api/aviation/')){
+ const aviationDb=env.AVIATION_DB;
+ if(!aviationDb)return json({error:'قاعدة بيانات الطيران غير متصلة'},503);
+ if(method==='GET'&&path==='/api/aviation/readiness')return json(await airportReadiness(db,aviationDb));
+ if(method==='GET'&&path==='/api/aviation/flights'){
+  const rows=await aviationDb.prepare("SELECT f.id,f.number,f.origin_code,f.destination_code,f.departure_at,f.arrival_at,f.price_economy,f.seats_economy,f.seats_business,f.status,a.name airline,a.code airline_code FROM aviation_flights f JOIN aviation_airlines a ON a.id=f.airline_id WHERE f.status IN ('scheduled','boarding','departed','arrived') ORDER BY f.departure_at LIMIT 100").all();
+  const readiness=await airportReadiness(db,aviationDb);
+  return json({flights:rows.results,airport_open:readiness.ready,bookings_enabled:readiness.ready});
+ }
+ if(method==='GET'&&path==='/api/aviation/my-bookings'){
+  if(!user)return json({error:'سجل الدخول لعرض حجوزاتك'},401);
+  const rows=await aviationDb.prepare("SELECT b.id,b.reference,b.status,b.seat_class,b.price,b.created_at,f.number flight_number,f.departure_at,f.origin_code,f.destination_code FROM aviation_bookings b JOIN aviation_flights f ON f.id=b.flight_id WHERE b.user_id=? ORDER BY b.created_at DESC LIMIT 50").bind(user.id).all();
+  return json({bookings:rows.results});
+ }
+ if(method==='GET'&&path==='/api/aviation/boarding-passes'){
+  if(!user)return json({error:'سجل الدخول لعرض بطاقات الصعود'},401);
+  const rows=await aviationDb.prepare("SELECT p.id,p.booking_id,p.issued_at,p.seat,b.reference,f.number flight_number FROM aviation_boarding_passes p JOIN aviation_bookings b ON b.id=p.booking_id JOIN aviation_flights f ON f.id=b.flight_id WHERE b.user_id=? ORDER BY p.issued_at DESC LIMIT 50").bind(user.id).all();
+  return json({boarding_passes:rows.results});
+ }
+ if(method==='POST'&&path==='/api/aviation/booking'){
+  if(!user)return json({error:'سجل الدخول أولاً'},401);
+  const readiness=await airportReadiness(db,aviationDb);
+  if(!readiness.ready)return json({error:'المطار لم يحصل على تصريح التشغيل بعد؛ الحجز مغلق'},409);
+  return json({error:'الحجز غير متاح قبل تفعيل التحقق الكامل من الجوازات والمدفوعات والمقاعد'},503);
+ }
+ if(method==='POST'&&path==='/api/aviation/authorize'){
+  if(!user||user.role!=='king')return json({error:'قرار افتتاح المطار للملك فقط'},403);
+  const b=await input(req);
+  if(!b||typeof b.authorized!=='boolean')return json({error:'قرار غير صالح'},400);
+  if(b.authorized){
+   const current=await airportReadiness(db,aviationDb);
+   if(!current.construction_complete||!current.staff_complete||!current.airlines_ready||current.scheduled_flights<1)return json({error:'شروط التشغيل لم تكتمل، لا يمكن فتح المطار',readiness:current},409);
+  }
+  await aviationDb.prepare("UPDATE aviation_settings SET value=? WHERE key='opening_authorized'").bind(b.authorized?'1':'0').run();
+  await audit(db,user.id,'airport_authorization','aviation_settings','opening_authorized',{authorized:b.authorized});
+  return json({ok:true,authorized:b.authorized});
+ }
+ return json({error:'مسار الطيران غير موجود'},404);
+}
+
 if(path.startsWith('/api/x/')){
  const profileFor=async()=>user?db.prepare('SELECT * FROM x_profiles WHERE user_id=?').bind(user.id).first():null;
  const creatorStats=profileId=>computeXCreatorStats(db,profileId);
