@@ -692,6 +692,7 @@ async function companyOperationsPage(){
  +'<label>أو رابط صورة جديد<input class="input" type="url" name="image_url" placeholder="اتركه فارغًا للاحتفاظ بالصورة"></label>'
  +'<button class="btn gold" type="submit">حفظ التعديلات</button><p role="status"></p></form></details>'
  +'<button class="btn outline companyDeleteItem" type="button" data-id="'+safe(p.id)+'">حذف المنتج من السوق</button></article>').join('')||'<p class="empty">لا يوجد كتالوج بعد.</p>'}
+ ${me?.role==='king'?'<h2>رقابة المنتجات الملكية</h2><p class="muted">عرض منتجات جميع شركات المملكة. حذف منتج شركة أخرى يحتاج سببًا ويُسجل في سجل التدقيق.</p>'+(r.royal_catalog||[]).map(p=>'<article class="card"><h3>'+safe(p.title)+'</h3><p>'+safe(p.company_name)+' · '+safe(p.price)+' ريال صالي · '+safe(p.kind==='service'?'خدمة':'منتج')+'</p><button type="button" class="btn outline royalCatalogDelete" data-id="'+safe(p.id)+'">حذف من السوق بقرار ملكي</button></article>').join('')||'<p class="muted">لا توجد منتجات تحتاج رقابة.</p>':''}
  <h2>طاقم البوتات</h2>${r.bots.map(h=>'<div class="card"><b>🤖 '+safe(h.bot_name)+'</b> · '+safe(companyName(h.company_id))+'<p>'+safe(h.position)+' · '+safe(h.weekly_salary)+' ريال أسبوعيًا · '+safe(h.status)+'</p>'+(h.status==='active'?'<button class="btn outline companyFireBot" data-id="'+safe(h.id)+'">إنهاء تعيين البوت</button>':'')+'</div>').join('')||'<p class="empty">لا توجد تعيينات بوتات بعد.</p>'}
  <form class="card form" id="companyVacancyForm"><h2>إضافة وظيفة</h2><p class="muted">انشر الوظيفة بدون اختيار نوع المتقدم؛ الأشخاص الحقيقيون يقدمون عبر الموقع، والسكان الآليون يقدمون تلقائيًا عند تشغيل المحاكاة. الإدارة تختار من الطلبات على نفس الشاغر.</p><label>الشركة<select class="input" name="company_id" required><option value="">اختر شركة</option>${opts}</select></label>
  <label>المسمى<input class="input" name="title" minlength="3" required></label><label>الوصف والمتطلبات<textarea class="input" name="description" minlength="10" required></textarea></label><label>راتب أسبوعي<input class="input" name="weekly_salary" type="number" min="1" required></label><button class="btn gold" ${r.companies.length?'':'disabled'}>إضافة وظيفة</button><p role="status"></p></form>
@@ -716,6 +717,15 @@ async function companyOperationsPage(){
   const p=r.catalog.find(x=>x.id===el.dataset.id);if(!p)return;
   if(!await uiConfirm('تأكيد حذف «'+p.title+'» من واجهة الشركة والسوق؟ ستبقى الفواتير وسجلات المبيعات محفوظة.'))return;
   el.disabled=true;try{await post('/company/operations/item/delete',{id:p.id});await companyOperationsPage();uiNotice('تم حذف المنتج من القوائم مع حفظ سجل المبيعات')}catch(err){uiNotice(err.message);el.disabled=false}
+ });
+ document.querySelectorAll('.royalCatalogDelete').forEach(btn=>btn.onclick=async()=>{
+  const item=(r.royal_catalog||[]).find(p=>p.id===btn.dataset.id);if(!item)return;
+  const reason=await uiPrompt('اكتب سبب القرار الملكي لحذف المنتج «'+item.title+'»');
+  if(!reason||reason.trim().length<5){uiNotice('سبب الحذف مطلوب (5 أحرف على الأقل)');return}
+  if(!await uiConfirm('تأكيد قرار حذف هذا المنتج من السوق مع حفظ جميع سجلات البيع؟'))return;
+  btn.disabled=true;
+  try{await post('/company/operations/item/delete',{id:item.id,reason:reason.trim()});await companyOperationsPage();uiNotice('تم تنفيذ القرار الملكي وتسجيله')}
+  catch(error){btn.disabled=false;uiNotice(error.message)}
  });
  document.querySelector('#companyCatalogForm [name=company_id]').addEventListener('change',e=>{
   const branch=document.querySelector('#companyCatalogForm [name=branch_id]');branch.value='';
