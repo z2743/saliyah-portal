@@ -686,6 +686,27 @@ async function airportStaffCoverage(db,aviationDb){
  const counts=new Map(staff.map(x=>[x.category,Number(x.n)||0]));
  return AIRPORT_STAFF_TARGETS.map(([category,label,required])=>({category,label,required,active:counts.get(category)||0,ready:(counts.get(category)||0)>=required}));
 }
+async function runSharedCompanySalaryPayments(db){
+ const rows=(await db.prepare("SELECT c.id contract_id,c.created_at hired_at,c.employee_id,a.target_id job_id,j.salary,j.company_id,co.payroll_weeks,ca.id payer,ea.id payee FROM employment_contracts c JOIN shared_service_applications a ON a.id=c.application_id AND a.service='jobs' AND a.status='accepted' JOIN saliyah_sim_jobs j ON j.id=a.target_id JOIN saliyah_sim_companies co ON co.id=j.company_id AND co.status='approved' JOIN saliyah_sim_bank_accounts ca ON ca.owner_type='company' AND ca.owner_id=j.company_id AND ca.status='active' JOIN bank_accounts ea ON ea.user_id=c.employee_id AND ea.bank='saliyah' WHERE c.active=1 AND j.salary>0 ORDER BY c.id LIMIT 25").all()).results;
+ const now=new Date(),monday=new Date(Date.UTC(now.getUTCFullYear(),now.getUTCMonth(),now.getUTCDate()));
+ monday.setUTCDate(monday.getUTCDate()-(monday.getUTCDay()+6)%7);
+ for(const item of rows){
+  const weeks=Number(item.payroll_weeks)===2?2:1;
+  const amount=Number(item.salary)*weeks;
+  if(!Number.isSafeInteger(amount)||amount<1)continue;
+  for(let lag=3;lag>=1;lag--){
+   const start=new Date(monday.getTime()-lag*7*86400000),period=start.toISOString().slice(0,10);
+   if(Date.parse(item.hired_at+'Z')>start.getTime())continue;
+   if(weeks===2&&Math.floor(start.getTime()/604800000)%2!==0)continue;
+   const leave=await db.prepare("SELECT 1 FROM employment_leave_requests WHERE contract_id=? AND kind='unpaid' AND status='approved' AND start_date<=date(?,'+'||?||' days') AND end_date>=? LIMIT 1").bind(item.contract_id,period,weeks*7-1,period).first();
+   if(leave)continue;
+   const id='salary-real-'+item.contract_id+'-'+period;
+   try{
+    await db.prepare("INSERT OR IGNORE INTO shared_company_salary_payments(id,contract_id,company_id,company_account_id,employee_account_id,period_start,amount) VALUES(?,?,?,?,?,?,?)").bind(id,item.contract_id,item.company_id,item.payer,item.payee,period,amount).run();
+   }catch(e){console.error('shared_company_salary_failed',String(e).slice(0,170));break}
+  }
+ }
+}
 async function reconcileEmployeeResignations(db){
  const requests=(await db.prepare("SELECT r.id,r.contract_id,r.employee_id,r.status,r.created_at,r.defer_until FROM employment_resignations r JOIN employment_contracts c ON c.id=r.contract_id AND c.employee_id=r.employee_id WHERE r.status IN ('submitted','deferred') AND c.active=1 AND (r.status='submitted' AND r.created_at<=datetime('now','-30 days') OR r.status='deferred' AND r.defer_until<=datetime('now')) LIMIT 30").all()).results;
  for(const r of requests){
@@ -768,7 +789,7 @@ export default {
  async scheduled(event,env,ctx){
   // Royal authorization: resume conservatively, once every four hours.
   const hour=Math.floor(event.scheduledTime/3600000);
-  if(hour%4!==0||new Date(event.scheduledTime).getUTCMinutes()!==0){try{await runSimEmployeeServices(env.DB)}catch(error){console.error('sim_staff_cycle_failed',String(error).slice(0,220))}try{await reconcileEmployeeResignations(env.DB)}catch(error){console.error('resignation_cycle_failed',String(error).slice(0,220))}try{await reconcileAviationPayments(env.DB,env.AVIATION_DB)}catch(error){console.error('aviation_payment_cycle_failed',String(error).slice(0,220))}return;}
+  if(hour%4!==0||new Date(event.scheduledTime).getUTCMinutes()!==0){try{await runSimEmployeeServices(env.DB)}catch(error){console.error('sim_staff_cycle_failed',String(error).slice(0,220))}try{await reconcileEmployeeResignations(env.DB)}catch(error){console.error('resignation_cycle_failed',String(error).slice(0,220))}try{await reconcileAviationPayments(env.DB,env.AVIATION_DB)}catch(error){console.error('aviation_payment_cycle_failed',String(error).slice(0,220))}try{await runSharedCompanySalaryPayments(env.DB)}catch(error){console.error('shared_company_payroll_cycle_failed',String(error).slice(0,220))}return;}
   // A failing subsystem must not prevent other fictional residents from replying.
   const phases=[['government',()=>runSaliyahGovernment(env.DB,env.AVIATION_DB)],['citizen_services',()=>runSimEmployeeServices(env.DB)],['x_bots',()=>generateXBotActivity(env.DB)],['citizen_contacts',()=>runSimContactReplies(env.DB,env.AVIATION_DB)],['creator_rewards',()=>runXCreatorAutoPayouts(env.DB)]];
   for(const [label,run] of phases)try{await run()}catch(error){console.error('simulation_phase_failed',label,String(error).slice(0,220))}
@@ -2498,7 +2519,7 @@ if(path.startsWith('/api/payroll/')){
  const admin=user.role==='king';
  if(method==='GET'&&path==='/api/payroll/mine'){
   const c=await db.prepare('SELECT id,employer,title,salary,active,created_at FROM employment_contracts WHERE employee_id=? ORDER BY created_at DESC').bind(user.id).all();
-  const p=await db.prepare('SELECT p.id,p.period,p.amount,p.created_at,c.employer,c.title FROM payroll_payments p JOIN employment_contracts c ON c.id=p.contract_id WHERE c.employee_id=? ORDER BY p.period DESC LIMIT 100').bind(user.id).all();return json({contracts:c.results,payments:p.results});
+  const p=await db.prepare('SELECT p.id,p.period,p.amount,p.created_at,c.employer,c.title FROM payroll_payments p JOIN employment_contracts c ON c.id=p.contract_id WHERE c.employee_id=? ORDER BY p.period DESC LIMIT 100').bind(user.id).all();const botPay=await db.prepare("SELECT p.id,p.period_start period,p.amount,p.created_at,c.employer,c.title FROM shared_company_salary_payments p JOIN employment_contracts c ON c.id=p.contract_id WHERE c.employee_id=? ORDER BY p.period_start DESC LIMIT 100").bind(user.id).all();return json({contracts:c.results,payments:[...p.results,...botPay.results]});
  }
  if(method==='GET'&&path==='/api/payroll/leave/mine'){
   const rows=await db.prepare("SELECT l.id,l.contract_id,l.kind,l.start_date,l.end_date,l.reason,l.status,l.review_note,l.created_at,c.employer,c.title FROM employment_leave_requests l JOIN employment_contracts c ON c.id=l.contract_id WHERE l.employee_id=? ORDER BY l.created_at DESC LIMIT 100").bind(user.id).all();
@@ -2575,7 +2596,7 @@ if(path.startsWith('/api/payroll/')){
   const budgets=await db.prepare('SELECT * FROM employer_budgets ORDER BY employer').all();
   const accepted=await db.prepare("SELECT a.id,a.applicant_id,u.username,v.employer,v.sector,v.title,v.salary FROM job_applications a JOIN vacancies v ON v.id=a.vacancy_id JOIN users u ON u.id=a.applicant_id LEFT JOIN employment_contracts c ON c.application_id=a.id WHERE a.status='accepted' AND c.id IS NULL ORDER BY a.created_at DESC LIMIT 100").all();
   const contracts=await db.prepare('SELECT c.*,u.username FROM employment_contracts c JOIN users u ON u.id=c.employee_id ORDER BY c.created_at DESC LIMIT 200').all();
-  const payments=await db.prepare('SELECT p.*,c.employer,c.title,u.username FROM payroll_payments p JOIN employment_contracts c ON c.id=p.contract_id JOIN users u ON u.id=c.employee_id ORDER BY p.created_at DESC LIMIT 100').all();return json({budgets:budgets.results,accepted:accepted.results,contracts:contracts.results,payments:payments.results});
+  const payments=await db.prepare('SELECT p.*,c.employer,c.title,u.username FROM payroll_payments p JOIN employment_contracts c ON c.id=p.contract_id JOIN users u ON u.id=c.employee_id ORDER BY p.created_at DESC LIMIT 100').all();const botPay=await db.prepare('SELECT p.id,p.period_start period,p.amount,p.created_at,c.employer,c.title,u.username FROM shared_company_salary_payments p JOIN employment_contracts c ON c.id=p.contract_id JOIN users u ON u.id=c.employee_id ORDER BY p.created_at DESC LIMIT 100').all();return json({budgets:budgets.results,accepted:accepted.results,contracts:contracts.results,payments:[...payments.results,...botPay.results]});
  }
  if(method==='POST'&&path==='/api/payroll/contract'){
   const b=await input(req);if(!b||!validText(b.application_id,10,80))return json({error:'رقم طلب غير صالح'},400);
