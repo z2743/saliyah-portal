@@ -1959,6 +1959,118 @@ if(method==='GET'&&path==='/api/admin/readiness'){
 
 
 
+
+// Royal company operations: approved owners can run shops and hire residents.
+if(path.startsWith('/api/company/operations/')){
+ const suffix=path.slice('/api/company/operations/'.length);
+ const verifiedOwner=async companyId=>validText(companyId,10,80)&&!!await db.prepare("SELECT id FROM commerce_companies WHERE id=? AND owner_id=? AND status='approved'").bind(companyId,user?.id||'').first();
+ const branchOk=async(companyId,branchId)=>!branchId||!!await db.prepare("SELECT id FROM commerce_branches WHERE id=? AND company_id=? AND status='approved'").bind(branchId,companyId).first();
+ if(method==='GET'&&suffix==='catalog'){
+  const q=u.searchParams.get('company_id');
+  const query="SELECT p.id,p.company_id,p.branch_id,p.title,p.description,p.kind,p.price,p.stock,p.image_url,p.created_at,c.name company_name,br.name branch_name FROM company_catalog p JOIN commerce_companies c ON c.id=p.company_id LEFT JOIN commerce_branches br ON br.id=p.branch_id WHERE p.active=1 AND c.status='approved' AND (p.branch_id IS NULL OR br.status='approved')";
+  const rows=q?await db.prepare(query+" AND p.company_id=? ORDER BY p.created_at DESC LIMIT 150").bind(q).all():await db.prepare(query+" ORDER BY p.created_at DESC LIMIT 150").all();
+  return json({catalog:rows.results});
+ }
+ if(method==='GET'&&suffix==='vacancies'){
+  const rows=await db.prepare("SELECT v.id,v.company_id,v.branch_id,v.title,v.description,v.weekly_salary,v.created_at,c.name company_name,br.name branch_name FROM company_vacancies v JOIN commerce_companies c ON c.id=v.company_id LEFT JOIN commerce_branches br ON br.id=v.branch_id WHERE v.status='open' AND c.status='approved' AND (v.branch_id IS NULL OR br.status='approved') ORDER BY v.created_at DESC LIMIT 150").all();
+  return json({vacancies:rows.results});
+ }
+ if(!user)return json({error:'يلزم تسجيل الدخول'},401);
+ if(method==='GET'&&suffix==='manage'){
+  const companies=await db.prepare("SELECT c.id,c.name,c.activity,c.region,t.balance FROM commerce_companies c LEFT JOIN company_treasuries t ON t.company_id=c.id WHERE c.owner_id=? AND c.status='approved' ORDER BY c.name").bind(user.id).all();
+  const branches=await db.prepare("SELECT b.id,b.company_id,b.name,b.region,b.address,b.status FROM commerce_branches b JOIN commerce_companies c ON c.id=b.company_id WHERE c.owner_id=? ORDER BY b.created_at DESC LIMIT 150").bind(user.id).all();
+  const catalog=await db.prepare("SELECT p.* FROM company_catalog p JOIN commerce_companies c ON c.id=p.company_id WHERE c.owner_id=? ORDER BY p.created_at DESC LIMIT 150").bind(user.id).all();
+  const bots=await db.prepare("SELECT h.*,b.name bot_name FROM company_bot_hires h JOIN saliyah_sim_citizens b ON b.id=h.bot_id JOIN commerce_companies c ON c.id=h.company_id WHERE c.owner_id=? ORDER BY h.hired_at DESC LIMIT 150").bind(user.id).all();
+  const candidates=await db.prepare("SELECT b.id,b.name,b.occupation FROM saliyah_sim_citizens b WHERE NOT EXISTS(SELECT 1 FROM company_bot_hires h WHERE h.bot_id=b.id AND h.status='active') ORDER BY b.name LIMIT 120").all();
+  const vacancies=await db.prepare("SELECT v.* FROM company_vacancies v JOIN commerce_companies c ON c.id=v.company_id WHERE c.owner_id=? ORDER BY v.created_at DESC LIMIT 120").bind(user.id).all();
+  const applications=await db.prepare("SELECT a.*,v.company_id,v.title,u.username applicant FROM company_vacancy_applications a JOIN company_vacancies v ON v.id=a.vacancy_id JOIN commerce_companies c ON c.id=v.company_id JOIN users u ON u.id=a.applicant_id WHERE c.owner_id=? OR a.applicant_id=? ORDER BY a.created_at DESC LIMIT 160").bind(user.id,user.id).all();
+  const orders=await db.prepare("SELECT o.id,o.catalog_id,o.buyer_id,o.quantity,o.unit_price,o.total,o.status,o.created_at,p.title,p.company_id,c.name company_name,u.username buyer FROM company_catalog_orders o JOIN company_catalog p ON p.id=o.catalog_id JOIN commerce_companies c ON c.id=p.company_id JOIN users u ON u.id=o.buyer_id WHERE c.owner_id=? OR o.buyer_id=? ORDER BY o.created_at DESC LIMIT 160").bind(user.id,user.id).all();
+  const accounts=await db.prepare("SELECT id,bank,balance FROM bank_accounts WHERE user_id=? ORDER BY bank").bind(user.id).all();
+  return json({companies:companies.results,branches:branches.results,catalog:catalog.results,bots:bots.results,candidates:candidates.results,vacancies:vacancies.results,applications:applications.results,orders:orders.results,accounts:accounts.results});
+ }
+ if(method!=='POST')return json({error:'طريقة غير مسموحة'},405);
+ const b=await input(req);if(!b)return json({error:'طلب غير صالح'},400);
+ if(suffix==='item/create'||suffix==='item/update'){
+  const price=Number(b.price),stock=Number(b.stock);
+  if(!validText(b.company_id,10,80)||!validText(b.title,3,160)||!validText(b.description,5,2500)||!['product','service'].includes(b.kind)||!Number.isSafeInteger(price)||price<1||price>1000000||!Number.isSafeInteger(stock)||stock<0||stock>1000000)return json({error:'بيانات المنتج أو الخدمة غير صالحة'},400);
+  if(!await verifiedOwner(b.company_id)||!await branchOk(b.company_id,b.branch_id))return json({error:'الشركة أو الفرع غير معتمد أو غير مملوك لك'},403);
+  const photo=b.image_url||null;
+  if(photo&&(typeof photo!=='string'||photo.length>110000||!(/^(https:\/\/[^\s<>"']{5,2000}|data:image\/(jpeg|png|webp);base64,[A-Za-z0-9+/=]+)$/.test(photo))))return json({error:'الصورة يجب أن تكون رابط HTTPS أو صورة مصغرة أقل من 80 كيلوبايت'},400);
+  const branch=b.branch_id||null;
+  if(suffix==='item/create'){
+   const id=random();await db.prepare('INSERT INTO company_catalog(id,company_id,branch_id,title,description,kind,price,stock,image_url) VALUES(?,?,?,?,?,?,?,?,?)').bind(id,b.company_id,branch,b.title.trim(),b.description.trim(),b.kind,price,b.kind==='service'?0:stock,photo).run();
+   await audit(db,user.id,'company_catalog_create','company_catalog',id,{company_id:b.company_id});return json({ok:true,id},201);
+  }
+  if(!validText(b.id,10,80)||![0,1].includes(Number(b.active)))return json({error:'بيانات التعديل غير صالحة'},400);
+  const r=await db.prepare("UPDATE company_catalog SET branch_id=?,title=?,description=?,kind=?,price=?,stock=?,image_url=COALESCE(?,image_url),active=?,updated_at=CURRENT_TIMESTAMP WHERE id=? AND company_id=?").bind(branch,b.title.trim(),b.description.trim(),b.kind,price,b.kind==='service'?0:stock,photo,Number(b.active),b.id,b.company_id).run();
+  if(!r.meta.changes)return json({error:'المنتج غير موجود'},404);
+  await audit(db,user.id,'company_catalog_update','company_catalog',b.id,{});return json({ok:true});
+ }
+ if(suffix==='purchase'){
+  const count=Number(b.quantity);if(!validText(b.catalog_id,10,80)||!validText(b.account_id,10,80)||!Number.isSafeInteger(count)||count<1||count>20)return json({error:'بيانات الشراء غير صالحة'},400);
+  const item=await db.prepare("SELECT p.id,p.price,p.kind,p.company_id,c.owner_id FROM company_catalog p JOIN commerce_companies c ON c.id=p.company_id WHERE p.id=? AND p.active=1 AND c.status='approved'").bind(b.catalog_id).first();
+  if(!item)return json({error:'المنتج غير متاح'},404);
+  if(item.owner_id===user.id)return json({error:'لا يمكن الشراء من شركتك بحساب المالك'},409);
+  if(item.kind==='service'&&count!==1)return json({error:'الخدمة تطلب مرة واحدة'},400);
+  const total=item.price*count;if(!Number.isSafeInteger(total)||total>1000000)return json({error:'المبلغ أكبر من الحد المسموح'},400);
+  const id=random();
+  try{await db.prepare("INSERT INTO company_catalog_orders(id,catalog_id,buyer_id,bank_account_id,quantity,unit_price,total) VALUES(?,?,?,?,?,?,?)").bind(id,item.id,user.id,b.account_id,count,item.price,total).run()}catch{return json({error:'الرصيد غير كافٍ أو المنتج نفد أو الفرع غير معتمد'},409)}
+  await audit(db,user.id,'company_catalog_purchase','company_catalog_order',id,{catalog_id:item.id,total});return json({ok:true,id,total},201);
+ }
+ if(suffix==='order/fulfill'){
+  if(!validText(b.id,10,80))return json({error:'معرف الطلب غير صالح'},400);
+  const r=await db.prepare("UPDATE company_catalog_orders SET status='fulfilled',fulfilled_at=CURRENT_TIMESTAMP WHERE id=? AND status='paid' AND EXISTS(SELECT 1 FROM company_catalog p JOIN commerce_companies c ON c.id=p.company_id WHERE p.id=company_catalog_orders.catalog_id AND c.owner_id=?)").bind(b.id,user.id).run();
+  if(!r.meta.changes)return json({error:'الطلب غير متاح أو تمت معالجته'},409);
+  await audit(db,user.id,'company_order_fulfill','company_catalog_order',b.id,{});return json({ok:true});
+ }
+ if(suffix==='bot/hire'){
+  const weekly=Number(b.weekly_salary);if(!validText(b.company_id,10,80)||!validText(b.bot_id,10,80)||!validText(b.position,3,120)||!Number.isSafeInteger(weekly)||weekly<1||weekly>1000000)return json({error:'بيانات التوظيف غير صالحة'},400);
+  if(!await verifiedOwner(b.company_id))return json({error:'لا تملك شركة معتمدة'},403);
+  const bot=await db.prepare("SELECT id FROM saliyah_sim_citizens WHERE id=?").bind(b.bot_id).first();if(!bot)return json({error:'الشخصية الآلية غير موجودة'},404);
+  const id=random();try{await db.prepare("INSERT INTO company_bot_hires(id,company_id,bot_id,position,weekly_salary) VALUES(?,?,?,?,?)").bind(id,b.company_id,b.bot_id,b.position.trim(),weekly).run()}catch{return json({error:'البوت يعمل بالفعل لدى شركة أخرى'},409)}
+  await audit(db,user.id,'company_bot_hire','company_bot_hires',id,{company_id:b.company_id,bot_id:b.bot_id});return json({ok:true,id},201);
+ }
+ if(suffix==='bot/end'){
+  if(!validText(b.id,10,80))return json({error:'معرف الوظيفة غير صالح'},400);
+  const r=await db.prepare("UPDATE company_bot_hires SET status='ended',ended_at=CURRENT_TIMESTAMP WHERE id=? AND status='active' AND EXISTS(SELECT 1 FROM commerce_companies c WHERE c.id=company_bot_hires.company_id AND c.owner_id=?)").bind(b.id,user.id).run();
+  if(!r.meta.changes)return json({error:'الوظيفة غير نشطة أو ليست شركتك'},409);
+  await audit(db,user.id,'company_bot_end','company_bot_hires',b.id,{});return json({ok:true});
+ }
+ if(suffix==='vacancy/create'){
+  const salary=Number(b.weekly_salary);
+  if(!validText(b.company_id,10,80)||!validText(b.title,3,120)||!validText(b.description,10,2000)||!Number.isSafeInteger(salary)||salary<1||salary>1000000)return json({error:'بيانات الوظيفة غير صالحة'},400);
+  if(!await verifiedOwner(b.company_id)||!await branchOk(b.company_id,b.branch_id))return json({error:'الشركة أو الفرع غير معتمد'},403);
+  const id=random();await db.prepare("INSERT INTO company_vacancies(id,company_id,branch_id,title,description,weekly_salary) VALUES(?,?,?,?,?,?)").bind(id,b.company_id,b.branch_id||null,b.title.trim(),b.description.trim(),salary).run();
+  await audit(db,user.id,'company_vacancy_create','company_vacancy',id,{});return json({ok:true,id},201);
+ }
+ if(suffix==='vacancy/close'){
+  if(!validText(b.id,10,80))return json({error:'معرف الوظيفة غير صالح'},400);
+  const r=await db.prepare("UPDATE company_vacancies SET status='closed' WHERE id=? AND status='open' AND EXISTS(SELECT 1 FROM commerce_companies c WHERE c.id=company_vacancies.company_id AND c.owner_id=?)").bind(b.id,user.id).run();
+  if(!r.meta.changes)return json({error:'الوظيفة غير متاحة'},409);return json({ok:true});
+ }
+ if(suffix==='vacancy/apply'){
+  if(!validText(b.id,10,80)||!validText(b.statement,10,2000))return json({error:'أكمل بيانات طلب التوظيف'},400);
+  const v=await db.prepare("SELECT v.id,c.owner_id FROM company_vacancies v JOIN commerce_companies c ON c.id=v.company_id WHERE v.id=? AND v.status='open' AND c.status='approved'").bind(b.id).first();
+  if(!v||v.owner_id===user.id)return json({error:'لا يمكنك التقديم على هذه الوظيفة'},409);
+  const id=random();try{await db.prepare("INSERT INTO company_vacancy_applications(id,vacancy_id,applicant_id,statement) VALUES(?,?,?,?)").bind(id,b.id,user.id,b.statement.trim()).run()}catch{return json({error:'سبق التقديم على هذه الوظيفة'},409)}
+  await audit(db,user.id,'company_vacancy_apply','company_vacancy_application',id,{});return json({ok:true,id},201);
+ }
+ if(suffix==='vacancy/decide'){
+  if(!validText(b.id,10,80)||!['reviewing','accepted','rejected'].includes(b.status))return json({error:'القرار غير صالح'},400);
+  const app=await db.prepare("SELECT a.id,a.applicant_id,a.status,v.company_id,v.title,v.weekly_salary FROM company_vacancy_applications a JOIN company_vacancies v ON v.id=a.vacancy_id JOIN commerce_companies c ON c.id=v.company_id WHERE a.id=? AND c.owner_id=? AND c.status='approved'").bind(b.id,user.id).first();
+  if(!app||!['submitted','reviewing'].includes(app.status))return json({error:'طلب التوظيف غير متاح'},409);
+  if(b.status==='accepted'){
+   const id=random();
+   try{await db.batch([db.prepare("INSERT INTO company_employees(id,company_id,employee_id,position,salary) VALUES(?,?,?,?,?)").bind(id,app.company_id,app.applicant_id,app.title,app.weekly_salary),db.prepare("UPDATE company_vacancy_applications SET status='accepted',reviewed_at=CURRENT_TIMESTAMP WHERE id=? AND status IN ('submitted','reviewing')").bind(app.id)])}catch{return json({error:'يوجد عقد آخر للمرشح أو تعذر إصدار عرض العمل'},409)}
+   await audit(db,user.id,'company_vacancy_offer','employment',id,{application_id:app.id});return json({ok:true,employment_id:id});
+  }
+  const r=await db.prepare("UPDATE company_vacancy_applications SET status=?,reviewed_at=CURRENT_TIMESTAMP WHERE id=? AND status IN ('submitted','reviewing')").bind(b.status,b.id).run();
+  if(!r.meta.changes)return json({error:'تمت معالجة الطلب'},409);
+  await audit(db,user.id,'company_vacancy_review','company_vacancy_application',b.id,{status:b.status});return json({ok:true});
+ }
+ return json({error:'مسار الشركة غير موجود'},404);
+}
+
 // Phase 32: private company employment and payroll (fictional balances).
 if(path.startsWith('/api/company/staff')){
  if(method==='GET'&&path==='/api/company/staff'){
