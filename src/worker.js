@@ -682,7 +682,7 @@ const AIRPORT_FLEET=[
  ['saliyah-airlines','B777-300',10,'passenger'],['saliyah-airlines','B747-8',5,'passenger'],['saliyah-airlines','A330-300',15,'passenger'],['saliyah-airlines','A320',20,'passenger'],['saliyah-airlines','B777F',5,'cargo'],['saliyah-airlines','B747-8F',10,'cargo'],['flyadeal-saliyah','A320',25,'passenger']
 ];
 async function airportStaffCoverage(db,aviationDb){
- const staff=(await aviationDb.prepare("SELECT category,COUNT(*) n FROM aviation_staff WHERE status='active' GROUP BY category").all()).results;
+ const staff=(await aviationDb.prepare("SELECT category,COUNT(*) n FROM aviation_staff WHERE status='active' AND qualified=1 GROUP BY category").all()).results;
  const counts=new Map(staff.map(x=>[x.category,Number(x.n)||0]));
  return AIRPORT_STAFF_TARGETS.map(([category,label,required])=>({category,label,required,active:counts.get(category)||0,ready:(counts.get(category)||0)>=required}));
 }
@@ -738,7 +738,7 @@ async function airportReadiness(db,aviationDb){
  if(!aviationDb)return {ready:false,reason:'قاعدة الطيران غير متصلة',checks:[]};
  const [setting,staff,flights,bookings,boarding,completedFlights,activeAirlines]=await Promise.all([
   aviationDb.prepare("SELECT value FROM aviation_settings WHERE key='opening_authorized'").first(),
-  aviationDb.prepare("SELECT category,COUNT(*) n FROM aviation_staff WHERE status='active' GROUP BY category").all(),
+  aviationDb.prepare("SELECT category,COUNT(*) n FROM aviation_staff WHERE status='active' AND qualified=1 GROUP BY category").all(),
   aviationDb.prepare("SELECT COUNT(*) n FROM aviation_flights WHERE status='scheduled' AND departure_at>datetime('now')").first(),
   aviationDb.prepare("SELECT COUNT(*) n FROM aviation_bookings WHERE status='confirmed'").first(),
   aviationDb.prepare("SELECT COUNT(*) n FROM aviation_boarding_passes").first(),
@@ -1017,7 +1017,7 @@ if(path.startsWith('/api/aviation/')){
   if(!user||user.role!=='king')return json({error:'للملك فقط'},403);
   const readiness=await airportReadiness(db,aviationDb);
   const [staff,flights,airlines,settings]=await Promise.all([
-   aviationDb.prepare("SELECT id,name,category,status,employee_user_id,appointed_at FROM aviation_staff ORDER BY created_at DESC LIMIT 100").all(),
+   aviationDb.prepare("SELECT id,name,category,status,employee_user_id,sim_citizen_id,qualified,training_score,license_number,appointed_at FROM aviation_staff ORDER BY created_at DESC LIMIT 100").all(),
    aviationDb.prepare("SELECT id,number,airline_id,origin_code,destination_code,departure_at,arrival_at,status FROM aviation_flights ORDER BY departure_at LIMIT 100").all(),
    aviationDb.prepare("SELECT id,name,code,kind,enabled FROM aviation_airlines").all(),
    aviationDb.prepare("SELECT key,value FROM aviation_settings WHERE key IN ('opening_authorized','operations_validated')").all()
@@ -1035,6 +1035,15 @@ if(path.startsWith('/api/aviation/')){
   await aviationDb.prepare("INSERT INTO aviation_staff(id,name,category,employee_user_id,status,appointed_at) VALUES(?,?,?,?,'active',CURRENT_TIMESTAMP)").bind(id,b.name.trim(),b.category,employee.id).run();
   await audit(db,user.id,'aviation_staff_appoint','aviation_staff',id,{category:b.category});
   return json({ok:true,id},201);
+ }
+ if(method==='POST'&&path==='/api/aviation/admin/staff/qualify'){
+  if(!user||user.role!=='king')return json({error:'للملك فقط'},403);
+  const b=await input(req);
+  if(!b||!validText(b.id,10,80)||!Number.isInteger(b.score)||b.score<0||b.score>100||!validText(b.license_number,6,48))return json({error:'بيانات اختبار وتوثيق الموظف غير صالحة'},400);
+  const result=await aviationDb.prepare("UPDATE aviation_staff SET qualified=?,training_score=?,license_number=?,training_completed_at=CURRENT_TIMESTAMP WHERE id=?").bind(b.score>=70?1:0,b.score,b.license_number.trim(),b.id).run();
+  if(!result.meta.changes)return json({error:'الموظف غير موجود'},404);
+  await audit(db,user.id,'aviation_staff_qualified','aviation_staff',b.id,{qualified:b.score>=70,score:b.score});
+  return json({ok:true,qualified:b.score>=70});
  }
  if(method==='POST'&&path==='/api/aviation/admin/staff/status'){
   if(!user||user.role!=='king')return json({error:'للملك فقط'},403);
