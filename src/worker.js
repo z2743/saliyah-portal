@@ -696,6 +696,44 @@ async function reconcileEmployeeResignations(db){
  }
  return requests.length;
 }
+async function validateAviationPassenger(db,userId,travelDate){
+ const banned=await db.prepare("SELECT 1 FROM enforcement_cases_v2 WHERE subject_user_id=? AND status='approved' AND action IN ('service_suspension','both') LIMIT 1").bind(userId).first();
+ if(banned)return {error:'خدمات المسافر موقوفة، راجع الجهة المختصة قبل الحجز'};
+ const passport=await db.prepare("SELECT d.id,d.number,d.full_name,d.expires_at FROM documents d WHERE d.created_by=? AND d.type='passport' AND d.status='valid' AND d.expires_at>=? ORDER BY d.expires_at DESC LIMIT 1").bind(userId,travelDate).first();
+ if(!passport)return {error:'يلزم وجود جواز سفر صالح حتى تاريخ الرحلة'};
+ const circular=await db.prepare("SELECT 1 FROM circulars WHERE document_id=? AND status='active' AND (expires_at IS NULL OR expires_at>=date('now')) LIMIT 1").bind(passport.id).first();
+ if(circular)return {error:'يوجد تعميم نشط على الجواز، لا يمكن إتمام إجراءات السفر'};
+ return {passport};
+}
+async function completeAviationBooking(db,aviationDb,bookingId,userId){
+ const row=await aviationDb.prepare("SELECT b.id,b.reference,b.status,b.payment_status,b.price,b.flight_id,b.user_id,b.bank_account_id,f.airline_id,f.status flight_status FROM aviation_bookings b JOIN aviation_flights f ON f.id=b.flight_id WHERE b.id=? AND b.user_id=?").bind(bookingId,userId).first();
+ if(!row)return {error:'الحجز غير موجود'};
+ if(row.status==='confirmed'&&row.payment_status==='paid')return {ok:true,booking:row};
+ if(row.status!=='pending'||!['unpaid','debited'].includes(row.payment_status))return {error:'الحجز غير متاح للإتمام'};
+ if(row.flight_status!=='scheduled')return {error:'الرحلة لم تعد مجدولة'};
+ const payment=await db.prepare("SELECT booking_id,status FROM aviation_payment_ledger WHERE booking_id=? AND user_id=?").bind(row.id,userId).first();
+ if(!payment||payment.status==='refunded')return {error:'لم يتم خصم سعر التذكرة'};
+ try{
+  const done=await aviationDb.prepare("UPDATE aviation_bookings SET status='confirmed',payment_status='paid',paid_at=CURRENT_TIMESTAMP WHERE id=? AND user_id=? AND status='pending' AND payment_status IN ('unpaid','debited')").bind(row.id,userId).run();
+  if(done.meta.changes)await db.prepare("UPDATE aviation_payment_ledger SET status='confirmed',confirmed_at=CURRENT_TIMESTAMP WHERE booking_id=? AND status='debited'").bind(row.id).run();
+  return {ok:true,booking:{...row,status:'confirmed',payment_status:'paid'}};
+ }catch(e){console.error('aviation_booking_completion_failed',String(e).slice(0,180));return {error:'تم حفظ الدفع ولم يؤكد الحجز بعد؛ ستتم إعادة المحاولة تلقائياً'}};
+}
+async function reconcileAviationPayments(db,aviationDb){
+ if(!aviationDb)return;
+ const ledgers=(await db.prepare("SELECT booking_id,user_id FROM aviation_payment_ledger WHERE status='debited' ORDER BY created_at LIMIT 15").all()).results;
+ for(const ledger of ledgers)try{
+  const row=await aviationDb.prepare("SELECT id,status,flight_id FROM aviation_bookings WHERE id=?").bind(ledger.booking_id).first();
+  if(row?.status==='confirmed'){await db.prepare("UPDATE aviation_payment_ledger SET status='confirmed',confirmed_at=CURRENT_TIMESTAMP WHERE booking_id=? AND status='debited'").bind(ledger.booking_id).run();continue}
+  if(row?.status==='pending'){const done=await completeAviationBooking(db,aviationDb,ledger.booking_id,ledger.user_id);if(done.ok)continue}
+  if(!row||row.status==='cancelled'){await db.prepare("UPDATE aviation_payment_ledger SET status='refunded',refunded_at=CURRENT_TIMESTAMP WHERE booking_id=? AND status='debited'").bind(ledger.booking_id).run()}
+ }catch(e){console.error('aviation_payment_reconciliation_failed',String(e).slice(0,180))}
+ const pending=(await aviationDb.prepare("SELECT id FROM aviation_bookings WHERE status='pending' AND created_at<datetime('now','-20 minutes') ORDER BY created_at LIMIT 30").all()).results;
+ for(const b of pending)try{
+  const paid=await db.prepare("SELECT status FROM aviation_payment_ledger WHERE booking_id=?").bind(b.id).first();
+  if(!paid)await aviationDb.prepare("UPDATE aviation_bookings SET status='cancelled' WHERE id=? AND status='pending'").bind(b.id).run();
+ }catch(e){console.error('aviation_pending_release_failed',String(e).slice(0,180))}
+}
 async function airportReadiness(db,aviationDb){
  if(!aviationDb)return {ready:false,reason:'قاعدة الطيران غير متصلة',checks:[]};
  const [setting,staff,flights,bookings,boarding,completedFlights,activeAirlines]=await Promise.all([
@@ -730,7 +768,7 @@ export default {
  async scheduled(event,env,ctx){
   // Royal authorization: resume conservatively, once every four hours.
   const hour=Math.floor(event.scheduledTime/3600000);
-  if(hour%4!==0||new Date(event.scheduledTime).getUTCMinutes()!==0){try{await runSimEmployeeServices(env.DB)}catch(error){console.error('sim_staff_cycle_failed',String(error).slice(0,220))}try{await reconcileEmployeeResignations(env.DB)}catch(error){console.error('resignation_cycle_failed',String(error).slice(0,220))}return;}
+  if(hour%4!==0||new Date(event.scheduledTime).getUTCMinutes()!==0){try{await runSimEmployeeServices(env.DB)}catch(error){console.error('sim_staff_cycle_failed',String(error).slice(0,220))}try{await reconcileEmployeeResignations(env.DB)}catch(error){console.error('resignation_cycle_failed',String(error).slice(0,220))}try{await reconcileAviationPayments(env.DB,env.AVIATION_DB)}catch(error){console.error('aviation_payment_cycle_failed',String(error).slice(0,220))}return;}
   // A failing subsystem must not prevent other fictional residents from replying.
   const phases=[['government',()=>runSaliyahGovernment(env.DB,env.AVIATION_DB)],['citizen_services',()=>runSimEmployeeServices(env.DB)],['x_bots',()=>generateXBotActivity(env.DB)],['citizen_contacts',()=>runSimContactReplies(env.DB,env.AVIATION_DB)],['creator_rewards',()=>runXCreatorAutoPayouts(env.DB)]];
   for(const [label,run] of phases)try{await run()}catch(error){console.error('simulation_phase_failed',label,String(error).slice(0,220))}
@@ -1038,8 +1076,37 @@ if(path.startsWith('/api/aviation/')){
  if(method==='POST'&&path==='/api/aviation/booking'){
   if(!user)return json({error:'سجل الدخول أولاً'},401);
   const readiness=await airportReadiness(db,aviationDb);
-  if(!readiness.ready)return json({error:'المطار لم يحصل على تصريح التشغيل بعد؛ الحجز مغلق'},409);
-  return json({error:'الحجز غير متاح قبل تفعيل التحقق الكامل من الجوازات والمدفوعات والمقاعد'},503);
+  if(!readiness.ready)return json({error:'المطار غير جاهز للحجوزات، شروط التشغيل لم تكتمل'},409);
+  const b=await input(req);
+  if(!b||!validText(b.flight_id,10,80)||!['economy','business'].includes(b.seat_class)||!validText(b.bank_account_id,10,80)||!validText(b.idempotency_key,12,80))return json({error:'اختر الرحلة والدرجة والحساب البنكي وأعد المحاولة'},400);
+  const existing=await aviationDb.prepare("SELECT id,status,reference,payment_status FROM aviation_bookings WHERE user_id=? AND idempotency_key=?").bind(user.id,b.idempotency_key).first();
+  if(existing){
+   const completed=await completeAviationBooking(db,aviationDb,existing.id,user.id);
+   if(completed.ok)return json({ok:true,id:existing.id,reference:existing.reference,status:'confirmed',already_exists:true});
+   return json({error:completed.error,reference:existing.reference,booking_id:existing.id},409);
+  }
+  const f=await aviationDb.prepare("SELECT f.id,f.airline_id,f.departure_at,f.arrival_at,f.seats_economy,f.seats_business,f.price_economy,f.status,a.kind FROM aviation_flights f JOIN aviation_airlines a ON a.id=f.airline_id WHERE f.id=? AND f.status='scheduled'").bind(b.flight_id).first();
+  if(!f||Date.parse(f.departure_at.replace(' ','T')+'Z')<Date.now()+2*3600000)return json({error:'الرحلة غير متاحة للحجز'},404);
+  if(b.seat_class==='business'&&f.kind!=='full_service')return json({error:'هذه الشركة لا توفر درجة أعمال'},409);
+  const capacity=b.seat_class==='business'?Number(f.seats_business):Number(f.seats_economy);
+  if(capacity<1)return json({error:'لا توجد مقاعد بهذه الدرجة'},409);
+  const passport=await validateAviationPassenger(db,user.id,f.departure_at.slice(0,10));
+  if(passport.error)return json({error:passport.error},409);
+  const account=await db.prepare("SELECT id,balance FROM bank_accounts WHERE id=? AND user_id=?").bind(b.bank_account_id,user.id).first();
+  if(!account)return json({error:'الحساب البنكي لا يخص المستخدم'},403);
+  const price=b.seat_class==='business'?Math.round(Number(f.price_economy)*2.4):Number(f.price_economy);
+  if(!Number.isSafeInteger(price)||account.balance<price)return json({error:'رصيد الحساب غير كافٍ لسعر التذكرة'},409);
+  const id=random(),reference='SY'+id.replace(/-/g,'').slice(0,9).toUpperCase();
+  try{
+   const reserved=await aviationDb.prepare("INSERT INTO aviation_bookings(id,reference,flight_id,user_id,status,seat_class,price,idempotency_key,passport_number,passenger_name,bank_account_id) SELECT ?,?,?,?,'pending',?,?,?,?,?,? WHERE (SELECT COUNT(*) FROM aviation_bookings WHERE flight_id=? AND seat_class=? AND (status='confirmed' OR status='pending' AND created_at>=datetime('now','-20 minutes')))< ? AND EXISTS(SELECT 1 FROM aviation_flights WHERE id=? AND status='scheduled')").bind(id,reference,f.id,user.id,b.seat_class,price,b.idempotency_key,passport.passport.number,passport.passport.full_name,account.id,f.id,b.seat_class,capacity,f.id).run();
+   if(!reserved.meta.changes)return json({error:'المقاعد ممتلئة في هذه الدرجة'},409);
+  }catch(e){console.error('aviation_reservation_failed',String(e).slice(0,180));return json({error:'تعذر حجز المقعد أو تكرار طلب الحجز'},409)}
+  try{await db.prepare("INSERT INTO aviation_payment_ledger(booking_id,airline_id,user_id,bank_account_id,amount) VALUES(?,?,?,?,?)").bind(id,f.airline_id,user.id,account.id,price).run()}
+  catch(e){await aviationDb.prepare("UPDATE aviation_bookings SET status='cancelled' WHERE id=? AND status='pending'").bind(id).run();return json({error:'تعذر خصم سعر التذكرة، تحقق من الرصيد'},409)}
+  const completed=await completeAviationBooking(db,aviationDb,id,user.id);
+  if(!completed.ok)return json({error:completed.error,reference,booking_id:id},503);
+  await audit(db,user.id,'aviation_booking_paid','aviation_bookings',id,{flight_id:f.id,amount:price,account_id:account.id});
+  return json({ok:true,id,reference,status:'confirmed',amount:price},201);
  }
  if(method==='POST'&&path==='/api/aviation/authorize'){
   if(!user||user.role!=='king')return json({error:'قرار افتتاح المطار للملك فقط'},403);
@@ -1047,7 +1114,7 @@ if(path.startsWith('/api/aviation/')){
   if(!b||typeof b.authorized!=='boolean')return json({error:'قرار غير صالح'},400);
   if(b.authorized){
    const current=await airportReadiness(db,aviationDb);
-   if(!current.construction_complete||!current.staff_complete||!current.airlines_ready||current.scheduled_flights<1||!current.booking_operations_ready)return json({error:'شروط التشغيل لم تكتمل، لا يمكن فتح المطار',readiness:current},409);
+   if(!current.airlines_ready)return json({error:'لا يمكن اعتماد مطار بدون شركات طيران مسجلة',readiness:current},409);
   }
   await aviationDb.prepare("UPDATE aviation_settings SET value=? WHERE key='opening_authorized'").bind(b.authorized?'1':'0').run();
   await audit(db,user.id,'airport_authorization','aviation_settings','opening_authorized',{authorized:b.authorized});
