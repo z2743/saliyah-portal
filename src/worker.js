@@ -693,7 +693,8 @@ async function airportReadiness(db,aviationDb){
  const kingAuthorized=setting?.value==='1';
  const airlineReady=Number(activeAirlines?.n||0)>=2;
  const flightReady=Number(flights?.n||0)>0;
- return {ready:constructionComplete&&staffComplete&&kingAuthorized&&airlineReady&&flightReady,construction_complete:constructionComplete,construction_end:AIRPORT_CONSTRUCTION_END,staffing,staff_complete:staffComplete,royal_authorization:kingAuthorized,airlines_ready:airlineReady,scheduled_flights:Number(flights?.n||0),confirmed_bookings:Number(bookings?.n||0),boarding_passes:Number(boarding?.n||0),completed_flights:Number(completedFlights?.n||0),reason:constructionComplete?'التشغيل مشروط بالتوظيف والاعتماد والرحلات المجدولة':'البناء لم يكتمل بعد'};
+ const bookingOperationsReady=false; // No unsafe booking/payment or document-check implementation yet.
+ return {ready:constructionComplete&&staffComplete&&kingAuthorized&&airlineReady&&flightReady&&bookingOperationsReady,booking_operations_ready:bookingOperationsReady,construction_complete:constructionComplete,construction_end:AIRPORT_CONSTRUCTION_END,staffing,staff_complete:staffComplete,royal_authorization:kingAuthorized,airlines_ready:airlineReady,scheduled_flights:Number(flights?.n||0),confirmed_bookings:Number(bookings?.n||0),boarding_passes:Number(boarding?.n||0),completed_flights:Number(completedFlights?.n||0),reason:constructionComplete?'التشغيل مشروط بالتوظيف والاعتماد والرحلات المجدولة':'البناء لم يكتمل بعد'};
 }
 async function seedAviationCatalog(db){
  // Only prepare the two fictional carriers; never open the airport or manufacture reservations.
@@ -954,7 +955,7 @@ if(path.startsWith('/api/aviation/')){
  if(method==='GET'&&path==='/api/aviation/flights'){
   const rows=await aviationDb.prepare("SELECT f.id,f.number,f.origin_code,f.destination_code,f.departure_at,f.arrival_at,f.price_economy,f.seats_economy,f.seats_business,f.status,a.name airline,a.code airline_code FROM aviation_flights f JOIN aviation_airlines a ON a.id=f.airline_id WHERE f.status IN ('scheduled','boarding','departed','arrived') ORDER BY f.departure_at LIMIT 100").all();
   const readiness=await airportReadiness(db,aviationDb);
-  return json({flights:rows.results,airport_open:readiness.ready,bookings_enabled:readiness.ready});
+  return json({flights:rows.results,airport_open:readiness.ready,bookings_enabled:readiness.ready&&readiness.booking_operations_ready});
  }
  if(method==='GET'&&path==='/api/aviation/my-bookings'){
   if(!user)return json({error:'سجل الدخول لعرض حجوزاتك'},401);
@@ -978,7 +979,7 @@ if(path.startsWith('/api/aviation/')){
   if(!b||typeof b.authorized!=='boolean')return json({error:'قرار غير صالح'},400);
   if(b.authorized){
    const current=await airportReadiness(db,aviationDb);
-   if(!current.construction_complete||!current.staff_complete||!current.airlines_ready||current.scheduled_flights<1)return json({error:'شروط التشغيل لم تكتمل، لا يمكن فتح المطار',readiness:current},409);
+   if(!current.construction_complete||!current.staff_complete||!current.airlines_ready||current.scheduled_flights<1||!current.booking_operations_ready)return json({error:'شروط التشغيل لم تكتمل، لا يمكن فتح المطار',readiness:current},409);
   }
   await aviationDb.prepare("UPDATE aviation_settings SET value=? WHERE key='opening_authorized'").bind(b.authorized?'1':'0').run();
   await audit(db,user.id,'airport_authorization','aviation_settings','opening_authorized',{authorized:b.authorized});
