@@ -2063,7 +2063,7 @@ if(path.startsWith('/api/company/operations/')){
  const branchOk=async(companyId,branchId)=>!branchId||!!await db.prepare("SELECT id FROM commerce_branches WHERE id=? AND company_id=? AND status='approved'").bind(branchId,companyId).first();
  if(method==='GET'&&suffix==='catalog'){
   const q=u.searchParams.get('company_id');
-  const query="SELECT p.id,p.company_id,p.branch_id,p.title,p.description,p.kind,p.price,p.stock,p.image_url,p.created_at,c.name company_name,br.name branch_name FROM company_catalog p JOIN commerce_companies c ON c.id=p.company_id LEFT JOIN commerce_branches br ON br.id=p.branch_id WHERE p.active=1 AND c.status='approved' AND (p.branch_id IS NULL OR br.status='approved')";
+  const query="SELECT p.id,p.company_id,p.branch_id,p.title,p.description,p.kind,p.price,p.stock,p.image_url,p.created_at,c.name company_name,br.name branch_name FROM company_catalog p JOIN commerce_companies c ON c.id=p.company_id LEFT JOIN commerce_branches br ON br.id=p.branch_id WHERE p.active=1 AND p.deleted_at IS NULL AND c.status='approved' AND (p.branch_id IS NULL OR br.status='approved')";
   const rows=q?await db.prepare(query+" AND p.company_id=? ORDER BY p.created_at DESC LIMIT 150").bind(q).all():await db.prepare(query+" ORDER BY p.created_at DESC LIMIT 150").all();
   return json({catalog:rows.results});
  }
@@ -2075,7 +2075,7 @@ if(path.startsWith('/api/company/operations/')){
  if(method==='GET'&&suffix==='manage'){
   const companies=await db.prepare("SELECT c.id,c.name,c.activity,c.region,c.payroll_weeks,t.balance FROM commerce_companies c LEFT JOIN company_treasuries t ON t.company_id=c.id WHERE c.owner_id=? AND c.status='approved' ORDER BY c.name").bind(user.id).all();
   const branches=await db.prepare("SELECT b.id,b.company_id,b.name,b.region,b.address,b.status FROM commerce_branches b JOIN commerce_companies c ON c.id=b.company_id WHERE c.owner_id=? ORDER BY b.created_at DESC LIMIT 150").bind(user.id).all();
-  const catalog=await db.prepare("SELECT p.* FROM company_catalog p JOIN commerce_companies c ON c.id=p.company_id WHERE c.owner_id=? ORDER BY p.created_at DESC LIMIT 150").bind(user.id).all();
+  const catalog=await db.prepare("SELECT p.* FROM company_catalog p JOIN commerce_companies c ON c.id=p.company_id WHERE c.owner_id=? AND p.deleted_at IS NULL ORDER BY p.created_at DESC LIMIT 150").bind(user.id).all();
   const bots=await db.prepare("SELECT h.*,b.name bot_name FROM company_bot_hires h JOIN saliyah_sim_citizens b ON b.id=h.bot_id JOIN commerce_companies c ON c.id=h.company_id WHERE c.owner_id=? ORDER BY h.hired_at DESC LIMIT 150").bind(user.id).all();
   const candidates=await db.prepare("SELECT b.id,b.name,b.occupation FROM saliyah_sim_citizens b WHERE NOT EXISTS(SELECT 1 FROM company_bot_hires h WHERE h.bot_id=b.id AND h.status='active') ORDER BY b.name LIMIT 120").all();
   const vacancies=await db.prepare("SELECT v.* FROM company_vacancies v JOIN commerce_companies c ON c.id=v.company_id WHERE c.owner_id=? ORDER BY v.created_at DESC LIMIT 120").bind(user.id).all();
@@ -2100,13 +2100,23 @@ if(path.startsWith('/api/company/operations/')){
    await audit(db,user.id,'company_catalog_create','company_catalog',id,{company_id:b.company_id});return json({ok:true,id},201);
   }
   if(!validText(b.id,10,80)||![0,1].includes(Number(b.active)))return json({error:'بيانات التعديل غير صالحة'},400);
-  const r=await db.prepare("UPDATE company_catalog SET branch_id=?,title=?,description=?,kind=?,price=?,stock=?,image_url=COALESCE(?,image_url),active=?,updated_at=CURRENT_TIMESTAMP WHERE id=? AND company_id=?").bind(branch,b.title.trim(),b.description.trim(),b.kind,price,b.kind==='service'?0:stock,photo,Number(b.active),b.id,b.company_id).run();
+  const r=await db.prepare("UPDATE company_catalog SET branch_id=?,title=?,description=?,kind=?,price=?,stock=?,image_url=COALESCE(?,image_url),active=?,updated_at=CURRENT_TIMESTAMP WHERE id=? AND company_id=? AND deleted_at IS NULL").bind(branch,b.title.trim(),b.description.trim(),b.kind,price,b.kind==='service'?0:stock,photo,Number(b.active),b.id,b.company_id).run();
   if(!r.meta.changes)return json({error:'المنتج غير موجود'},404);
   await audit(db,user.id,'company_catalog_update','company_catalog',b.id,{});return json({ok:true});
  }
+ if(suffix==='item/delete'){
+  if(!validText(b.id,10,80))return json({error:'معرف المنتج أو الخدمة غير صالح'},400);
+  // Owner-scoped soft delete. Existing purchases and financial records remain intact.
+  const item=await db.prepare("SELECT p.id,p.company_id,p.title FROM company_catalog p JOIN commerce_companies c ON c.id=p.company_id WHERE p.id=? AND p.deleted_at IS NULL AND c.owner_id=? AND c.status='approved'").bind(b.id,user.id).first();
+  if(!item)return json({error:'المنتج غير موجود أو لا تملك حق حذفه'},404);
+  const result=await db.prepare("UPDATE company_catalog SET active=0,deleted_at=CURRENT_TIMESTAMP,updated_at=CURRENT_TIMESTAMP WHERE id=? AND company_id=? AND deleted_at IS NULL").bind(item.id,item.company_id).run();
+  if(!result.meta.changes)return json({error:'تم حذف هذا المنتج بالفعل'},409);
+  await audit(db,user.id,'company_catalog_delete','company_catalog',item.id,{company_id:item.company_id,title:item.title});
+  return json({ok:true,id:item.id,deleted:true});
+ }
  if(suffix==='purchase'){
   const count=Number(b.quantity);if(!validText(b.catalog_id,10,80)||!validText(b.account_id,10,80)||!Number.isSafeInteger(count)||count<1||count>20)return json({error:'بيانات الشراء غير صالحة'},400);
-  const item=await db.prepare("SELECT p.id,p.price,p.kind,p.company_id,c.owner_id FROM company_catalog p JOIN commerce_companies c ON c.id=p.company_id WHERE p.id=? AND p.active=1 AND c.status='approved'").bind(b.catalog_id).first();
+  const item=await db.prepare("SELECT p.id,p.price,p.kind,p.company_id,c.owner_id FROM company_catalog p JOIN commerce_companies c ON c.id=p.company_id WHERE p.id=? AND p.active=1 AND p.deleted_at IS NULL AND c.status='approved'").bind(b.catalog_id).first();
   if(!item)return json({error:'المنتج غير متاح'},404);
   if(item.owner_id===user.id)return json({error:'لا يمكن الشراء من شركتك بحساب المالك'},409);
   if(item.kind==='service'&&count!==1)return json({error:'الخدمة تطلب مرة واحدة'},400);
