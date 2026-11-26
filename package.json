@@ -8,7 +8,7 @@
     "deploy": "wrangler deploy",
     "db:local": "wrangler d1 migrations apply saliyah-db --local",
     "db:remote": "wrangler d1 migrations apply saliyah-db --remote",
-    "test": "python3 tests/integration.py && python3 tests/sim-market.py && python3 tests/sim-phones.py && node tests/http-contract.mjs && node tests/auth-flow.mjs && node tests/permissions.mjs && node tests/audit-regressions.mjs && node tests/d1-distribution.mjs && node tests/national-alert.mjs && node tests/royal-bot-names.mjs && node tests/enforcement-lift.mjs && python3 tests/enforcement-trigger.py && python3 tests/housing-projects.py && python3 tests/bot-property-purchases.py && node tests/property-controls.mjs && python3 tests/aviation-operations.py && node tests/aviation-frontend.mjs",
+    "test": "python3 tests/integration.py && python3 tests/sim-market.py && python3 tests/sim-phones.py && node tests/http-contract.mjs && node tests/auth-flow.mjs && node tests/permissions.mjs && node tests/audit-regressions.mjs && node tests/d1-distribution.mjs && node tests/national-alert.mjs && node tests/royal-bot-names.mjs && node tests/enforcement-lift.mjs && python3 tests/enforcement-trigger.py && python3 tests/housing-projects.py && python3 tests/bot-property-purchases.py && node tests/property-controls.mjs && python3 tests/aviation-operations.py && node tests/aviation-frontend.mjs && python3 tests/company-resignations.py",
     "preflight": "node tests/release-preflight.mjs",
     "smoke": "node tests/staging-smoke.mjs"
   },
