@@ -675,6 +675,27 @@ const AIRPORT_STAFF_TARGETS=[
  ['planning','العمليات والتخطيط',115],
  ['cargo','الشحن والمناولة',160]
 ];
+const AIRPORT_ROUTE_SEEDS=[
+ ['RUH','الرياض'],['JED','جدة'],['DOH','الدوحة'],['DXB','دبي'],['AUH','أبوظبي'],['KWI','الكويت'],['BAH','البحرين'],['MCT','مسقط'],['CAI','القاهرة'],['IST','إسطنبول'],['LHR','لندن هيثرو'],['NRT','طوكيو ناريتا'],['CDG','باريس'],['FRA','فرانكفورت']
+];
+const AIRPORT_FLEET=[
+ ['saliyah-airlines','B777-300',10,'passenger'],['saliyah-airlines','B747-8',5,'passenger'],['saliyah-airlines','A330-300',15,'passenger'],['saliyah-airlines','A320',20,'passenger'],['saliyah-airlines','B777F',5,'cargo'],['saliyah-airlines','B747-8F',10,'cargo'],['flyadeal-saliyah','A320',25,'passenger']
+];
+async function airportStaffCoverage(db,aviationDb){
+ const staff=(await aviationDb.prepare("SELECT category,COUNT(*) n FROM aviation_staff WHERE status='active' GROUP BY category").all()).results;
+ const counts=new Map(staff.map(x=>[x.category,Number(x.n)||0]));
+ return AIRPORT_STAFF_TARGETS.map(([category,label,required])=>({category,label,required,active:counts.get(category)||0,ready:(counts.get(category)||0)>=required}));
+}
+async function reconcileEmployeeResignations(db){
+ const requests=(await db.prepare("SELECT r.id,r.contract_id,r.employee_id,r.status,r.created_at,r.defer_until FROM employment_resignations r JOIN employment_contracts c ON c.id=r.contract_id AND c.employee_id=r.employee_id WHERE r.status IN ('submitted','deferred') AND c.active=1 AND (r.status='submitted' AND r.created_at<=datetime('now','-30 days') OR r.status='deferred' AND r.defer_until<=datetime('now')) LIMIT 30").all()).results;
+ for(const r of requests){
+  await db.batch([
+   db.prepare("UPDATE employment_resignations SET status='accepted',resolved_at=CURRENT_TIMESTAMP,review_note=COALESCE(review_note,'انتهت مدة طلب الاستقالة') WHERE id=? AND status IN ('submitted','deferred')").bind(r.id),
+   db.prepare("UPDATE employment_contracts SET active=0 WHERE id=? AND employee_id=? AND active=1").bind(r.contract_id,r.employee_id)
+  ]);
+ }
+ return requests.length;
+}
 async function airportReadiness(db,aviationDb){
  if(!aviationDb)return {ready:false,reason:'قاعدة الطيران غير متصلة',checks:[]};
  const [setting,staff,flights,bookings,boarding,completedFlights,activeAirlines]=await Promise.all([
@@ -693,7 +714,7 @@ async function airportReadiness(db,aviationDb){
  const kingAuthorized=setting?.value==='1';
  const airlineReady=Number(activeAirlines?.n||0)>=2;
  const flightReady=Number(flights?.n||0)>0;
- const bookingOperationsReady=false; // No unsafe booking/payment or document-check implementation yet.
+ const bookingOperationsReady=Number((await aviationDb.prepare("SELECT COUNT(*) n FROM aviation_settings WHERE key='operations_validated' AND value='1'").first())?.n||0)===1;
  return {ready:constructionComplete&&staffComplete&&kingAuthorized&&airlineReady&&flightReady&&bookingOperationsReady,booking_operations_ready:bookingOperationsReady,construction_complete:constructionComplete,construction_end:AIRPORT_CONSTRUCTION_END,staffing,staff_complete:staffComplete,royal_authorization:kingAuthorized,airlines_ready:airlineReady,scheduled_flights:Number(flights?.n||0),confirmed_bookings:Number(bookings?.n||0),boarding_passes:Number(boarding?.n||0),completed_flights:Number(completedFlights?.n||0),reason:constructionComplete?'التشغيل مشروط بالتوظيف والاعتماد والرحلات المجدولة':'البناء لم يكتمل بعد'};
 }
 async function seedAviationCatalog(db){
@@ -709,7 +730,7 @@ export default {
  async scheduled(event,env,ctx){
   // Royal authorization: resume conservatively, once every four hours.
   const hour=Math.floor(event.scheduledTime/3600000);
-  if(hour%4!==0||new Date(event.scheduledTime).getUTCMinutes()!==0){try{await runSimEmployeeServices(env.DB)}catch(error){console.error('sim_staff_cycle_failed',String(error).slice(0,220))}return;}
+  if(hour%4!==0||new Date(event.scheduledTime).getUTCMinutes()!==0){try{await runSimEmployeeServices(env.DB)}catch(error){console.error('sim_staff_cycle_failed',String(error).slice(0,220))}try{await reconcileEmployeeResignations(env.DB)}catch(error){console.error('resignation_cycle_failed',String(error).slice(0,220))}return;}
   // A failing subsystem must not prevent other fictional residents from replying.
   const phases=[['government',()=>runSaliyahGovernment(env.DB,env.AVIATION_DB)],['citizen_services',()=>runSimEmployeeServices(env.DB)],['x_bots',()=>generateXBotActivity(env.DB)],['citizen_contacts',()=>runSimContactReplies(env.DB,env.AVIATION_DB)],['creator_rewards',()=>runXCreatorAutoPayouts(env.DB)]];
   for(const [label,run] of phases)try{await run()}catch(error){console.error('simulation_phase_failed',label,String(error).slice(0,220))}
@@ -952,6 +973,53 @@ if(path.startsWith('/api/aviation/')){
  const aviationDb=env.AVIATION_DB;
  if(!aviationDb)return json({error:'قاعدة بيانات الطيران غير متصلة'},503);
  if(method==='GET'&&path==='/api/aviation/readiness')return json(await airportReadiness(db,aviationDb));
+ 
+ if(method==='GET'&&path==='/api/aviation/routes')return json({routes:AIRPORT_ROUTE_SEEDS.map(([code,name])=>({code,name})),fleet:AIRPORT_FLEET.map(([airline,aircraft,units,kind])=>({airline,aircraft,units,kind}))});
+ if(method==='GET'&&path==='/api/aviation/admin'){
+  if(!user||user.role!=='king')return json({error:'للملك فقط'},403);
+  const readiness=await airportReadiness(db,aviationDb);
+  const [staff,flights,airlines,settings]=await Promise.all([
+   aviationDb.prepare("SELECT id,name,category,status,employee_user_id,appointed_at FROM aviation_staff ORDER BY created_at DESC LIMIT 100").all(),
+   aviationDb.prepare("SELECT id,number,airline_id,origin_code,destination_code,departure_at,arrival_at,status FROM aviation_flights ORDER BY departure_at LIMIT 100").all(),
+   aviationDb.prepare("SELECT id,name,code,kind,enabled FROM aviation_airlines").all(),
+   aviationDb.prepare("SELECT key,value FROM aviation_settings WHERE key IN ('opening_authorized','operations_validated')").all()
+  ]);
+  return json({readiness,staff:staff.results,flights:flights.results,airlines:airlines.results,settings:settings.results});
+ }
+ if(method==='POST'&&path==='/api/aviation/admin/staff'){
+  if(!user||user.role!=='king')return json({error:'للملك فقط'},403);
+  const b=await input(req);if(!b||!validText(b.name,3,120)||!AIRPORT_STAFF_TARGETS.some(x=>x[0]===b.category)||typeof b.employee_user_id!=='string'||!validText(b.employee_user_id,10,80))return json({error:'بيانات تعيين الموظف ناقصة'},400);
+  const employee=await db.prepare("SELECT id FROM users WHERE id=?").bind(b.employee_user_id).first();
+  if(!employee)return json({error:'الموظف غير مسجل في المملكة'},404);
+  const existing=await aviationDb.prepare("SELECT id FROM aviation_staff WHERE employee_user_id=? AND category=?").bind(employee.id,b.category).first();
+  if(existing)return json({error:'هذا الموظف معين في نفس التخصص'},409);
+  const id=random();
+  await aviationDb.prepare("INSERT INTO aviation_staff(id,name,category,employee_user_id,status,appointed_at) VALUES(?,?,?,?,'active',CURRENT_TIMESTAMP)").bind(id,b.name.trim(),b.category,employee.id).run();
+  await audit(db,user.id,'aviation_staff_appoint','aviation_staff',id,{category:b.category});
+  return json({ok:true,id},201);
+ }
+ if(method==='POST'&&path==='/api/aviation/admin/staff/status'){
+  if(!user||user.role!=='king')return json({error:'للملك فقط'},403);
+  const b=await input(req);if(!b||!validText(b.id,10,80)||!['active','inactive'].includes(b.status))return json({error:'طلب غير صالح'},400);
+  const r=await aviationDb.prepare("UPDATE aviation_staff SET status=? WHERE id=?").bind(b.status,b.id).run();
+  if(!r.meta.changes)return json({error:'الموظف غير موجود'},404);
+  await audit(db,user.id,'aviation_staff_status','aviation_staff',b.id,{status:b.status});return json({ok:true});
+ }
+ if(method==='POST'&&path==='/api/aviation/admin/flight'){
+  if(!user||user.role!=='king')return json({error:'للملك فقط'},403);
+  const b=await input(req);if(!b||!validText(b.number,3,12)||!['saliyah-airlines','flyadeal-saliyah'].includes(b.airline_id)||!['RUH','JED','DOH','DXB','AUH','KWI','BAH','MCT','CAI','IST','LHR','NRT','CDG','FRA'].includes(b.destination_code)||typeof b.departure_at!=='string'||typeof b.arrival_at!=='string'||!Number.isFinite(Date.parse(b.departure_at))||!Number.isFinite(Date.parse(b.arrival_at))||Date.parse(b.arrival_at)<=Date.parse(b.departure_at)||!Number.isSafeInteger(b.price_economy)||b.price_economy<1||!Number.isSafeInteger(b.seats_economy)||b.seats_economy<1||b.seats_economy>600||!Number.isSafeInteger(b.seats_business)||b.seats_business<0||b.seats_business>120)return json({error:'بيانات الرحلة غير مكتملة أو غير صحيحة'},400);
+  if(Date.parse(b.departure_at)<=Date.now())return json({error:'يجب أن تكون الرحلة مستقبلية'},400);
+  const id=random();
+  try{await aviationDb.prepare("INSERT INTO aviation_flights(id,airline_id,number,origin_code,destination_code,departure_at,arrival_at,price_economy,seats_economy,seats_business,status) VALUES(?,?,?,'SJD',?,?,?,?,?,?,'draft')").bind(id,b.airline_id,b.number.trim().toUpperCase(),b.destination_code,new Date(b.departure_at).toISOString().replace('T',' ').slice(0,19),new Date(b.arrival_at).toISOString().replace('T',' ').slice(0,19),b.price_economy,b.seats_economy,b.seats_business).run()}catch(e){return json({error:'تعذر إضافة الرحلة أو رقمها مكرر'},409)}
+  await audit(db,user.id,'aviation_flight_draft','aviation_flights',id,{});return json({id,status:'draft'},201);
+ }
+ if(method==='POST'&&path==='/api/aviation/admin/flight/status'){
+  if(!user||user.role!=='king')return json({error:'للملك فقط'},403);
+  const b=await input(req);if(!b||!validText(b.id,10,80)||!['draft','scheduled','cancelled'].includes(b.status))return json({error:'طلب غير صالح'},400);
+  const r=await aviationDb.prepare("UPDATE aviation_flights SET status=? WHERE id=? AND status IN ('draft','scheduled') AND departure_at>datetime('now')").bind(b.status,b.id).run();if(!r.meta.changes)return json({error:'الرحلة غير موجودة أو لا يمكن تعديلها'},409);
+  await audit(db,user.id,'aviation_flight_status','aviation_flights',b.id,{status:b.status});return json({ok:true});
+ }
+
  if(method==='GET'&&path==='/api/aviation/flights'){
   const rows=await aviationDb.prepare("SELECT f.id,f.number,f.origin_code,f.destination_code,f.departure_at,f.arrival_at,f.price_economy,f.seats_economy,f.seats_business,f.status,a.name airline,a.code airline_code FROM aviation_flights f JOIN aviation_airlines a ON a.id=f.airline_id WHERE f.status IN ('scheduled','boarding','departed','arrived') ORDER BY f.departure_at LIMIT 100").all();
   const readiness=await airportReadiness(db,aviationDb);
@@ -2305,7 +2373,44 @@ if(path.startsWith('/api/payroll/')){
   const c=await db.prepare('SELECT id,employer,title,salary,active FROM employment_contracts WHERE employee_id=? ORDER BY created_at DESC').bind(user.id).all();
   const p=await db.prepare('SELECT p.id,p.period,p.amount,p.created_at,c.employer,c.title FROM payroll_payments p JOIN employment_contracts c ON c.id=p.contract_id WHERE c.employee_id=? ORDER BY p.period DESC LIMIT 100').bind(user.id).all();return json({contracts:c.results,payments:p.results});
  }
+ if(method==='GET'&&path==='/api/payroll/resignations/mine'){
+  const rows=await db.prepare("SELECT r.id,r.contract_id,r.status,r.reason,r.created_at,r.defer_until,r.review_note,r.resolved_at,c.employer,c.title FROM employment_resignations r JOIN employment_contracts c ON c.id=r.contract_id WHERE r.employee_id=? ORDER BY r.created_at DESC LIMIT 50").bind(user.id).all();
+  return json({resignations:rows.results});
+ }
+ if(method==='POST'&&path==='/api/payroll/resign'){
+  const b=await input(req);if(!b||!validText(b.contract_id,10,80)||!validText(b.reason,5,1000))return json({error:'حدد العقد واكتب سبب الاستقالة'},400);
+  const c=await db.prepare('SELECT id,active FROM employment_contracts WHERE id=? AND employee_id=?').bind(b.contract_id,user.id).first();
+  if(!c||!c.active)return json({error:'العقد غير نشط أو غير مملوك لك'},409);
+  const pending=await db.prepare("SELECT id FROM employment_resignations WHERE contract_id=? AND status IN ('submitted','deferred')").bind(c.id).first();
+  if(pending)return json({error:'يوجد طلب استقالة قائم بالفعل'},409);
+  const id=random();await db.prepare("INSERT INTO employment_resignations(id,contract_id,employee_id,reason) VALUES(?,?,?,?)").bind(id,c.id,user.id,b.reason.trim()).run();
+  await audit(db,user.id,'employment_resign','employment_resignations',id,{contract_id:c.id});
+  return json({id,status:'submitted',review_days:30},201);
+ }
+ if(method==='POST'&&path==='/api/payroll/resign/withdraw'){
+  const b=await input(req);if(!b||!validText(b.id,10,80))return json({error:'رقم الطلب غير صالح'},400);
+  const r=await db.prepare("UPDATE employment_resignations SET status='withdrawn',resolved_at=CURRENT_TIMESTAMP WHERE id=? AND employee_id=? AND status='submitted' AND created_at>=datetime('now','-7 days')").bind(b.id,user.id).run();
+  if(!r.meta.changes)return json({error:'انتهت مدة السحب أو صدر قرار بشأن الطلب'},409);
+  await audit(db,user.id,'employment_resignation_withdraw','employment_resignations',b.id,{});return json({ok:true});
+ }
  if(!admin)return json({error:'إدارة الرواتب للملك فقط'},403);
+ if(method==='GET'&&path==='/api/payroll/resignations/admin'){
+  const rows=await db.prepare("SELECT r.*,c.employer,c.title,u.username FROM employment_resignations r JOIN employment_contracts c ON c.id=r.contract_id JOIN users u ON u.id=r.employee_id ORDER BY r.created_at DESC LIMIT 150").all();return json({resignations:rows.results});
+ }
+ if(method==='POST'&&path==='/api/payroll/resign/decision'){
+  const b=await input(req);if(!b||!validText(b.id,10,80)||!['accepted','deferred'].includes(b.decision))return json({error:'قرار غير صالح'},400);
+  const r=await db.prepare("SELECT id,status,contract_id,employee_id,created_at FROM employment_resignations WHERE id=? AND status='submitted'").bind(b.id).first();
+  if(!r)return json({error:'الطلب غير موجود أو صدر فيه قرار'},409);
+  const note=String(b.note||'').trim().slice(0,500);
+  if(b.decision==='deferred'&&!validText(note,5,500))return json({error:'سبب تأجيل الاستقالة مطلوب'},400);
+  if(b.decision==='deferred'){
+   const r2=await db.prepare("UPDATE employment_resignations SET status='deferred',review_note=?,defer_until=datetime('now','+60 days') WHERE id=? AND status='submitted'").bind(note,r.id).run();
+   if(!r2.meta.changes)return json({error:'تغيرت حالة الطلب'},409);
+  }else{
+   await db.batch([db.prepare("UPDATE employment_resignations SET status='accepted',review_note=?,resolved_at=CURRENT_TIMESTAMP WHERE id=? AND status='submitted'").bind(note,r.id),db.prepare("UPDATE employment_contracts SET active=0 WHERE id=? AND employee_id=?").bind(r.contract_id,r.employee_id)]);
+  }
+  await audit(db,user.id,'employment_resignation_decision','employment_resignations',r.id,{decision:b.decision});return json({ok:true});
+ }
  if(method==='GET'&&path==='/api/payroll/admin'){
   const budgets=await db.prepare('SELECT * FROM employer_budgets ORDER BY employer').all();
   const accepted=await db.prepare("SELECT a.id,a.applicant_id,u.username,v.employer,v.sector,v.title,v.salary FROM job_applications a JOIN vacancies v ON v.id=a.vacancy_id JOIN users u ON u.id=a.applicant_id LEFT JOIN employment_contracts c ON c.application_id=a.id WHERE a.status='accepted' AND c.id IS NULL ORDER BY a.created_at DESC LIMIT 100").all();
