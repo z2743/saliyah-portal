@@ -1070,7 +1070,7 @@ if(path.startsWith('/api/aviation/')){
  }
  if(method==='GET'&&path==='/api/aviation/boarding-passes'){
   if(!user)return json({error:'سجل الدخول لعرض بطاقات الصعود'},401);
-  const rows=await aviationDb.prepare("SELECT p.id,p.booking_id,p.issued_at,p.seat,b.reference,f.number flight_number FROM aviation_boarding_passes p JOIN aviation_bookings b ON b.id=p.booking_id JOIN aviation_flights f ON f.id=b.flight_id WHERE b.user_id=? ORDER BY p.issued_at DESC LIMIT 50").bind(user.id).all();
+  const rows=await aviationDb.prepare("SELECT p.id,p.booking_id,p.issued_at,p.seat,b.reference,f.number flight_number,f.destination_code,f.departure_at FROM aviation_boarding_passes p JOIN aviation_bookings b ON b.id=p.booking_id JOIN aviation_flights f ON f.id=b.flight_id WHERE b.user_id=? ORDER BY p.issued_at DESC LIMIT 50").bind(user.id).all();
   return json({boarding_passes:rows.results});
  }
  if(method==='POST'&&path==='/api/aviation/booking'){
@@ -1107,6 +1107,57 @@ if(path.startsWith('/api/aviation/')){
   if(!completed.ok)return json({error:completed.error,reference,booking_id:id},503);
   await audit(db,user.id,'aviation_booking_paid','aviation_bookings',id,{flight_id:f.id,amount:price,account_id:account.id});
   return json({ok:true,id,reference,status:'confirmed',amount:price},201);
+ }
+ 
+ if(method==='POST'&&path==='/api/aviation/check-in'){
+  if(!user)return json({error:'سجل الدخول أولاً'},401);
+  const b=await input(req);if(!b||!validText(b.booking_id,10,80))return json({error:'رقم الحجز مطلوب'},400);
+  const row=await aviationDb.prepare("SELECT b.id,b.flight_id,b.user_id,b.seat_class,b.passport_number,b.status,b.payment_status,f.departure_at,f.status flight_status,f.seats_economy,f.seats_business FROM aviation_bookings b JOIN aviation_flights f ON f.id=b.flight_id WHERE b.id=? AND b.user_id=?").bind(b.booking_id,user.id).first();
+  if(!row||row.status!=='confirmed'||row.payment_status!=='paid')return json({error:'الحجز غير مؤكد أو لم يُدفع'},409);
+  const payment=await db.prepare("SELECT 1 FROM aviation_payment_ledger WHERE booking_id=? AND user_id=? AND status='confirmed'").bind(row.id,user.id).first();
+  if(!payment)return json({error:'لا يوجد تأكيد بنكي للحجز'},409);
+  const depart=Date.parse(row.departure_at.replace(' ','T')+'Z');
+  if(!Number.isFinite(depart)||depart-Date.now()>24*3600000||depart-Date.now()<45*60000||!['scheduled','boarding'].includes(row.flight_status))return json({error:'تسجيل السفر متاح من 24 ساعة إلى 45 دقيقة قبل الإقلاع'},409);
+  const pass=await db.prepare("SELECT id,number,expires_at FROM documents WHERE created_by=? AND type='passport' AND number=? AND status='valid' AND expires_at>=?").bind(user.id,row.passport_number,row.departure_at.slice(0,10)).first();
+  if(!pass)return json({error:'جواز الحجز غير صالح للسفر'},409);
+  const circular=await db.prepare("SELECT 1 FROM circulars WHERE document_id=? AND status='active' AND (expires_at IS NULL OR expires_at>=date('now')) LIMIT 1").bind(pass.id).first();
+  if(circular)return json({error:'يمنع التعميم الحالي إكمال تسجيل السفر'},409);
+  const already=await aviationDb.prepare("SELECT id,seat,issued_at FROM aviation_boarding_passes WHERE booking_id=?").bind(row.id).first();
+  if(already)return json({ok:true,boarding_pass:already,already_issued:true});
+  const capacity=row.seat_class==='business'?row.seats_business:row.seats_economy;
+  const prefix=row.seat_class==='business'?'B-':'E-';
+  const current=await aviationDb.prepare("SELECT COUNT(*) n FROM aviation_boarding_passes WHERE flight_id=? AND seat LIKE ?").bind(row.flight_id,prefix+'%').first();
+  if(current.n>=capacity)return json({error:'المقاعد المخصصة لهذه الدرجة غير متاحة'},409);
+  const seat=prefix+String(current.n+1).padStart(3,'0'),id=random();
+  try{
+   const result=await aviationDb.batch([
+    aviationDb.prepare("INSERT INTO aviation_boarding_passes(id,booking_id,seat,flight_id) VALUES(?,?,?,?)").bind(id,row.id,seat,row.flight_id),
+    aviationDb.prepare("UPDATE aviation_bookings SET checked_in_at=CURRENT_TIMESTAMP WHERE id=? AND checked_in_at IS NULL").bind(row.id)
+   ]);
+   if(!result[0].meta.changes)return json({error:'تعذر إصدار بطاقة الصعود'},409);
+  }catch(e){console.error('aviation_checkin_failed',String(e).slice(0,160));return json({error:'تعارض في المقعد؛ أعد المحاولة'},409)}
+  await audit(db,user.id,'aviation_checkin','aviation_boarding_passes',id,{booking_id:row.id,seat});
+  return json({ok:true,boarding_pass:{id,seat}},201);
+ }
+ if(method==='POST'&&path==='/api/aviation/board'){
+  if(!user||!(await can('borders')))return json({error:'إتمام الصعود مخصص لموظفي الجوازات'},403);
+  const b=await input(req);if(!b||!validText(b.booking_id,10,80))return json({error:'رقم الحجز مطلوب'},400);
+  const row=await aviationDb.prepare("SELECT b.id,b.user_id,b.flight_id,b.passport_number,b.payment_status,b.status,p.id pass_id,f.departure_at,f.status flight_status FROM aviation_bookings b JOIN aviation_flights f ON f.id=b.flight_id JOIN aviation_boarding_passes p ON p.booking_id=b.id WHERE b.id=?").bind(b.booking_id).first();
+  if(!row||row.status!=='confirmed'||row.payment_status!=='paid')return json({error:'لا توجد بطاقة صعود صالحة'},409);
+  const departure=Date.parse(row.departure_at.replace(' ','T')+'Z');
+  if(!Number.isFinite(departure)||departure-Date.now()>3*3600000||Date.now()>departure+30*60000||!['scheduled','boarding'].includes(row.flight_status))return json({error:'بوابة الصعود خارج المدة المسموحة'},409);
+  const checked=await validateAviationPassenger(db,row.user_id,row.departure_at.slice(0,10));
+  if(checked.error||checked.passport.number!==row.passport_number)return json({error:checked.error||'الجواز لا يطابق الحجز'},409);
+  const done=await aviationDb.prepare("SELECT id,status,border_movement_id FROM aviation_boarding_events WHERE booking_id=?").bind(row.id).first();
+  if(done?.status==='completed')return json({ok:true,border_movement_id:done.border_movement_id,already_boarded:true});
+  const eventId=done?.id||random(),movementId='air-exit-'+row.id;
+  if(!done)await aviationDb.prepare("INSERT INTO aviation_boarding_events(id,booking_id,flight_id,passport_number) VALUES(?,?,?,?)").bind(eventId,row.id,row.flight_id,row.passport_number).run();
+  const border=await db.prepare("SELECT id,post_id,document_id FROM border_movements WHERE id=?").bind(movementId).first();
+  if(border&&(border.post_id!=='airport-sjd'||border.document_id!==checked.passport.id))return json({error:'يوجد تعارض في سجل حركة الجواز'},409);
+  if(!border)await db.prepare("INSERT INTO border_movements(id,post_id,document_id,direction,purpose,actor_id) VALUES(?,'airport-sjd',?,'exit',?,?)").bind(movementId,checked.passport.id,'رحلة '+row.flight_id,user.id).run();
+  await aviationDb.prepare("UPDATE aviation_boarding_events SET status='completed',boarded_at=CURRENT_TIMESTAMP,border_movement_id=? WHERE booking_id=? AND status='pending'").bind(movementId,row.id).run();
+  await audit(db,user.id,'aviation_boarding','aviation_boarding_events',eventId,{booking_id:row.id,movement_id:movementId});
+  return json({ok:true,border_movement_id:movementId},201);
  }
  if(method==='POST'&&path==='/api/aviation/authorize'){
   if(!user||user.role!=='king')return json({error:'قرار افتتاح المطار للملك فقط'},403);
