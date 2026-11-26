@@ -708,6 +708,14 @@ async function runSharedCompanySalaryPayments(db){
   }
  }
 }
+async function reconcileCompanyResignations(db){
+ const pending=(await db.prepare("SELECT r.id,r.employment_id,r.employee_id,r.status FROM company_staff_resignations r JOIN company_employees e ON e.id=r.employment_id WHERE e.status='active' AND (r.status='submitted' AND r.created_at<=datetime('now','-30 days') OR r.status='deferred' AND r.defer_until<=datetime('now')) ORDER BY r.created_at LIMIT 25").all()).results;
+ for(const item of pending)await db.batch([
+  db.prepare("UPDATE company_staff_resignations SET status='accepted',reviewed_at=CURRENT_TIMESTAMP,review_note=COALESCE(review_note,'اكتمال مدة الإشعار') WHERE id=? AND status IN ('submitted','deferred')").bind(item.id),
+  db.prepare("UPDATE company_employees SET status='ended',ended_at=CURRENT_TIMESTAMP WHERE id=? AND employee_id=? AND status='active'").bind(item.employment_id,item.employee_id)
+ ]);
+ return pending.length;
+}
 async function reconcileEmployeeResignations(db){
  const requests=(await db.prepare("SELECT r.id,r.contract_id,r.employee_id,r.status,r.created_at,r.defer_until FROM employment_resignations r JOIN employment_contracts c ON c.id=r.contract_id AND c.employee_id=r.employee_id WHERE r.status IN ('submitted','deferred') AND c.active=1 AND (r.status='submitted' AND r.created_at<=datetime('now','-30 days') OR r.status='deferred' AND r.defer_until<=datetime('now')) LIMIT 30").all()).results;
  for(const r of requests){
@@ -840,7 +848,7 @@ export default {
  async scheduled(event,env,ctx){
   // Royal authorization: resume conservatively, once every four hours.
   const hour=Math.floor(event.scheduledTime/3600000);
-  if(hour%4!==0||new Date(event.scheduledTime).getUTCMinutes()!==0){try{await runSimEmployeeServices(env.DB)}catch(error){console.error('sim_staff_cycle_failed',String(error).slice(0,220))}try{await reconcileEmployeeResignations(env.DB)}catch(error){console.error('resignation_cycle_failed',String(error).slice(0,220))}try{await reconcileAviationPayments(env.DB,env.AVIATION_DB)}catch(error){console.error('aviation_payment_cycle_failed',String(error).slice(0,220))}try{await reconcileAviationCancelledFlights(env.DB,env.AVIATION_DB)}catch(error){console.error('aviation_cancellation_cycle_failed',String(error).slice(0,220))}try{await runSharedCompanySalaryPayments(env.DB)}catch(error){console.error('shared_company_payroll_cycle_failed',String(error).slice(0,220))}return;}
+  if(hour%4!==0||new Date(event.scheduledTime).getUTCMinutes()!==0){try{await runSimEmployeeServices(env.DB)}catch(error){console.error('sim_staff_cycle_failed',String(error).slice(0,220))}try{await reconcileEmployeeResignations(env.DB)}catch(error){console.error('resignation_cycle_failed',String(error).slice(0,220))}try{await reconcileCompanyResignations(env.DB)}catch(error){console.error('company_resignation_cycle_failed',String(error).slice(0,220))}try{await reconcileAviationPayments(env.DB,env.AVIATION_DB)}catch(error){console.error('aviation_payment_cycle_failed',String(error).slice(0,220))}try{await reconcileAviationCancelledFlights(env.DB,env.AVIATION_DB)}catch(error){console.error('aviation_cancellation_cycle_failed',String(error).slice(0,220))}try{await runSharedCompanySalaryPayments(env.DB)}catch(error){console.error('shared_company_payroll_cycle_failed',String(error).slice(0,220))}return;}
   // A failing subsystem must not prevent other fictional residents from replying.
   const phases=[['government',()=>runSaliyahGovernment(env.DB,env.AVIATION_DB)],['citizen_services',()=>runSimEmployeeServices(env.DB)],['x_bots',()=>generateXBotActivity(env.DB)],['citizen_contacts',()=>runSimContactReplies(env.DB,env.AVIATION_DB)],['creator_rewards',()=>runXCreatorAutoPayouts(env.DB)],['aviation_schedule',()=>ensureAviationRollingSchedule(env.AVIATION_DB)]];
   for(const [label,run] of phases)try{await run()}catch(error){console.error('simulation_phase_failed',label,String(error).slice(0,220))}
@@ -1974,11 +1982,45 @@ if(path.startsWith('/api/company/staff')){
   if(!r.meta.changes)return json({error:'العرض غير موجود أو تمت معالجته'},409);
   await audit(db,user.id,'company_offer_response','employment',b.id,{status:b.status});return json({ok:true});
  }
+ if(method==='GET'&&path==='/api/company/staff/resignations'){
+  const rows=await db.prepare("SELECT r.id,r.employment_id,r.employee_id,r.reason,r.status,r.created_at,r.review_note,r.defer_until,c.name company_name,u.username employee_name FROM company_staff_resignations r JOIN company_employees e ON e.id=r.employment_id JOIN commerce_companies c ON c.id=e.company_id JOIN users u ON u.id=e.employee_id WHERE e.employee_id=? OR c.owner_id=? ORDER BY r.created_at DESC LIMIT 100").bind(user.id,user.id).all();
+  return json({resignations:rows.results});
+ }
+ if(method==='POST'&&path==='/api/company/staff/resign'){
+  const b=await input(req);if(!b||!validText(b.id,10,80)||!validText(b.reason,5,1000))return json({error:'رقم عقد العمل وسبب الاستقالة مطلوبان'},400);
+  const current=await db.prepare("SELECT id FROM company_employees WHERE id=? AND employee_id=? AND status='active'").bind(b.id,user.id).first();
+  if(!current)return json({error:'عقد العمل غير نشط أو لا يخص حسابك'},409);
+  const id=random();
+  try{await db.prepare("INSERT INTO company_staff_resignations(id,employment_id,employee_id,reason) VALUES(?,?,?,?)").bind(id,current.id,user.id,b.reason.trim()).run()}catch{return json({error:'يوجد طلب استقالة قائم بالفعل'},409)}
+  await audit(db,user.id,'company_staff_resignation','company_staff_resignations',id,{employment_id:b.id});
+  return json({ok:true,id,status:'submitted'},201);
+ }
+ if(method==='POST'&&path==='/api/company/staff/resign/withdraw'){
+  const b=await input(req);if(!b||!validText(b.id,10,80))return json({error:'رقم الطلب غير صالح'},400);
+  const result=await db.prepare("UPDATE company_staff_resignations SET status='withdrawn',reviewed_at=CURRENT_TIMESTAMP WHERE id=? AND employee_id=? AND status='submitted' AND created_at>=datetime('now','-7 days')").bind(b.id,user.id).run();
+  if(!result.meta.changes)return json({error:'انقضت مهلة سحب الطلب أو صدر قرار عليه'},409);
+  await audit(db,user.id,'company_resignation_withdraw','company_staff_resignations',b.id,{});return json({ok:true});
+ }
+ if(method==='POST'&&path==='/api/company/staff/resign/decision'){
+  const b=await input(req);if(!b||!validText(b.id,10,80)||!['accepted','deferred'].includes(b.decision))return json({error:'قرار غير صالح'},400);
+  const item=await db.prepare("SELECT r.id,r.employment_id,r.employee_id FROM company_staff_resignations r JOIN company_employees e ON e.id=r.employment_id JOIN commerce_companies c ON c.id=e.company_id WHERE r.id=? AND r.status='submitted' AND c.owner_id=? AND e.status='active'").bind(b.id,user.id).first();
+  if(!item)return json({error:'طلب الاستقالة غير متاح للإدارة'},409);
+  const note=String(b.note||'').trim().slice(0,500);
+  if(b.decision==='deferred'&&!validText(note,5,500))return json({error:'سبب التأجيل مطلوب'},400);
+  if(b.decision==='accepted')await db.batch([
+   db.prepare("UPDATE company_staff_resignations SET status='accepted',reviewed_at=CURRENT_TIMESTAMP,review_note=? WHERE id=? AND status='submitted'").bind(note,item.id),
+   db.prepare("UPDATE company_employees SET status='ended',ended_at=CURRENT_TIMESTAMP WHERE id=? AND employee_id=? AND status='active'").bind(item.employment_id,item.employee_id)
+  ]);
+  else await db.prepare("UPDATE company_staff_resignations SET status='deferred',review_note=?,defer_until=datetime('now','+60 days') WHERE id=? AND status='submitted'").bind(note,item.id).run();
+  await db.prepare("INSERT INTO notifications(id,user_id,subject,body) VALUES(?,?,?,?)").bind(random(),item.employee_id,'قرار الاستقالة','تم تحديث طلب الاستقالة إلى '+b.decision).run();
+  await audit(db,user.id,'company_resignation_decision','company_staff_resignations',item.id,{decision:b.decision});
+  return json({ok:true});
+ }
  if(method==='POST'&&path==='/api/company/staff/end'){
-  const b=await input(req);if(!b||!validText(b.id,10,80))return json({error:'عقد غير صالح'},400);
-  const r=await db.prepare("UPDATE company_employees SET status='ended',ended_at=CURRENT_TIMESTAMP WHERE id=? AND status IN ('offered','active') AND (employee_id=? OR company_id IN (SELECT id FROM commerce_companies WHERE owner_id=?))").bind(b.id,user.id,user.id).run();
+  const b=await input(req);if(!b||!validText(b.id,10,80)||!validText(b.reason,5,500))return json({error:'رقم العقد وسبب الإنهاء مطلوبان'},400);
+  const r=await db.prepare("UPDATE company_employees SET status='ended',ended_at=CURRENT_TIMESTAMP WHERE id=? AND status IN ('offered','active') AND company_id IN (SELECT id FROM commerce_companies WHERE owner_id=?)").bind(b.id,user.id).run();
   if(!r.meta.changes)return json({error:'لا يمكن إنهاء العقد'},409);
-  await audit(db,user.id,'company_employment_end','employment',b.id,{});return json({ok:true});
+  await audit(db,user.id,'company_employment_end','employment',b.id,{reason:b.reason.trim()});return json({ok:true});
  }
  if(method==='POST'&&path==='/api/company/staff/pay'){
   const b=await input(req);if(!b||!validText(b.id,10,80)||typeof b.period!=='string'||!/^\d{4}-(0[1-9]|1[0-2])$/.test(b.period))return json({error:'الفترة أو العقد غير صالح'},400);
