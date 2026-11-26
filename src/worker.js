@@ -741,13 +741,24 @@ async function completeAviationBooking(db,aviationDb,bookingId,userId){
   return {ok:true,booking:{...row,status:'confirmed',payment_status:'paid'}};
  }catch(e){console.error('aviation_booking_completion_failed',String(e).slice(0,180));return {error:'تم حفظ الدفع ولم يؤكد الحجز بعد؛ ستتم إعادة المحاولة تلقائياً'}};
 }
+async function reconcileAviationCancelledFlights(db,aviationDb){
+ if(!aviationDb)return;
+ const cancelled=(await aviationDb.prepare("SELECT b.id,b.user_id,b.status,b.payment_status FROM aviation_bookings b JOIN aviation_flights f ON f.id=b.flight_id WHERE f.status='cancelled' AND b.status IN ('pending','confirmed') ORDER BY b.created_at LIMIT 25").all()).results;
+ for(const b of cancelled)try{
+  const ledger=await db.prepare('SELECT status FROM aviation_payment_ledger WHERE booking_id=? AND user_id=?').bind(b.id,b.user_id).first();
+  if(ledger&&ledger.status!=='refunded'){
+   await db.prepare("UPDATE aviation_payment_ledger SET status='refunded',refunded_at=CURRENT_TIMESTAMP WHERE booking_id=? AND status IN ('debited','confirmed')").bind(b.id).run();
+  }
+  await aviationDb.prepare("UPDATE aviation_bookings SET status='cancelled',payment_status=CASE WHEN payment_status IN ('debited','paid') THEN 'refunded' ELSE payment_status END WHERE id=? AND status IN ('pending','confirmed')").bind(b.id).run();
+ }catch(e){console.error('aviation_cancelled_refund_failed',String(e).slice(0,180))}
+}
 async function reconcileAviationPayments(db,aviationDb){
  if(!aviationDb)return;
  const ledgers=(await db.prepare("SELECT booking_id,user_id FROM aviation_payment_ledger WHERE status='debited' ORDER BY created_at LIMIT 15").all()).results;
  for(const ledger of ledgers)try{
   const row=await aviationDb.prepare("SELECT id,status,flight_id FROM aviation_bookings WHERE id=?").bind(ledger.booking_id).first();
   if(row?.status==='confirmed'){await db.prepare("UPDATE aviation_payment_ledger SET status='confirmed',confirmed_at=CURRENT_TIMESTAMP WHERE booking_id=? AND status='debited'").bind(ledger.booking_id).run();continue}
-  if(row?.status==='pending'){const done=await completeAviationBooking(db,aviationDb,ledger.booking_id,ledger.user_id);if(done.ok)continue}
+  if(row?.status==='pending'){const flight=await aviationDb.prepare('SELECT status FROM aviation_flights WHERE id=?').bind(row.flight_id).first();if(flight?.status==='cancelled'){await aviationDb.prepare("UPDATE aviation_bookings SET status='cancelled' WHERE id=? AND status='pending'").bind(row.id).run()}else{const done=await completeAviationBooking(db,aviationDb,ledger.booking_id,ledger.user_id);if(done.ok)continue}}
   if(!row||row.status==='cancelled'){await db.prepare("UPDATE aviation_payment_ledger SET status='refunded',refunded_at=CURRENT_TIMESTAMP WHERE booking_id=? AND status='debited'").bind(ledger.booking_id).run()}
  }catch(e){console.error('aviation_payment_reconciliation_failed',String(e).slice(0,180))}
  const pending=(await aviationDb.prepare("SELECT id FROM aviation_bookings WHERE status='pending' AND created_at<datetime('now','-20 minutes') ORDER BY created_at LIMIT 30").all()).results;
@@ -790,7 +801,7 @@ export default {
  async scheduled(event,env,ctx){
   // Royal authorization: resume conservatively, once every four hours.
   const hour=Math.floor(event.scheduledTime/3600000);
-  if(hour%4!==0||new Date(event.scheduledTime).getUTCMinutes()!==0){try{await runSimEmployeeServices(env.DB)}catch(error){console.error('sim_staff_cycle_failed',String(error).slice(0,220))}try{await reconcileEmployeeResignations(env.DB)}catch(error){console.error('resignation_cycle_failed',String(error).slice(0,220))}try{await reconcileAviationPayments(env.DB,env.AVIATION_DB)}catch(error){console.error('aviation_payment_cycle_failed',String(error).slice(0,220))}try{await runSharedCompanySalaryPayments(env.DB)}catch(error){console.error('shared_company_payroll_cycle_failed',String(error).slice(0,220))}return;}
+  if(hour%4!==0||new Date(event.scheduledTime).getUTCMinutes()!==0){try{await runSimEmployeeServices(env.DB)}catch(error){console.error('sim_staff_cycle_failed',String(error).slice(0,220))}try{await reconcileEmployeeResignations(env.DB)}catch(error){console.error('resignation_cycle_failed',String(error).slice(0,220))}try{await reconcileAviationPayments(env.DB,env.AVIATION_DB)}catch(error){console.error('aviation_payment_cycle_failed',String(error).slice(0,220))}try{await reconcileAviationCancelledFlights(env.DB,env.AVIATION_DB)}catch(error){console.error('aviation_cancellation_cycle_failed',String(error).slice(0,220))}try{await runSharedCompanySalaryPayments(env.DB)}catch(error){console.error('shared_company_payroll_cycle_failed',String(error).slice(0,220))}return;}
   // A failing subsystem must not prevent other fictional residents from replying.
   const phases=[['government',()=>runSaliyahGovernment(env.DB,env.AVIATION_DB)],['citizen_services',()=>runSimEmployeeServices(env.DB)],['x_bots',()=>generateXBotActivity(env.DB)],['citizen_contacts',()=>runSimContactReplies(env.DB,env.AVIATION_DB)],['creator_rewards',()=>runXCreatorAutoPayouts(env.DB)]];
   for(const [label,run] of phases)try{await run()}catch(error){console.error('simulation_phase_failed',label,String(error).slice(0,220))}
@@ -1086,6 +1097,7 @@ if(path.startsWith('/api/aviation/')){
   if(!user||user.role!=='king')return json({error:'للملك فقط'},403);
   const b=await input(req);if(!b||!validText(b.id,10,80)||!['draft','scheduled','cancelled'].includes(b.status))return json({error:'طلب غير صالح'},400);
   const r=await aviationDb.prepare("UPDATE aviation_flights SET status=? WHERE id=? AND status IN ('draft','scheduled') AND departure_at>datetime('now')").bind(b.status,b.id).run();if(!r.meta.changes)return json({error:'الرحلة غير موجودة أو لا يمكن تعديلها'},409);
+  if(b.status==='cancelled')await reconcileAviationCancelledFlights(db,aviationDb);
   await audit(db,user.id,'aviation_flight_status','aviation_flights',b.id,{status:b.status});return json({ok:true});
  }
 
