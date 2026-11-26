@@ -1166,10 +1166,31 @@ if(path.startsWith('/api/aviation/')){
  }
  if(method==='POST'&&path==='/api/aviation/admin/validation'){
   if(!user||user.role!=='king')return json({error:'للملك فقط'},403);
+  // Non-destructive operational preflight: real D1 invariants and payment guards,
+  // without forging bookings, passing passengers, or opening the airport early.
   const readiness=await airportReadiness(db,aviationDb);
-  if(!readiness.construction_complete||!readiness.staff_complete||!readiness.airlines_ready||readiness.scheduled_flights<1)return json({error:'لم تكتمل شروط التشغيل لا يمكن اجتياز فحص العمليات',readiness},409);
-  // An operational smoke test must explicitly verify live booking/payment/check-in and staff readiness.
-  return json({error:'اعتماد فحوصات الدفع والإلغاء والصعود الفعلية غير مكتمل بعد؛ لا يمكن تجاوزها'},409);
+  const checks=[];
+  const add=(key,ok,detail)=>checks.push({key,ok:!!ok,detail});
+  const schedules=await aviationDb.prepare("SELECT COUNT(*) n, SUM(CASE WHEN f.departure_at>=f.arrival_at OR f.price_economy<=0 OR f.seats_economy<=0 THEN 1 ELSE 0 END) invalid,COUNT(DISTINCT f.airline_id) carriers FROM aviation_flights f WHERE f.status='scheduled' AND f.departure_at>datetime('now')").first();
+  add('flight_schedule',Number(schedules?.n)>0&&Number(schedules?.invalid||0)===0,Number(schedules?.n||0)+' scheduled');
+  add('airlines_and_staff',readiness.airlines_ready&&readiness.staff_complete,'airlines and qualified staff');
+  const fleet=await aviationDb.prepare("SELECT COUNT(*) n FROM aviation_fleet WHERE active=1 AND fleet_size>0").first();
+  add('active_fleet',Number(fleet?.n||0)>=7,'registered active fleet');
+  const damaged=await aviationDb.prepare("SELECT COUNT(*) n FROM aviation_bookings b LEFT JOIN aviation_flights f ON f.id=b.flight_id WHERE f.id IS NULL OR (b.status='confirmed' AND b.payment_status<>'paid')").first();
+  add('booking_consistency',Number(damaged?.n||0)===0,'unpaid confirmations or orphaned flights');
+  const unfunded=await db.prepare("SELECT COUNT(*) n FROM aviation_payment_ledger l LEFT JOIN aviation_treasury t ON t.airline_id=l.airline_id WHERE t.airline_id IS NULL OR l.amount<=0").first();
+  add('payment_ledger',Number(unfunded?.n||0)===0,'ledger references and amounts');
+  const missing=await db.prepare("SELECT COUNT(*) n FROM sqlite_master WHERE type='trigger' AND name IN ('aviation_payment_debit_guard','aviation_payment_debit_apply','aviation_payment_refund_guard','aviation_payment_refund_apply')").first();
+  add('atomic_payment_triggers',Number(missing?.n||0)===4,'debit and refund protections');
+  const borders=await db.prepare("SELECT COUNT(*) n FROM sqlite_master WHERE type='table' AND name IN ('border_movements','documents','circulars')").first();
+  add('passport_and_border_tables',Number(borders?.n||0)===3,'passport, circular and exit records');
+  add('royal_preapproval',readiness.royal_authorization,'royal authorization recorded');
+  const passed=checks.every(x=>x.ok),commissioned=readiness.construction_complete&&passed;
+  // Preflight is not an end-to-end booking transaction. Never set operations_validated=1
+  // solely from structural evidence: passenger and payment tests remain separate.
+  await audit(db,user.id,'airport_operational_preflight','aviation_settings','operations_validated',{passed,commissioned,checks});
+  return json({ok:passed,passed,commissioned,ready:readiness.ready,checks,readiness,
+    note:'فحص بنيوي وتشغيلي للبيانات، لا ينشئ حجوزات أو يخصم أموالًا، ولا يثبت تجربة دفع مسافر حقيقي.'},passed?200:409);
  }
  if(method==='POST'&&path==='/api/aviation/admin/flight/status'){
   if(!user||user.role!=='king')return json({error:'للملك فقط'},403);
