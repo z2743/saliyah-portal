@@ -46,7 +46,7 @@ class CompanyOperationsTests(unittest.TestCase):
           CREATE TABLE company_salary_payments(
             id TEXT PRIMARY KEY, employment_id TEXT REFERENCES company_employees(id),
             period TEXT NOT NULL, amount INTEGER NOT NULL,
-            actor_id TEXT REFERENCES users(id), UNIQUE(employment_id,period)
+            actor_id TEXT REFERENCES users(id), created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP, UNIQUE(employment_id,period)
           );
         """)
         self.db.executescript((ROOT / "migrations/0082_company_operations.sql").read_text())
