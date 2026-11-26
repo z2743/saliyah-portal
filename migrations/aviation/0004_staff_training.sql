@@ -8,6 +8,9 @@ ALTER TABLE aviation_staff ADD COLUMN license_number TEXT;
 CREATE UNIQUE INDEX IF NOT EXISTS idx_aviation_staff_sim_identity ON aviation_staff(sim_citizen_id) WHERE sim_citizen_id IS NOT NULL;
 CREATE UNIQUE INDEX IF NOT EXISTS idx_aviation_staff_license ON aviation_staff(license_number) WHERE license_number IS NOT NULL;
 CREATE INDEX IF NOT EXISTS idx_aviation_staff_qualified_status ON aviation_staff(category,status,qualified);
-CREATE TRIGGER IF NOT EXISTS aviation_staff_qualification_guard BEFORE UPDATE OF qualified ON aviation_staff
+CREATE TRIGGER IF NOT EXISTS aviation_staff_qualification_guard BEFORE UPDATE OF qualified,training_score,training_completed_at,license_number ON aviation_staff
  WHEN NEW.qualified=1 AND (NEW.training_score<70 OR NEW.training_score IS NULL OR NEW.training_completed_at IS NULL OR NEW.license_number IS NULL)
  BEGIN SELECT RAISE(ABORT,'validated simulation training required'); END;
+CREATE TRIGGER IF NOT EXISTS aviation_staff_insert_qualification_guard BEFORE INSERT ON aviation_staff
+ WHEN NEW.qualified=1 AND (NEW.training_score<70 OR NEW.training_score IS NULL OR NEW.training_completed_at IS NULL OR NEW.license_number IS NULL)
+ BEGIN SELECT RAISE(ABORT,'validated simulated training required'); END;
