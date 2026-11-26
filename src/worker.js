@@ -585,7 +585,7 @@ async function runSimEmployeeServices(db){
   const rows=(await db.prepare("SELECT id,created_by,full_name,parent_name,birth_date FROM civil_intake WHERE status='recorded' ORDER BY created_at LIMIT 15").all()).results;
   for(const row of rows)try{
    // Incomplete identity submissions stay for human clarification, never blindly approved.
-   if(!validText(row.full_name,2,160)||!validText(row.parent_name,2,160)||!/^\\d{4}-\\d{2}-\\d{2}$/.test(row.birth_date||'')||!Number.isFinite(Date.parse(row.birth_date))||row.birth_date>today)continue;
+   if(!validText(row.full_name,2,160)||!validText(row.parent_name,2,160)||!/^\d{4}-\d{2}-\d{2}$/.test(row.birth_date||'')||!Number.isFinite(Date.parse(row.birth_date))||row.birth_date>today)continue;
    const note='اعتمده الموظف الآلي '+civil.name+' بعد فحص البيانات المسجلة';
    const done=await db.prepare("UPDATE civil_intake SET status='approved',review_note=?,decided_at=CURRENT_TIMESTAMP WHERE id=? AND status='recorded'").bind(note,row.id).run();
    if(done.meta.changes)await record(civil,'civil',row.id,'approved',note,row.created_by,'اعتماد طلب الأحوال','تم اعتماد طلب الأحوال المدنية بواسطة '+civil.name+' (موظف آلي)');
