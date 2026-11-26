@@ -731,7 +731,7 @@ async function companyOperationsPage(){
 }
 async function companyMarketPage(){
  const [c,v]=await Promise.all([api('/company/operations/catalog'),api('/company/operations/vacancies')]);
- const r=me?await api('/company/operations/manage'):null;
+ const r=me?await api('/company/operations/my-market'):null;
  const banks=r?.accounts||[];
  page('سوق المملكة ووظائف الشركات',`<div class="notice">منتجات وخدمات الشركات المعتمدة في المملكة العربية الصالية. الدفع من الحساب الافتراضي، والأرصدة افتراضية.</div><div class="actions"><a class="btn outline" href="#/commerce">السجل التجاري</a><a class="btn outline" href="#/company-operations">إدارة شركة</a></div>
  <h2>المنتجات والخدمات</h2>${c.catalog.map(p=>'<article class="card">'+(p.image_url?'<img loading="lazy" src="'+safe(p.image_url)+'" alt="'+safe(p.title)+'" style="width:180px;max-height:150px;object-fit:contain">':'')+'<h3>'+safe(p.title)+'</h3><p>'+safe(p.company_name)+(p.branch_name?' · '+safe(p.branch_name):'')+' · '+safe(p.price)+' ريال صالي</p><p>'+safe(p.description)+'</p><p>'+safe(p.kind==='product'?'المخزون '+p.stock:'خدمة')+'</p>'+(me?'<form class="marketPurchase form" data-id="'+safe(p.id)+'"><select class="input" name="account_id" required>'+banks.map(a=>'<option value="'+safe(a.id)+'">'+safe(a.bank)+' · '+safe(a.balance)+'</option>').join('')+'</select><input class="input" name="quantity" type="number" min="1" max="'+(p.kind==='service'?1:20)+'" value="1" required><button class="btn gold" '+(!banks.length||p.kind==='product'&&p.stock<1?'disabled':'')+'>شراء</button><p role="status"></p></form>':'<a class="btn outline" href="#/login">دخول للشراء</a>')+'</article>').join('')||'<p class="empty">لا توجد منتجات منشورة حاليًا.</p>'}
