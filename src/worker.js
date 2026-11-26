@@ -387,25 +387,28 @@ async function runSaliyahGovernment(db,aviationDb){
  }
 }
 // Clearly labelled simulated activity: bot accounts never impersonate ministries or publish real decrees.
+ const botReachSQL="SELECT COALESCE(SUM(CAST((max(0,julianday('now')-julianday(created_at))*max(0,julianday('now')-julianday(created_at))*1250)+(bot_likes*min(1,max(0,julianday('now')-julianday(created_at))/3)) AS INTEGER)),0) bot_likes,COALESCE(SUM(CAST((max(0,julianday('now')-julianday(created_at))*max(0,julianday('now')-julianday(created_at))*75)+(bot_reposts*min(1,max(0,julianday('now')-julianday(created_at))/3)) AS INTEGER)),0) bot_reposts FROM x_bot_reach WHERE post_id IN (SELECT id FROM x_posts WHERE profile_id=?)";
+ const computeXCreatorStats=async (db,profileId)=>{
+  const real=await db.prepare("SELECT (SELECT COUNT(*) FROM x_follows f WHERE f.following_id=?) followers,(SELECT COUNT(*) FROM x_likes l JOIN x_posts p ON p.id=l.post_id WHERE p.profile_id=? AND l.profile_id<>?) likes,(SELECT COUNT(DISTINCT r.profile_id) FROM x_posts r JOIN x_posts p ON p.id=r.repost_of WHERE p.profile_id=? AND r.profile_id<>?) reposts,(SELECT COALESCE(SUM(CASE WHEN actor.kind='bot' THEN 1 ELSE 2 END),0) FROM x_follows f JOIN x_profiles actor ON actor.id=f.follower_id WHERE f.following_id=?) followers_twice,(SELECT COALESCE(SUM(CASE WHEN actor.kind='bot' THEN 1 ELSE 2 END),0) FROM x_likes l JOIN x_posts p ON p.id=l.post_id JOIN x_profiles actor ON actor.id=l.profile_id WHERE p.profile_id=? AND l.profile_id<>?) likes_twice,(SELECT COALESCE(SUM(CASE WHEN actor.kind='bot' THEN 1 ELSE 2 END),0) FROM (SELECT DISTINCT r.profile_id FROM x_posts r JOIN x_posts original ON original.id=r.repost_of WHERE original.profile_id=?) rr JOIN x_profiles actor ON actor.id=rr.profile_id WHERE rr.profile_id<>?) reposts_twice").bind(profileId,profileId,profileId,profileId,profileId,profileId,profileId,profileId,profileId,profileId).first();
+  const bots=await db.prepare(botReachSQL).bind(profileId).first();
+  const botFollowers=Math.floor(bots.bot_likes/100);
+  return {...real,bot_likes:bots.bot_likes,bot_reposts:bots.bot_reposts,bot_followers:botFollowers,followers:real.followers+botFollowers,likes:real.likes+bots.bot_likes,reposts:real.reposts+bots.bot_reposts,followers_twice:real.followers_twice+botFollowers,likes_twice:real.likes_twice+bots.bot_likes,reposts_twice:real.reposts_twice+bots.bot_reposts};
+ };
+
+
 async function runXCreatorAutoPayouts(db){
  const period=Math.floor(Date.now()/259200000).toString();
- // Up to 100 eligible opted-in creators per run; repeat cron runs process the remaining creators.
- const count=await db.prepare("SELECT COUNT(*) n FROM x_creator_payout_preferences p JOIN x_profiles x ON x.id=p.profile_id AND x.user_id=p.user_id AND x.kind='person' JOIN bank_accounts a ON a.id=p.bank_account_id AND a.user_id=p.user_id WHERE p.enabled=1 AND NOT EXISTS(SELECT 1 FROM x_creator_payouts r WHERE r.profile_id=p.profile_id AND r.period=?)").bind(period).first();
- const pages=Math.max(1,Math.ceil(Number(count.n)/100));
- const offset=(Math.floor(Date.now()/3600000)%pages)*100;
- const prefs=(await db.prepare("SELECT p.profile_id,p.user_id,p.bank_account_id FROM x_creator_payout_preferences p JOIN x_profiles x ON x.id=p.profile_id AND x.user_id=p.user_id AND x.kind='person' JOIN bank_accounts a ON a.id=p.bank_account_id AND a.user_id=p.user_id WHERE p.enabled=1 AND NOT EXISTS(SELECT 1 FROM x_creator_payouts r WHERE r.profile_id=p.profile_id AND r.period=?) ORDER BY p.profile_id LIMIT 100 OFFSET ?").bind(period,offset).all()).results;
- for(const p of prefs){
-  try{
-   const real=await db.prepare("SELECT (SELECT COUNT(*) FROM x_follows WHERE following_id=?) followers,(SELECT COUNT(*) FROM x_likes l JOIN x_posts post ON post.id=l.post_id WHERE post.profile_id=? AND l.profile_id<>?) likes,(SELECT COUNT(DISTINCT r.profile_id) FROM x_posts r JOIN x_posts post ON post.id=r.repost_of WHERE post.profile_id=? AND r.profile_id<>?) reposts,(SELECT COALESCE(SUM(CASE WHEN actor.kind='bot' THEN 1 ELSE 2 END),0) FROM x_follows f JOIN x_profiles actor ON actor.id=f.follower_id WHERE f.following_id=?) fw,(SELECT COALESCE(SUM(CASE WHEN actor.kind='bot' THEN 1 ELSE 2 END),0) FROM x_likes l JOIN x_posts post ON post.id=l.post_id JOIN x_profiles actor ON actor.id=l.profile_id WHERE post.profile_id=? AND l.profile_id<>?) lw,(SELECT COALESCE(SUM(CASE WHEN actor.kind='bot' THEN 1 ELSE 2 END),0) FROM (SELECT DISTINCT r.profile_id FROM x_posts r JOIN x_posts post ON post.id=r.repost_of WHERE post.profile_id=?) rr JOIN x_profiles actor ON actor.id=rr.profile_id WHERE rr.profile_id<>?) rw").bind(p.profile_id,p.profile_id,p.profile_id,p.profile_id,p.profile_id,p.profile_id,p.profile_id,p.profile_id,p.profile_id,p.profile_id).first();
-   const bot=await db.prepare("SELECT COALESCE(SUM(CAST((max(0,julianday('now')-julianday(created_at))*max(0,julianday('now')-julianday(created_at))*1250)+(bot_likes*min(1,max(0,julianday('now')-julianday(created_at))/3)) AS INTEGER)),0) likes,COALESCE(SUM(CAST((max(0,julianday('now')-julianday(created_at))*max(0,julianday('now')-julianday(created_at))*75)+(bot_reposts*min(1,max(0,julianday('now')-julianday(created_at))/3)) AS INTEGER)),0) reposts FROM x_bot_reach WHERE post_id IN (SELECT id FROM x_posts WHERE profile_id=?)").bind(p.profile_id).first();
-   const followers=Number(real.followers)+Math.floor(Number(bot.likes)/100);
-   const likes=Number(real.likes)+Number(bot.likes),reposts=Number(real.reposts)+Number(bot.reposts);
-   if(followers<10||likes<20||reposts<5)continue;
-   const amount=Math.floor((Number(real.fw)+Math.floor(Number(bot.likes)/100)+2*(Number(real.lw)+Number(bot.likes))+3*(Number(real.rw)+Number(bot.reposts)))/2);
-   if(!Number.isSafeInteger(amount)||amount<=0)continue;
-   await db.prepare("INSERT OR IGNORE INTO x_creator_payouts(id,profile_id,user_id,period,followers,likes,reposts,amount,bank_account_id) SELECT ?,?,?,?,?,?,?,?,? WHERE EXISTS(SELECT 1 FROM x_creator_payout_preferences WHERE profile_id=? AND user_id=? AND bank_account_id=? AND enabled=1)").bind(crypto.randomUUID(),p.profile_id,p.user_id,period,followers,likes,reposts,amount,p.bank_account_id,p.profile_id,p.user_id,p.bank_account_id).run();
-  }catch(error){console.error('x_auto_payout_failed',p.profile_id,String(error));}
- }
+ // The pending set shrinks after each payout; OFFSET previously skipped eligible creators.
+ const prefs=(await db.prepare("SELECT p.profile_id,p.user_id,p.bank_account_id FROM x_creator_payout_preferences p JOIN x_profiles x ON x.id=p.profile_id AND x.user_id=p.user_id AND x.kind='person' JOIN bank_accounts a ON a.id=p.bank_account_id AND a.user_id=p.user_id WHERE p.enabled=1 AND NOT EXISTS(SELECT 1 FROM x_creator_payouts r WHERE r.profile_id=p.profile_id AND r.period=?) ORDER BY p.profile_id LIMIT 50").bind(period).all()).results;
+ for(const p of prefs)try{
+  // Share the exact calculation with GET earnings and manual claims.
+  const stats=await computeXCreatorStats(db,p.profile_id);
+  if(stats.followers<10||stats.likes<20||stats.reposts<5)continue;
+  const amount=Math.floor((stats.followers_twice+2*stats.likes_twice+3*stats.reposts_twice)/2);
+  if(!Number.isSafeInteger(amount)||amount<=0)continue;
+  // UNIQUE(profile_id,period) and the payout trigger guarantee one credit per three-day period.
+  await db.prepare("INSERT OR IGNORE INTO x_creator_payouts(id,profile_id,user_id,period,followers,likes,reposts,amount,bank_account_id) SELECT ?,?,?,?,?,?,?,?,? WHERE EXISTS(SELECT 1 FROM x_creator_payout_preferences WHERE profile_id=? AND user_id=? AND bank_account_id=? AND enabled=1)").bind(crypto.randomUUID(),p.profile_id,p.user_id,period,stats.followers,stats.likes,stats.reposts,amount,p.bank_account_id,p.profile_id,p.user_id,p.bank_account_id).run();
+ }catch(error){console.error('x_auto_payout_failed',p.profile_id,String(error).slice(0,220))}
 }
 async function generateXBotActivity(db){
  // Index the exact feed predicate and ordering; idempotent across worker restarts.
@@ -567,13 +570,75 @@ async function checkSimulationHealth(db){
  await db.prepare("INSERT INTO saliyah_sim_settings(key,value) VALUES('simulation_health_status',?) ON CONFLICT(key) DO UPDATE SET value=excluded.value").bind(JSON.stringify({status,checked_at:new Date().toISOString(),problems})).run();
  return {status,problems};
 }
+// Automated fictional civil servants process REAL citizens' applications without becoming real user accounts.
+// Keep the database writes bounded and separately attributed to named bot employees.
+async function runSimEmployeeServices(db){
+ const people=(await db.prepare("SELECT id,name FROM saliyah_sim_citizens WHERE id IN ('sim-employee-0001','sim-employee-0002','sim-employee-0010')").all()).results;
+ const staff=Object.fromEntries(people.map(p=>[p.id,p]));
+ const civil=staff['sim-employee-0001'], teacher=staff['sim-employee-0002'], service=staff['sim-employee-0010'];
+ const today=new Date().toISOString().slice(0,10);
+ const record=async (employee,category,rowId,decision,details,recipient,subject,message)=>{
+  await db.prepare("INSERT OR IGNORE INTO saliyah_sim_employee_decisions(id,employee_id,service,application_id,decision,details) VALUES(?,?,?,?,?,?)").bind(crypto.randomUUID(),employee.id,category,rowId,decision,details).run();
+  if(recipient)await db.prepare("INSERT INTO notifications(id,user_id,subject,body) VALUES(?,?,?,?)").bind(crypto.randomUUID(),recipient,subject,message).run();
+ };
+ if(civil){
+  const rows=(await db.prepare("SELECT id,created_by,full_name,parent_name,birth_date FROM civil_intake WHERE status='recorded' ORDER BY created_at LIMIT 15").all()).results;
+  for(const row of rows)try{
+   // Incomplete identity submissions stay for human clarification, never blindly approved.
+   if(!validText(row.full_name,2,160)||!validText(row.parent_name,2,160)||!/^\d{4}-\d{2}-\d{2}$/.test(row.birth_date||'')||!Number.isFinite(Date.parse(row.birth_date))||row.birth_date>today)continue;
+   const note='اعتمده الموظف الآلي '+civil.name+' بعد فحص البيانات المسجلة';
+   const done=await db.prepare("UPDATE civil_intake SET status='approved',review_note=?,decided_at=CURRENT_TIMESTAMP WHERE id=? AND status='recorded'").bind(note,row.id).run();
+   if(done.meta.changes)await record(civil,'civil',row.id,'approved',note,row.created_by,'اعتماد طلب الأحوال','تم اعتماد طلب الأحوال المدنية بواسطة '+civil.name+' (موظف آلي)');
+  }catch(error){console.error('sim_staff_civil_failed',row.id,String(error).slice(0,180))}
+ }
+ if(service){
+  const rows=(await db.prepare("SELECT id,created_by,full_name,type,birth_date,expires_at,civil_intake_id FROM document_applications WHERE status='pending' ORDER BY created_at LIMIT 15").all()).results;
+  for(const row of rows)try{
+   if(!row.birth_date||!Number.isFinite(Date.parse(row.birth_date))||row.birth_date>today||row.expires_at<today)continue;
+   if(row.type==='national_id'||row.type==='passport'){
+    const civilRow=await db.prepare("SELECT id FROM civil_intake WHERE created_by=? AND full_name=? AND status='approved' AND (birth_date IS NULL OR birth_date=?) AND (? IS NULL OR id=?) LIMIT 1").bind(row.created_by,row.full_name,row.birth_date,row.civil_intake_id,row.civil_intake_id).first();
+    if(!civilRow)continue;
+   }
+   const expiry14=new Date(Date.now()+14*86400000).toISOString().slice(0,10);
+   const month=new Date();month.setUTCMonth(month.getUTCMonth()+1);
+   if(row.type==='passport'&&![expiry14,month.toISOString().slice(0,10)].includes(row.expires_at))continue;
+   const documentId=crypto.randomUUID(), number='SAL-'+(row.type==='national_id'?'1':row.type==='residency'?'2':'P')+'-'+crypto.randomUUID().replace(/-/g,'').slice(0,9).toUpperCase();
+   const results=await db.batch([
+    db.prepare("INSERT INTO documents(id,type,number,full_name,nationality,birth_date,birth_place,gender,father_name,mother_name,issued_at,expires_at,issuer,created_by,phone) SELECT ?,type,?,full_name,nationality,birth_date,birth_place,gender,father_name,mother_name,date('now'),CASE WHEN type='national_id' THEN date('now','+14 days') ELSE expires_at END,issuer,created_by,phone FROM document_applications WHERE id=? AND status='pending'").bind(documentId,number,row.id),
+    db.prepare("UPDATE document_applications SET status='approved',document_id=?,decided_at=CURRENT_TIMESTAMP,expires_at=CASE WHEN type='national_id' THEN date('now','+14 days') ELSE expires_at END WHERE id=? AND status='pending'").bind(documentId,row.id)
+   ]);
+   if(results[1].meta.changes)await record(service,'document',row.id,'approved','وثيقة '+number,row.created_by,'صدور الوثيقة','أصدر الموظف الآلي '+service.name+' الوثيقة '+number);
+  }catch(error){console.error('sim_staff_document_failed',row.id,String(error).slice(0,180))}
+ }
+ if(teacher){
+  const rows=(await db.prepare("SELECT a.id,a.student_id,a.previous_grade,i.id institution_id,i.capacity,i.min_grade,i.level FROM education_applications a JOIN education_institutions i ON i.id=a.institution_id WHERE a.status='submitted' AND i.active=1 ORDER BY a.created_at LIMIT 12").all()).results;
+  for(const row of rows)try{
+   const qualified=row.level==='primary'||(row.previous_grade!==null&&Number(row.previous_grade)>=Number(row.min_grade));
+   let result,decision;
+   if(qualified){
+    result=await db.prepare("UPDATE education_applications SET status='accepted',reviewed_at=CURRENT_TIMESTAMP WHERE id=? AND status='submitted' AND (SELECT COUNT(*) FROM education_applications WHERE institution_id=? AND status='accepted')<?").bind(row.id,row.institution_id,row.capacity).run();
+    decision=result.meta.changes?'accepted':'rejected';
+   }else decision='rejected';
+   if(decision==='rejected')result=await db.prepare("UPDATE education_applications SET status='rejected',reviewed_at=CURRENT_TIMESTAMP WHERE id=? AND status='submitted'").bind(row.id).run();
+   if(result.meta.changes)await record(teacher,'education',row.id,decision,'تقييم الدرجة والسعة',row.student_id,'نتيجة طلب الدراسة',decision==='accepted'?'تم قبول طلب الدراسة بواسطة موظف آلي':'لم تُستوف شروط القبول أو السعة المتاحة');
+  }catch(error){console.error('sim_staff_education_failed',row.id,String(error).slice(0,180))}
+ }
+ if(service){
+  const jobs=await sharedRows(db,"SELECT a.id,a.applicant_id,j.id job_id FROM shared_service_applications a JOIN saliyah_sim_jobs j ON j.id=a.target_id JOIN saliyah_sim_companies c ON c.id=j.company_id WHERE a.service='jobs' AND a.status='submitted' AND j.status='open' AND c.status='approved' AND c.founder_id IN (SELECT id FROM saliyah_sim_citizens) ORDER BY a.created_at LIMIT 12");
+  for(const job of jobs)try{
+   const res=await db.prepare("UPDATE shared_service_applications SET status='accepted' WHERE id=? AND status='submitted' AND NOT EXISTS(SELECT 1 FROM shared_service_applications WHERE service='jobs' AND target_id=? AND status='accepted' AND id<>?) AND NOT EXISTS(SELECT 1 FROM saliyah_sim_job_applications WHERE job_id=? AND status='hired')").bind(job.id,job.job_id,job.id,job.job_id).run();
+   if(res.meta.changes)await record(service,'jobs',job.id,'accepted','اعتماد وظيفة بشركة آلية',job.applicant_id,'نتيجة طلب العمل','قبلت الشركة الآلية طلب التوظيف. راجع الشركة لإكمال الإجراءات');
+  }catch(error){console.error('sim_staff_jobs_failed',job.id,String(error).slice(0,180))}
+ }
+}
+
 export default {
  async scheduled(event,env,ctx){
   // Royal authorization: resume conservatively, once every four hours.
   const hour=Math.floor(event.scheduledTime/3600000);
   if(hour%4!==0||new Date(event.scheduledTime).getUTCMinutes()!==0)return;
   // A failing subsystem must not prevent other fictional residents from replying.
-  const phases=[['government',()=>runSaliyahGovernment(env.DB,env.AVIATION_DB)],['x_bots',()=>generateXBotActivity(env.DB)],['citizen_contacts',()=>runSimContactReplies(env.DB,env.AVIATION_DB)],['creator_rewards',()=>runXCreatorAutoPayouts(env.DB)]];
+  const phases=[['government',()=>runSaliyahGovernment(env.DB,env.AVIATION_DB)],['citizen_services',()=>runSimEmployeeServices(env.DB)],['x_bots',()=>generateXBotActivity(env.DB)],['citizen_contacts',()=>runSimContactReplies(env.DB,env.AVIATION_DB)],['creator_rewards',()=>runXCreatorAutoPayouts(env.DB)]];
   for(const [label,run] of phases)try{await run()}catch(error){console.error('simulation_phase_failed',label,String(error).slice(0,220))}
  },async fetch(req,env){const u=new URL(req.url);if(u.pathname==='/simulation.html'){if(!env.DB)return new Response('Unavailable',{status:503});const royal=await actor(req,env.DB);if(royal?.role!=='king')return new Response('هذه الصفحة مخصصة للملك فقط',{status:403,headers:{'content-type':'text/plain; charset=utf-8','cache-control':'no-store'}});const asset=await env.ASSETS.fetch(req);const headers=new Headers(asset.headers);headers.set('Cache-Control','no-store, max-age=0');return new Response(asset.body,{status:asset.status,statusText:asset.statusText,headers})}if(!u.pathname.startsWith('/api/'))return env.ASSETS.fetch(req);try{if(!env.DB)return json({error:'Database binding missing'},503);const db=env.DB;const method=req.method;const path=u.pathname;const user=(path==='/api/auth/login'||path==='/api/setup/king'||path==='/api/setup/status'||path==='/api/setup/recover-owner'||path==='/api/auth/citizen/register')?null:await actor(req,db);if(method!=='GET'&&method!=='HEAD'){const origin=req.headers.get('origin');const site=req.headers.get('sec-fetch-site');if((origin&&origin!==u.origin)||(site&&site!=='same-origin'&&site!=='none'))return json({error:'مصدر الطلب غير مسموح'},403);}
 
@@ -652,7 +717,7 @@ const royalActualServiceRecords={
 };
 // Role-gated database inventory for the sovereign oversight dashboard.
 // Never expose credentials or raw auth/session tables to browsers.
-const royalAllSafeTables=['audit_log','requests','request_history','notifications','bank_accounts','bank_transfers','bank_cards','debt_claims','debt_collections','pos_payments','pos_merchants','telecom_lines','telecom_purchases','civil_intake','citizen_profiles','court_cases','court_hearings','education_applications','education_grades','education_institutions','saliyah_sim_citizens','saliyah_sim_companies','saliyah_sim_jobs','saliyah_sim_job_applications','saliyah_sim_bank_accounts','saliyah_sim_bank_transactions','saliyah_sim_identities','saliyah_sim_family_cards','saliyah_sim_enrollments','saliyah_sim_properties','saliyah_sim_property_trades','saliyah_sim_bot_property_purchases','saliyah_sim_border_events','saliyah_sim_incidents','saliyah_sim_trials','saliyah_sim_labor_cases','saliyah_sim_labor_filings','saliyah_sim_life_events','saliyah_projects','x_posts','x_profiles','x_follows','x_likes','x_creator_payouts','state_budget_requests','state_budget_events','bank_adjustments','company_salary_payments','company_employees','commerce_companies','commerce_branches','company_treasuries','company_treasury_movements','border_movements','customs_declarations','family_cards','document_applications','health_appointments','health_clinics','installment_dues','installment_payments','installment_plans','land_parcels','land_transfers','municipal_inspections','municipal_permits','police_reports','service_tickets'];
+const royalAllSafeTables=['saliyah_sim_employee_decisions','audit_log','requests','request_history','notifications','bank_accounts','bank_transfers','bank_cards','debt_claims','debt_collections','pos_payments','pos_merchants','telecom_lines','telecom_purchases','civil_intake','citizen_profiles','court_cases','court_hearings','education_applications','education_grades','education_institutions','saliyah_sim_citizens','saliyah_sim_companies','saliyah_sim_jobs','saliyah_sim_job_applications','saliyah_sim_bank_accounts','saliyah_sim_bank_transactions','saliyah_sim_identities','saliyah_sim_family_cards','saliyah_sim_enrollments','saliyah_sim_properties','saliyah_sim_property_trades','saliyah_sim_bot_property_purchases','saliyah_sim_border_events','saliyah_sim_incidents','saliyah_sim_trials','saliyah_sim_labor_cases','saliyah_sim_labor_filings','saliyah_sim_life_events','saliyah_projects','x_posts','x_profiles','x_follows','x_likes','x_creator_payouts','state_budget_requests','state_budget_events','bank_adjustments','company_salary_payments','company_employees','commerce_companies','commerce_branches','company_treasuries','company_treasury_movements','border_movements','customs_declarations','family_cards','document_applications','health_appointments','health_clinics','installment_dues','installment_payments','installment_plans','land_parcels','land_transfers','municipal_inspections','municipal_permits','police_reports','service_tickets'];
 const royalInventoryTables={
  DB:royalAllSafeTables,
  FINANCE_DB:['saliyah_sim_bank_accounts','saliyah_sim_bank_transactions','saliyah_sim_company_payroll_decisions'],
@@ -811,13 +876,7 @@ if(method==='GET'&&path==='/api/aviation/tourists'){
 }
 if(path.startsWith('/api/x/')){
  const profileFor=async()=>user?db.prepare('SELECT * FROM x_profiles WHERE user_id=?').bind(user.id).first():null;
- const botReachSQL="SELECT COALESCE(SUM(CAST((max(0,julianday('now')-julianday(created_at))*max(0,julianday('now')-julianday(created_at))*1250)+(bot_likes*min(1,max(0,julianday('now')-julianday(created_at))/3)) AS INTEGER)),0) bot_likes,COALESCE(SUM(CAST((max(0,julianday('now')-julianday(created_at))*max(0,julianday('now')-julianday(created_at))*75)+(bot_reposts*min(1,max(0,julianday('now')-julianday(created_at))/3)) AS INTEGER)),0) bot_reposts FROM x_bot_reach WHERE post_id IN (SELECT id FROM x_posts WHERE profile_id=?)";
- const creatorStats=async profileId=>{
-  const real=await db.prepare("SELECT (SELECT COUNT(*) FROM x_follows f WHERE f.following_id=?) followers,(SELECT COUNT(*) FROM x_likes l JOIN x_posts p ON p.id=l.post_id WHERE p.profile_id=? AND l.profile_id<>?) likes,(SELECT COUNT(DISTINCT r.profile_id) FROM x_posts r JOIN x_posts p ON p.id=r.repost_of WHERE p.profile_id=? AND r.profile_id<>?) reposts,(SELECT COALESCE(SUM(CASE WHEN actor.kind='bot' THEN 1 ELSE 2 END),0) FROM x_follows f JOIN x_profiles actor ON actor.id=f.follower_id WHERE f.following_id=?) followers_twice,(SELECT COALESCE(SUM(CASE WHEN actor.kind='bot' THEN 1 ELSE 2 END),0) FROM x_likes l JOIN x_posts p ON p.id=l.post_id JOIN x_profiles actor ON actor.id=l.profile_id WHERE p.profile_id=? AND l.profile_id<>?) likes_twice,(SELECT COALESCE(SUM(CASE WHEN actor.kind='bot' THEN 1 ELSE 2 END),0) FROM (SELECT DISTINCT r.profile_id FROM x_posts r JOIN x_posts original ON original.id=r.repost_of WHERE original.profile_id=?) rr JOIN x_profiles actor ON actor.id=rr.profile_id WHERE rr.profile_id<>?) reposts_twice").bind(profileId,profileId,profileId,profileId,profileId,profileId,profileId,profileId,profileId,profileId).first();
-  const bots=await db.prepare(botReachSQL).bind(profileId).first();
-  const botFollowers=Math.floor(bots.bot_likes/100);
-  return {...real,bot_likes:bots.bot_likes,bot_reposts:bots.bot_reposts,bot_followers:botFollowers,followers:real.followers+botFollowers,likes:real.likes+bots.bot_likes,reposts:real.reposts+bots.bot_reposts,followers_twice:real.followers_twice+botFollowers,likes_twice:real.likes_twice+bots.bot_likes,reposts_twice:real.reposts_twice+bots.bot_reposts};
- };
+ const creatorStats=profileId=>computeXCreatorStats(db,profileId);
 
  if(method==='GET'&&path==='/api/x/feed'){
   const rows=await db.prepare("SELECT p.id,p.body,p.reply_to,p.repost_of,p.created_at,a.id profile_id,a.handle,a.display_name,a.kind,a.verified,(SELECT mime_type FROM x_post_media WHERE post_id=p.id) media_type,(SELECT COUNT(*) FROM x_likes l WHERE l.post_id=p.id)+(SELECT COALESCE(CAST((max(0,julianday('now')-julianday(b.created_at))*max(0,julianday('now')-julianday(b.created_at))*1250)+(b.bot_likes*min(1,max(0,julianday('now')-julianday(b.created_at))/3)) AS INTEGER),0) FROM x_bot_reach b WHERE b.post_id=p.id) likes,(SELECT COUNT(*) FROM x_posts r WHERE r.reply_to=p.id) replies FROM x_posts p JOIN x_profiles a ON a.id=p.profile_id WHERE p.reply_to IS NULL ORDER BY p.created_at DESC LIMIT 100").all();
