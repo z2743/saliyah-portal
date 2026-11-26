@@ -2091,7 +2091,8 @@ if(path.startsWith('/api/company/operations/')){
   const orders=await db.prepare("SELECT o.id,o.catalog_id,o.buyer_id,o.quantity,o.unit_price,o.total,o.status,o.created_at,p.title,p.company_id,c.name company_name,u.username buyer FROM company_catalog_orders o JOIN company_catalog p ON p.id=o.catalog_id JOIN commerce_companies c ON c.id=p.company_id JOIN users u ON u.id=o.buyer_id WHERE c.owner_id=? OR o.buyer_id=? ORDER BY o.created_at DESC LIMIT 160").bind(user.id,user.id).all();
   const botPayments=await db.prepare("SELECT p.id,p.period_start,p.amount,h.company_id,b.name bot_name FROM company_bot_salary_payments p JOIN company_bot_hires h ON h.id=p.hire_id JOIN saliyah_sim_citizens b ON b.id=h.bot_id JOIN commerce_companies c ON c.id=h.company_id WHERE c.owner_id=? ORDER BY p.created_at DESC LIMIT 100").bind(user.id).all();
   const accounts=await db.prepare("SELECT id,bank,balance FROM bank_accounts WHERE user_id=? ORDER BY bank").bind(user.id).all();
-  return json({companies:companies.results,branches:branches.results,catalog:catalog.results,bots:bots.results,candidates:candidates.results,vacancies:vacancies.results,applications:[...applications.results.map(x=>({...x,applicant_type:'human'})),...botApplications.results],orders:orders.results,bot_payments:botPayments.results,accounts:accounts.results});
+  const royalCatalog=user.role==='king'?await db.prepare("SELECT p.id,p.company_id,p.title,p.kind,p.price,p.stock,c.name company_name FROM company_catalog p JOIN commerce_companies c ON c.id=p.company_id WHERE p.deleted_at IS NULL ORDER BY p.created_at DESC LIMIT 100").all():{results:[]};
+  return json({companies:companies.results,branches:branches.results,catalog:catalog.results,royal_catalog:royalCatalog.results,bots:bots.results,candidates:candidates.results,vacancies:vacancies.results,applications:[...applications.results.map(x=>({...x,applicant_type:'human'})),...botApplications.results],orders:orders.results,bot_payments:botPayments.results,accounts:accounts.results});
  }
  if(method!=='POST')return json({error:'طريقة غير مسموحة'},405);
  const b=await input(req);if(!b)return json({error:'طلب غير صالح'},400);
@@ -2114,11 +2115,12 @@ if(path.startsWith('/api/company/operations/')){
  if(suffix==='item/delete'){
   if(!validText(b.id,10,80))return json({error:'معرف المنتج أو الخدمة غير صالح'},400);
   // Owner-scoped soft delete. Existing purchases and financial records remain intact.
-  const item=await db.prepare("SELECT p.id,p.company_id,p.title FROM company_catalog p JOIN commerce_companies c ON c.id=p.company_id WHERE p.id=? AND p.deleted_at IS NULL AND c.owner_id=? AND c.status='approved'").bind(b.id,user.id).first();
+  const item=await db.prepare("SELECT p.id,p.company_id,p.title,c.owner_id FROM company_catalog p JOIN commerce_companies c ON c.id=p.company_id WHERE p.id=? AND p.deleted_at IS NULL AND c.status='approved' AND (c.owner_id=? OR ?='king')").bind(b.id,user.id,user.role).first();
   if(!item)return json({error:'المنتج غير موجود أو لا تملك حق حذفه'},404);
+  if(item.owner_id!==user.id&&!validText(b.reason,5,500))return json({error:'الرقابة الملكية تتطلب ذكر سبب حذف المنتج'},400);
   const result=await db.prepare("UPDATE company_catalog SET active=0,deleted_at=CURRENT_TIMESTAMP,updated_at=CURRENT_TIMESTAMP WHERE id=? AND company_id=? AND deleted_at IS NULL").bind(item.id,item.company_id).run();
   if(!result.meta.changes)return json({error:'تم حذف هذا المنتج بالفعل'},409);
-  await audit(db,user.id,'company_catalog_delete','company_catalog',item.id,{company_id:item.company_id,title:item.title});
+  await audit(db,user.id,item.owner_id===user.id?'company_catalog_delete':'royal_catalog_moderation_delete','company_catalog',item.id,{company_id:item.company_id,title:item.title,reason:item.owner_id===user.id?null:String(b.reason).trim()});
   return json({ok:true,id:item.id,deleted:true});
  }
  if(suffix==='purchase'){
