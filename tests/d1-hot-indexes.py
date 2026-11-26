@@ -16,7 +16,7 @@ class D1HotQueryIndexTests(unittest.TestCase):
         INSERT INTO saliyah_sim_companies VALUES('c','citizen2','approved');
         INSERT INTO x_likes VALUES('p','post1');
         """)
-        self.db.executescript((ROOT / "migrations/0088_d1_hot_query_indexes.sql").read_text())
+        self.db.executescript((ROOT / "migrations/9999_zzzzzzzzzzzz_d1_hot_query_indexes.sql").read_text())
 
     def plan(self, sql, *args):
         return " ".join(str(row[-1]) for row in
