@@ -15,10 +15,8 @@ CREATE TABLE employment_contracts_new(
 INSERT INTO employment_contracts_new(id,application_id,employee_id,employer,title,salary,active,created_at)
 SELECT id,application_id,employee_id,employer,title,salary,active,created_at
 FROM employment_contracts;
-ALTER TABLE employment_contracts RENAME TO employment_contracts_legacy;
+DROP TABLE employment_contracts;
 ALTER TABLE employment_contracts_new RENAME TO employment_contracts;
--- Preserve payroll foreign keys by temporarily deferring checks, then remove old data.
-DROP TABLE employment_contracts_legacy;
 CREATE INDEX IF NOT EXISTS idx_payroll_employee ON employment_contracts(employee_id,active);
 CREATE TRIGGER IF NOT EXISTS employment_contract_application_guard
 BEFORE INSERT ON employment_contracts
