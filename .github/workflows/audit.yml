@@ -16,6 +16,7 @@ jobs:
         run: |
           node --check src/worker.js
           node --check public/app.js
+          node --check tests/ui-route-coverage.mjs
           node --check tests/audit-regressions.mjs
           node --check tests/d1-distribution.mjs
           node --check tests/national-alert.mjs
