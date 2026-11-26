@@ -51,6 +51,7 @@ class CompanyOperationsTests(unittest.TestCase):
         """)
         self.db.executescript((ROOT / "migrations/0082_company_operations.sql").read_text())
         self.db.executescript((ROOT / "migrations/0083_company_weekly_payroll.sql").read_text())
+        self.db.executescript((ROOT / "migrations/0084_company_salary_weekly_ledger.sql").read_text())
         self.db.executemany("INSERT INTO users(id) VALUES(?)", [("owner",), ("buyer",), ("stranger",)])
         self.db.execute(
             "INSERT INTO commerce_companies(id,owner_id,name,status) VALUES('c1','owner','Test store','approved')"
