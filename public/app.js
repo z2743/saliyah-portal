@@ -681,7 +681,17 @@ async function companyOperationsPage(){
  <label>صورة من الجهاز<input class="input" name="photo" type="file" accept="image/png,image/jpeg,image/webp"></label>
  <label>أو رابط صورة HTTPS<input class="input" name="image_url" type="url" placeholder="https://..."></label>
  <button class="btn gold" ${r.companies.length?'':'disabled'}>إضافة وعرض في السوق</button><p role="status"></p></form>
- <h2>كتالوج الشركات</h2>${r.catalog.map(p=>'<article class="card">'+(p.image_url?'<img src="'+safe(p.image_url)+'" alt="صورة '+safe(p.title)+'" loading="lazy" style="max-width:160px;max-height:140px;object-fit:contain">':'')+'<h3>'+safe(p.title)+'</h3><p>'+safe(companyName(p.company_id))+' · '+safe(p.kind==='product'?'منتج':'خدمة')+' · '+safe(p.price)+' ريال · المخزون '+safe(p.stock)+' · '+(p.active?'ظاهر':'مخفي')+'</p><p>'+safe(p.description)+'</p><button class="btn outline companyEditItem" data-id="'+safe(p.id)+'">تعديل السعر/المخزون/الظهور</button></article>').join('')||'<p class="empty">لا يوجد كتالوج بعد.</p>'}
+ <h2>كتالوج الشركات</h2>${r.catalog.map(p=>'<article class="card">'+(p.image_url?'<img src="'+safe(p.image_url)+'" alt="صورة '+safe(p.title)+'" loading="lazy" style="max-width:160px;max-height:140px;object-fit:contain">':'')+'<h3>'+safe(p.title)+'</h3><p>'+safe(companyName(p.company_id))+' · '+safe(p.kind==='product'?'منتج':'خدمة')+' · '+safe(p.price)+' ريال · المخزون '+safe(p.stock)+' · '+(p.active?'ظاهر':'مخفي')+'</p><p>'+safe(p.description)+'</p><details><summary class="btn outline" style="cursor:pointer;display:inline-block">تعديل المنتج / الخدمة</summary><form class="form companyItemEdit" data-id="'+safe(p.id)+'">'
+ +'<label>الاسم<input class="input" name="title" minlength="3" maxlength="160" required value="'+safe(p.title)+'"></label>'
+ +'<label>الوصف<textarea class="input" name="description" minlength="5" maxlength="2500" required>'+safe(p.description)+'</textarea></label>'
+ +'<label>السعر<input class="input" name="price" type="number" min="1" max="1000000" required value="'+safe(p.price)+'"></label>'
+ +'<label>المخزون<input class="input" name="stock" type="number" min="0" max="1000000" required value="'+safe(p.stock)+'"></label>'
+ +'<label>الفرع<select class="input" name="branch_id"><option value="">المقر الرئيسي</option>'+r.branches.filter(b=>b.status==='approved'&&b.company_id===p.company_id).map(b=>'<option value="'+safe(b.id)+'" '+(p.branch_id===b.id?'selected':'')+'>'+safe(b.name)+'</option>').join('')+'</select></label>'
+ +'<label>ظهور المنتج<select class="input" name="active"><option value="1" '+(p.active?'selected':'')+'>ظاهر في السوق</option><option value="0" '+(!p.active?'selected':'')+'>مخفي مؤقتًا</option></select></label>'
+ +'<label>صورة بديلة<input class="input" type="file" name="photo" accept="image/jpeg,image/png,image/webp"></label>'
+ +'<label>أو رابط صورة جديد<input class="input" type="url" name="image_url" placeholder="اتركه فارغًا للاحتفاظ بالصورة"></label>'
+ +'<button class="btn gold" type="submit">حفظ التعديلات</button><p role="status"></p></form></details>'
+ +'<button class="btn outline companyDeleteItem" type="button" data-id="'+safe(p.id)+'">حذف المنتج من السوق</button></article>').join('')||'<p class="empty">لا يوجد كتالوج بعد.</p>'}
  <h2>طاقم البوتات</h2>${r.bots.map(h=>'<div class="card"><b>🤖 '+safe(h.bot_name)+'</b> · '+safe(companyName(h.company_id))+'<p>'+safe(h.position)+' · '+safe(h.weekly_salary)+' ريال أسبوعيًا · '+safe(h.status)+'</p>'+(h.status==='active'?'<button class="btn outline companyFireBot" data-id="'+safe(h.id)+'">إنهاء تعيين البوت</button>':'')+'</div>').join('')||'<p class="empty">لا توجد تعيينات بوتات بعد.</p>'}
  <form class="card form" id="companyVacancyForm"><h2>إضافة وظيفة</h2><p class="muted">انشر الوظيفة بدون اختيار نوع المتقدم؛ الأشخاص الحقيقيون يقدمون عبر الموقع، والسكان الآليون يقدمون تلقائيًا عند تشغيل المحاكاة. الإدارة تختار من الطلبات على نفس الشاغر.</p><label>الشركة<select class="input" name="company_id" required><option value="">اختر شركة</option>${opts}</select></label>
  <label>المسمى<input class="input" name="title" minlength="3" required></label><label>الوصف والمتطلبات<textarea class="input" name="description" minlength="10" required></textarea></label><label>راتب أسبوعي<input class="input" name="weekly_salary" type="number" min="1" required></label><button class="btn gold" ${r.companies.length?'':'disabled'}>إضافة وظيفة</button><p role="status"></p></form>
@@ -691,7 +701,26 @@ async function companyOperationsPage(){
  <h2>طلبات العملاء</h2>${r.orders.filter(o=>r.companies.some(c=>c.id===o.company_id)).map(o=>'<div class="card"><b>'+safe(o.title)+'</b> · '+safe(o.buyer)+'<p>العدد '+safe(o.quantity)+' · '+safe(o.total)+' ريال · '+safe(o.status)+'</p>'+(o.status==='paid'?'<button class="btn companyFulfill" data-id="'+safe(o.id)+'">تسليم الطلب</button>':'')+'</div>').join('')||'<p class="empty">لا توجد طلبات شراء.</p>'}`);
  const send=async(url,b)=>{try{await post(url,b);await companyOperationsPage()}catch(err){uiNotice(err.message)}};
  document.querySelector('#companyCatalogForm').onsubmit=async e=>{e.preventDefault();const form=e.target,fd=new FormData(form),status=form.querySelector('[role=status]');try{status.textContent='جارٍ حفظ المنتج والصورة...';const photo=fd.get('photo');const image_url=photo&&photo.size?await companyPhoto(photo):String(fd.get('image_url')||'');await post('/company/operations/item/create',{company_id:fd.get('company_id'),branch_id:fd.get('branch_id'),kind:fd.get('kind'),title:fd.get('title'),description:fd.get('description'),price:Number(fd.get('price')),stock:Number(fd.get('stock')),image_url});await companyOperationsPage()}catch(err){status.textContent=err.message}};
- document.querySelectorAll('.companyEditItem').forEach(el=>el.onclick=async()=>{const p=r.catalog.find(x=>x.id===el.dataset.id);if(!p)return;const price=await uiPrompt('السعر الحالي '+p.price+'، أدخل السعر الجديد',String(p.price));if(price===null)return;const stock=await uiPrompt('الكمية الحالية '+p.stock,String(p.stock));if(stock===null)return;const show=await uiConfirm('هل تريد عرض المنتج في السوق؟ (إلغاء = إخفاء)');send('/company/operations/item/update',{id:p.id,company_id:p.company_id,branch_id:p.branch_id,kind:p.kind,title:p.title,description:p.description,price:Number(price),stock:Number(stock),active:show?1:0})});
+ document.querySelectorAll('.companyItemEdit').forEach(form=>form.onsubmit=async e=>{
+  e.preventDefault();const old=r.catalog.find(x=>x.id===form.dataset.id),fd=new FormData(form),msg=form.querySelector('[role=status]'),button=form.querySelector('[type=submit]');
+  if(!old)return;
+  button.disabled=true;msg.textContent='جارٍ حفظ التعديلات...';
+  try{
+   const photo=fd.get('photo');
+   const image_url=photo&&photo.size?await companyPhoto(photo):String(fd.get('image_url')||'').trim();
+   await post('/company/operations/item/update',{id:old.id,company_id:old.company_id,kind:old.kind,title:String(fd.get('title')||''),description:String(fd.get('description')||''),branch_id:String(fd.get('branch_id')||''),price:Number(fd.get('price')),stock:Number(fd.get('stock')),active:Number(fd.get('active')),image_url});
+   await companyOperationsPage();
+  }catch(err){msg.textContent=err.message;button.disabled=false}
+ });
+ document.querySelectorAll('.companyDeleteItem').forEach(el=>el.onclick=async()=>{
+  const p=r.catalog.find(x=>x.id===el.dataset.id);if(!p)return;
+  if(!await uiConfirm('تأكيد حذف «'+p.title+'» من واجهة الشركة والسوق؟ ستبقى الفواتير وسجلات المبيعات محفوظة.'))return;
+  el.disabled=true;try{await post('/company/operations/item/delete',{id:p.id});await companyOperationsPage();uiNotice('تم حذف المنتج من القوائم مع حفظ سجل المبيعات')}catch(err){uiNotice(err.message);el.disabled=false}
+ });
+ document.querySelector('#companyCatalogForm [name=company_id]').addEventListener('change',e=>{
+  const branch=document.querySelector('#companyCatalogForm [name=branch_id]');branch.value='';
+  [...branch.options].forEach(o=>{if(!o.value)return;o.hidden=o.dataset.company!==e.target.value;o.disabled=o.hidden});
+ });
  document.querySelector('#companyPayrollForm').onsubmit=e=>{e.preventDefault();const v=Object.fromEntries(new FormData(e.target));v.weeks=Number(v.weeks);send('/company/operations/payroll/update',v)};
  
  document.querySelector('#companyVacancyForm').onsubmit=e=>{e.preventDefault();const v=Object.fromEntries(new FormData(e.target));v.weekly_salary=Number(v.weekly_salary);send('/company/operations/vacancy/create',v)};
