@@ -687,7 +687,7 @@ async function airportStaffCoverage(db,aviationDb){
  return AIRPORT_STAFF_TARGETS.map(([category,label,required])=>({category,label,required,active:counts.get(category)||0,ready:(counts.get(category)||0)>=required}));
 }
 async function runSharedCompanySalaryPayments(db){
- const rows=(await db.prepare("SELECT c.id contract_id,c.created_at hired_at,c.employee_id,a.target_id job_id,j.salary,j.company_id,co.payroll_weeks,ca.id payer,ea.id payee FROM employment_contracts c JOIN shared_service_applications a ON a.id=c.application_id AND a.service='jobs' AND a.status='accepted' JOIN saliyah_sim_jobs j ON j.id=a.target_id JOIN saliyah_sim_companies co ON co.id=j.company_id AND co.status='approved' JOIN saliyah_sim_bank_accounts ca ON ca.owner_type='company' AND ca.owner_id=j.company_id AND ca.status='active' JOIN bank_accounts ea ON ea.user_id=c.employee_id AND ea.bank='saliyah' WHERE c.active=1 AND j.salary>0 ORDER BY c.id LIMIT 25").all()).results;
+ const rows=(await db.prepare("SELECT c.id contract_id,c.created_at hired_at,c.employee_id,a.target_id job_id,j.salary,j.company_id,co.payroll_weeks,ca.id payer,ea.id payee FROM employment_contracts c JOIN shared_service_applications a ON a.id=c.application_id AND a.service='jobs' AND a.status='accepted' JOIN saliyah_sim_jobs j ON j.id=a.target_id JOIN saliyah_sim_companies co ON co.id=j.company_id AND co.status='approved' JOIN saliyah_sim_bank_accounts ca ON ca.owner_type='company' AND ca.owner_id=j.company_id AND ca.status='active' JOIN bank_accounts ea ON ea.id=(SELECT x.id FROM bank_accounts x WHERE x.user_id=c.employee_id ORDER BY CASE x.bank WHEN 'saliyah' THEN 0 ELSE 1 END LIMIT 1) WHERE c.active=1 AND j.salary>0 ORDER BY c.id LIMIT 25").all()).results;
  const now=new Date(),monday=new Date(Date.UTC(now.getUTCFullYear(),now.getUTCMonth(),now.getUTCDate()));
  monday.setUTCDate(monday.getUTCDate()-(monday.getUTCDay()+6)%7);
  for(const item of rows){
@@ -701,6 +701,7 @@ async function runSharedCompanySalaryPayments(db){
    const leave=await db.prepare("SELECT 1 FROM employment_leave_requests WHERE contract_id=? AND kind='unpaid' AND status='approved' AND start_date<=date(?,'+'||?||' days') AND end_date>=? LIMIT 1").bind(item.contract_id,period,weeks*7-1,period).first();
    if(leave)continue;
    const id='salary-real-'+item.contract_id+'-'+period;
+   if(await db.prepare('SELECT 1 FROM shared_company_salary_payments WHERE id=?').bind(id).first())continue;
    try{
     await db.prepare("INSERT OR IGNORE INTO shared_company_salary_payments(id,contract_id,company_id,company_account_id,employee_account_id,period_start,amount) VALUES(?,?,?,?,?,?,?)").bind(id,item.contract_id,item.company_id,item.payer,item.payee,period,amount).run();
    }catch(e){console.error('shared_company_salary_failed',String(e).slice(0,170));break}
