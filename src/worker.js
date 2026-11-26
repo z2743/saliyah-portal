@@ -939,9 +939,11 @@ if(path.startsWith('/api/x/')){
   const amount=eligible?Math.floor((stats.followers_twice+stats.likes_twice*2+stats.reposts_twice*3)/2):0;
   const period=Math.floor(Date.now()/259200000).toString();
   const paid=await db.prepare('SELECT id,amount,created_at FROM x_creator_payouts WHERE profile_id=? AND period=?').bind(own.id,period).first();
-  const history=await db.prepare('SELECT period,amount,created_at FROM x_creator_payouts WHERE profile_id=? ORDER BY created_at DESC LIMIT 12').bind(own.id).all();
+  // Debt collection is intentionally not bypassed; explain the destination of every credit.
+  const history=await db.prepare("SELECT p.period,p.amount,p.created_at,p.bank_account_id,a.bank,COALESCE((SELECT SUM(c.amount) FROM debt_collections c WHERE c.bank_account_id=p.bank_account_id AND c.created_at=p.created_at),0) debt_collected FROM x_creator_payouts p JOIN bank_accounts a ON a.id=p.bank_account_id AND a.user_id=p.user_id WHERE p.profile_id=? AND p.user_id=? ORDER BY p.created_at DESC LIMIT 12").bind(own.id,user.id).all();
+  const paidReceipt=history.results.find(p=>p.period===period)||null;
   const auto=await db.prepare('SELECT bank_account_id,enabled FROM x_creator_payout_preferences WHERE profile_id=? AND user_id=?').bind(own.id,user.id).first();
-  return json({stats,eligible,amount,period,paid:!!paid,auto_payout:auto?{enabled:!!auto.enabled,bank_account_id:auto.bank_account_id}:{enabled:false},history:history.results,requirements:{followers:10,likes:20,reposts:5},period_cap:null,unlimited_earnings:true,period_days:3,kind:own.kind});
+  return json({stats,eligible,amount,period,paid:!!paid,paid_receipt:paidReceipt?{amount:paidReceipt.amount,debt_collected:Math.min(paidReceipt.amount,paidReceipt.debt_collected),net_credited:Math.max(0,paidReceipt.amount-paidReceipt.debt_collected),bank:paidReceipt.bank,created_at:paidReceipt.created_at}:null,auto_payout:auto?{enabled:!!auto.enabled,bank_account_id:auto.bank_account_id}:{enabled:false},history:history.results,requirements:{followers:10,likes:20,reposts:5},period_cap:null,unlimited_earnings:true,period_days:3,kind:own.kind});
  }
  if(method==='POST'&&path==='/api/x/earnings/auto'){
   if(!user)return json({error:'سجل الدخول أولاً'},401);
@@ -975,8 +977,11 @@ if(path.startsWith('/api/x/')){
   try{await db.prepare('INSERT INTO x_creator_payouts(id,profile_id,user_id,period,followers,likes,reposts,amount,bank_account_id) VALUES(?,?,?,?,?,?,?,?,?)').bind(id,own.id,user.id,period,stats.followers,stats.likes,stats.reposts,amount,account.id).run();}
   catch{return json({error:'تم صرف مكافأة هذه الدورة مسبقاً أو تعذر إتمام التحويل'},409)}
   await db.prepare("INSERT INTO x_creator_payout_preferences(profile_id,user_id,bank_account_id,enabled) VALUES(?,?,?,1) ON CONFLICT(profile_id) DO UPDATE SET bank_account_id=excluded.bank_account_id,user_id=excluded.user_id,enabled=1,updated_at=CURRENT_TIMESTAMP").bind(own.id,user.id,account.id).run();
-  await audit(db,user.id,'x_creator_reward','x_creator_payout',id,{amount,period});
-  return json({ok:true,amount,period});
+  const receipt=await db.prepare("SELECT p.amount,a.bank,COALESCE((SELECT SUM(c.amount) FROM debt_collections c WHERE c.bank_account_id=p.bank_account_id AND c.created_at=p.created_at),0) debt_collected FROM x_creator_payouts p JOIN bank_accounts a ON a.id=p.bank_account_id AND a.user_id=p.user_id WHERE p.id=? AND p.user_id=?").bind(id,user.id).first();
+  if(!receipt)return json({error:'تم إنشاء الصرف لكن تعذّر تحميل الإيصال؛ تحقق من سجل الأرباح'},503);
+  const debtCollected=Math.min(receipt.amount,Number(receipt.debt_collected)||0);
+  await audit(db,user.id,'x_creator_reward','x_creator_payout',id,{amount,period,debt_collected:debtCollected});
+  return json({ok:true,amount,period,bank:receipt.bank,debt_collected:debtCollected,net_credited:amount-debtCollected});
  }
  if(method==='GET'&&path==='/api/x/profile'){
   const handle=u.searchParams.get('handle')||'';
