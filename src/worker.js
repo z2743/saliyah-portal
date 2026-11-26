@@ -749,6 +749,14 @@ async function completeAviationBooking(db,aviationDb,bookingId,userId){
   return {ok:true,booking:{...row,status:'confirmed',payment_status:'paid'}};
  }catch(e){console.error('aviation_booking_completion_failed',String(e).slice(0,180));return {error:'تم حفظ الدفع ولم يؤكد الحجز بعد؛ ستتم إعادة المحاولة تلقائياً'}};
 }
+async function repairAviationSchedules(aviationDb){
+ // Keep the published flight timetable aligned to the construction/opening date;
+ // never modify booked flights or open the airport before authorization.
+ const cutoff='2026-11-28 00:00:00';
+ const result=await aviationDb.prepare("UPDATE aviation_flights SET status='cancelled' WHERE departure_at<? AND status='scheduled' AND NOT EXISTS(SELECT 1 FROM aviation_bookings b WHERE b.flight_id=aviation_flights.id AND b.status IN ('pending','confirmed'))").bind(cutoff).run();
+ return Number(result.meta?.changes||0);
+}
+
 const DAILY_AIR_ROUTES=[
  ['RUH',85,450,'saliyah-airlines'],['JED',105,399,'flyadeal-saliyah'],['DOH',80,490,'saliyah-airlines'],['DXB',120,520,'flyadeal-saliyah'],
  ['AUH',115,510,'saliyah-airlines'],['KWI',95,370,'flyadeal-saliyah'],['BAH',75,360,'flyadeal-saliyah'],['MCT',145,430,'saliyah-airlines'],
@@ -1115,6 +1123,15 @@ if(path.startsWith('/api/aviation/')){
  const aviationDb=env.AVIATION_DB;
  if(!aviationDb)return json({error:'قاعدة بيانات الطيران غير متصلة'},503);
  if(method==='GET'&&path==='/api/aviation/readiness')return json(await airportReadiness(db,aviationDb));
+ if(method==='GET'&&path==='/api/aviation/preflight-summary'){
+  if(!user||user.role!=='king')return json({error:'للملك فقط'},403);
+  const ready=await airportReadiness(db,aviationDb);
+  const [rows,invalid]=await Promise.all([
+   aviationDb.prepare("SELECT COUNT(*) n,MIN(departure_at) first_flight FROM aviation_flights WHERE status='scheduled' AND departure_at>datetime('now')").first(),
+   aviationDb.prepare("SELECT COUNT(*) n FROM aviation_flights WHERE status='scheduled' AND (departure_at>=arrival_at OR seats_economy<=0 OR price_economy<=0)").first()
+  ]);
+  return json({readiness:ready,scheduled:Number(rows?.n||0),first_flight:rows?.first_flight||null,invalid_schedules:Number(invalid?.n||0),can_book:ready.ready});
+ }
  
  if(method==='GET'&&path==='/api/aviation/routes')return json({routes:AIRPORT_ROUTE_SEEDS.map(([code,name])=>({code,name})),fleet:AIRPORT_FLEET.map(([airline,aircraft,units,kind])=>({airline,aircraft,units,kind}))});
  if(method==='GET'&&path==='/api/aviation/admin'){
@@ -1163,6 +1180,13 @@ if(path.startsWith('/api/aviation/')){
   const id=random();
   try{await aviationDb.prepare("INSERT INTO aviation_flights(id,airline_id,number,origin_code,destination_code,departure_at,arrival_at,price_economy,seats_economy,seats_business,status) VALUES(?,?,?,'SJD',?,?,?,?,?,?,'draft')").bind(id,b.airline_id,b.number.trim().toUpperCase(),b.destination_code,new Date(b.departure_at).toISOString().replace('T',' ').slice(0,19),new Date(b.arrival_at).toISOString().replace('T',' ').slice(0,19),b.price_economy,b.seats_economy,b.seats_business).run()}catch(e){return json({error:'تعذر إضافة الرحلة أو رقمها مكرر'},409)}
   await audit(db,user.id,'aviation_flight_draft','aviation_flights',id,{});return json({id,status:'draft'},201);
+ }
+ if(method==='POST'&&path==='/api/aviation/admin/repair-schedule'){
+  if(!user||user.role!=='king')return json({error:'للملك فقط'},403);
+  const changed=await repairAviationSchedules(aviationDb);
+  await ensureAviationRollingSchedule(aviationDb);
+  await audit(db,user.id,'airport_schedule_repair','aviation_flights','sjd',{changed});
+  return json({ok:true,removed_obsolete:changed,readiness:await airportReadiness(db,aviationDb)});
  }
  if(method==='POST'&&path==='/api/aviation/admin/validation'){
   if(!user||user.role!=='king')return json({error:'للملك فقط'},403);
