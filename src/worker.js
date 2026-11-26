@@ -2072,6 +2072,13 @@ if(path.startsWith('/api/company/operations/')){
   return json({vacancies:rows.results});
  }
  if(!user)return json({error:'يلزم تسجيل الدخول'},401);
+ if(method==='GET'&&suffix==='my-market'){
+  // Buyer-facing data must not run the expensive owner-management queries.
+  const accounts=await db.prepare("SELECT id,bank,balance FROM bank_accounts WHERE user_id=? ORDER BY bank").bind(user.id).all();
+  const orders=await db.prepare("SELECT o.id,o.catalog_id,o.buyer_id,o.quantity,o.unit_price,o.total,o.status,o.created_at,p.title,p.company_id,c.name company_name FROM company_catalog_orders o JOIN company_catalog p ON p.id=o.catalog_id JOIN commerce_companies c ON c.id=p.company_id WHERE o.buyer_id=? ORDER BY o.created_at DESC LIMIT 60").bind(user.id).all();
+  const apps=await db.prepare("SELECT a.id,a.applicant_id,a.status,a.created_at,v.title,v.company_id FROM company_vacancy_applications a JOIN company_vacancies v ON v.id=a.vacancy_id WHERE a.applicant_id=? ORDER BY a.created_at DESC LIMIT 60").bind(user.id).all();
+  return json({accounts:accounts.results,orders:orders.results,applications:apps.results});
+ }
  if(method==='GET'&&suffix==='manage'){
   const companies=await db.prepare("SELECT c.id,c.name,c.activity,c.region,c.payroll_weeks,t.balance FROM commerce_companies c LEFT JOIN company_treasuries t ON t.company_id=c.id WHERE c.owner_id=? AND c.status='approved' ORDER BY c.name").bind(user.id).all();
   const branches=await db.prepare("SELECT b.id,b.company_id,b.name,b.region,b.address,b.status FROM commerce_branches b JOIN commerce_companies c ON c.id=b.company_id WHERE c.owner_id=? ORDER BY b.created_at DESC LIMIT 150").bind(user.id).all();
