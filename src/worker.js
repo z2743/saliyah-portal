@@ -2370,8 +2370,26 @@ if(path.startsWith('/api/state-budgets/')){
 if(path.startsWith('/api/payroll/')){
  const admin=user.role==='king';
  if(method==='GET'&&path==='/api/payroll/mine'){
-  const c=await db.prepare('SELECT id,employer,title,salary,active FROM employment_contracts WHERE employee_id=? ORDER BY created_at DESC').bind(user.id).all();
+  const c=await db.prepare('SELECT id,employer,title,salary,active,created_at FROM employment_contracts WHERE employee_id=? ORDER BY created_at DESC').bind(user.id).all();
   const p=await db.prepare('SELECT p.id,p.period,p.amount,p.created_at,c.employer,c.title FROM payroll_payments p JOIN employment_contracts c ON c.id=p.contract_id WHERE c.employee_id=? ORDER BY p.period DESC LIMIT 100').bind(user.id).all();return json({contracts:c.results,payments:p.results});
+ }
+ if(method==='GET'&&path==='/api/payroll/leave/mine'){
+  const rows=await db.prepare("SELECT l.id,l.contract_id,l.kind,l.start_date,l.end_date,l.reason,l.status,l.review_note,l.created_at,c.employer,c.title FROM employment_leave_requests l JOIN employment_contracts c ON c.id=l.contract_id WHERE l.employee_id=? ORDER BY l.created_at DESC LIMIT 100").bind(user.id).all();
+  return json({leaves:rows.results});
+ }
+ if(method==='POST'&&path==='/api/payroll/leave/request'){
+  const b=await input(req);
+  if(!b||!validText(b.contract_id,10,80)||!['annual','sick','unpaid','emergency'].includes(b.kind)||!/^\d{4}-\d{2}-\d{2}$/.test(b.start_date||'')||!/^\d{4}-\d{2}-\d{2}$/.test(b.end_date||'')||b.start_date>b.end_date||!validText(b.reason,5,500))return json({error:'بيانات الإجازة ناقصة أو التواريخ غير صحيحة'},400);
+  const days=Math.round((Date.parse(b.end_date+'T00:00:00Z')-Date.parse(b.start_date+'T00:00:00Z'))/86400000)+1;
+  if(!Number.isFinite(days)||days<1||days>90)return json({error:'مدة الإجازة غير صالحة (1 إلى 90 يوماً)'},400);
+  const c=await db.prepare('SELECT id FROM employment_contracts WHERE id=? AND employee_id=? AND active=1').bind(b.contract_id,user.id).first();
+  if(!c)return json({error:'العقد غير نشط أو لا يخص حسابك'},409);
+  const clash=await db.prepare("SELECT 1 FROM employment_leave_requests WHERE contract_id=? AND status IN ('submitted','approved') AND start_date<=? AND end_date>=? LIMIT 1").bind(c.id,b.end_date,b.start_date).first();
+  if(clash)return json({error:'يوجد طلب إجازة متداخل مع هذه المدة'},409);
+  const id=random();
+  await db.prepare("INSERT INTO employment_leave_requests(id,contract_id,employee_id,kind,start_date,end_date,reason) VALUES(?,?,?,?,?,?,?)").bind(id,c.id,user.id,b.kind,b.start_date,b.end_date,b.reason.trim()).run();
+  await audit(db,user.id,'employment_leave_request','employment_leave_requests',id,{kind:b.kind,start:b.start_date,end:b.end_date});
+  return json({id,status:'submitted'},201);
  }
  if(method==='GET'&&path==='/api/payroll/resignations/mine'){
   const rows=await db.prepare("SELECT r.id,r.contract_id,r.status,r.reason,r.created_at,r.defer_until,r.review_note,r.resolved_at,c.employer,c.title FROM employment_resignations r JOIN employment_contracts c ON c.id=r.contract_id WHERE r.employee_id=? ORDER BY r.created_at DESC LIMIT 50").bind(user.id).all();
@@ -2383,7 +2401,7 @@ if(path.startsWith('/api/payroll/')){
   if(!c||!c.active)return json({error:'العقد غير نشط أو غير مملوك لك'},409);
   const pending=await db.prepare("SELECT id FROM employment_resignations WHERE contract_id=? AND status IN ('submitted','deferred')").bind(c.id).first();
   if(pending)return json({error:'يوجد طلب استقالة قائم بالفعل'},409);
-  const id=random();await db.prepare("INSERT INTO employment_resignations(id,contract_id,employee_id,reason) VALUES(?,?,?,?)").bind(id,c.id,user.id,b.reason.trim()).run();
+  const id=random();try{await db.prepare("INSERT INTO employment_resignations(id,contract_id,employee_id,reason) VALUES(?,?,?,?)").bind(id,c.id,user.id,b.reason.trim()).run()}catch{return json({error:'يوجد طلب استقالة قائم أو حدث تعارض'},409)}
   await audit(db,user.id,'employment_resign','employment_resignations',id,{contract_id:c.id});
   return json({id,status:'submitted',review_days:30},201);
  }
@@ -2394,6 +2412,21 @@ if(path.startsWith('/api/payroll/')){
   await audit(db,user.id,'employment_resignation_withdraw','employment_resignations',b.id,{});return json({ok:true});
  }
  if(!admin)return json({error:'إدارة الرواتب للملك فقط'},403);
+ if(method==='GET'&&path==='/api/payroll/leave/admin'){
+  const rows=await db.prepare("SELECT l.*,c.employer,c.title,u.username FROM employment_leave_requests l JOIN employment_contracts c ON c.id=l.contract_id JOIN users u ON u.id=l.employee_id ORDER BY l.created_at DESC LIMIT 150").all();
+  return json({leaves:rows.results});
+ }
+ if(method==='POST'&&path==='/api/payroll/leave/decision'){
+  const b=await input(req);if(!b||!validText(b.id,10,80)||!['approved','rejected'].includes(b.decision))return json({error:'قرار غير صالح'},400);
+  const l=await db.prepare("SELECT id,employee_id,status FROM employment_leave_requests WHERE id=? AND status='submitted'").bind(b.id).first();
+  if(!l)return json({error:'الطلب غير موجود أو تم البت فيه'},409);
+  const note=String(b.note||'').trim().slice(0,500);
+  if(b.decision==='rejected'&&!validText(note,5,500))return json({error:'سبب الرفض مطلوب'},400);
+  const result=await db.prepare("UPDATE employment_leave_requests SET status=?,review_note=?,reviewed_by=?,reviewed_at=CURRENT_TIMESTAMP WHERE id=? AND status='submitted'").bind(b.decision,note,user.id,b.id).run();
+  if(!result.meta.changes)return json({error:'تغيرت الحالة؛ حدث الصفحة'},409);
+  await db.prepare("INSERT INTO notifications(id,user_id,subject,body) VALUES(?,?,?,?)").bind(random(),l.employee_id,'قرار طلب إجازة','حالة طلب الإجازة: '+b.decision).run();
+  await audit(db,user.id,'employment_leave_decision','employment_leave_requests',l.id,{decision:b.decision});return json({ok:true});
+ }
  if(method==='GET'&&path==='/api/payroll/resignations/admin'){
   const rows=await db.prepare("SELECT r.*,c.employer,c.title,u.username FROM employment_resignations r JOIN employment_contracts c ON c.id=r.contract_id JOIN users u ON u.id=r.employee_id ORDER BY r.created_at DESC LIMIT 150").all();return json({resignations:rows.results});
  }
@@ -2430,7 +2463,7 @@ if(path.startsWith('/api/payroll/')){
  }
  if(method==='POST'&&path==='/api/payroll/contract/status'){
   const b=await input(req);if(!b||!validText(b.id,10,80)||typeof b.active!=='boolean')return json({error:'طلب غير صالح'},400);
-  const r=await db.prepare('UPDATE employment_contracts SET active=? WHERE id=?').bind(b.active?1:0,b.id).run();if(!r.meta.changes)return json({error:'العقد غير موجود'},404);await audit(db,user.id,'employment_status','employment_contract',b.id,{active:b.active});return json({ok:true});
+  if(b.active){const finalResign=await db.prepare("SELECT 1 FROM employment_resignations WHERE contract_id=? AND status='accepted' LIMIT 1").bind(b.id).first();if(finalResign)return json({error:'عقد انتهى بالاستقالة؛ لا يمكن إعادة تفعيله'},409)}const r=await db.prepare('UPDATE employment_contracts SET active=? WHERE id=?').bind(b.active?1:0,b.id).run();if(!r.meta.changes)return json({error:'العقد غير موجود'},404);await audit(db,user.id,'employment_status','employment_contract',b.id,{active:b.active});return json({ok:true});
  }
  if(method==='POST'&&path==='/api/payroll/pay'){
   const b=await input(req);if(!b||!validText(b.contract_id,10,80)||typeof b.period!=='string'||!/^\d{4}-(0[1-9]|1[0-2])$/.test(b.period))return json({error:'رقم العقد أو الشهر غير صالح'},400);
