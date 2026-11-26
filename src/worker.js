@@ -581,11 +581,13 @@ async function ensureBotCompanyContract(db,id){
  const other=await db.prepare("SELECT 1 FROM employment_contracts ec JOIN shared_service_applications sa ON sa.id=ec.application_id WHERE sa.service='jobs' AND sa.target_id=? AND ec.active=1 LIMIT 1").bind(a.target_id).first();
  const bot=await db.prepare("SELECT 1 FROM saliyah_sim_job_applications WHERE job_id=? AND status='hired' LIMIT 1").bind(a.target_id).first();
  if(other||bot)return {ok:false,error:'الوظيفة محجوزة'};
+ const existingHuman=await db.prepare("SELECT 1 FROM shared_service_applications WHERE service='jobs' AND target_id=? AND status='accepted' AND id<>? LIMIT 1").bind(a.target_id,id).first();
+ if(existingHuman)return {ok:false,error:'يوجد طلب آخر مقبول لنفس الوظيفة'};
  const contractId=crypto.randomUUID();
  try{
   const results=await db.batch([
    db.prepare("INSERT OR IGNORE INTO employer_budgets(employer,sector) VALUES(?,'private')").bind(a.employer),
-   db.prepare("INSERT INTO employment_contracts(id,application_id,employee_id,employer,title,salary) SELECT ?,id,applicant_id,?,?,? FROM shared_service_applications WHERE id=? AND service='jobs' AND status='accepted' AND NOT EXISTS(SELECT 1 FROM employment_contracts WHERE application_id=?)").bind(contractId,a.employer,a.title,a.salary,id,id),
+   db.prepare("INSERT INTO employment_contracts(id,application_id,employee_id,employer,title,salary) SELECT ?,id,applicant_id,?,?,? FROM shared_service_applications WHERE id=? AND service='jobs' AND status='accepted' AND NOT EXISTS(SELECT 1 FROM employment_contracts WHERE application_id=?) AND NOT EXISTS(SELECT 1 FROM saliyah_sim_job_applications WHERE job_id=? AND status='hired') AND NOT EXISTS(SELECT 1 FROM employment_contracts ec JOIN shared_service_applications sa ON sa.id=ec.application_id WHERE sa.target_id=? AND ec.active=1)").bind(contractId,a.employer,a.title,a.salary,id,id,a.target_id,a.target_id),
    db.prepare("UPDATE saliyah_sim_jobs SET status='filled' WHERE id=? AND status='open'").bind(a.target_id)
   ]);
   if(results[1].meta.changes)return {ok:true,id:contractId};
