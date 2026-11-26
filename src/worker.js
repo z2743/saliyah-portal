@@ -809,6 +809,29 @@ async function reconcileAviationPayments(db,aviationDb){
   if(!paid)await aviationDb.prepare("UPDATE aviation_bookings SET status='cancelled' WHERE id=? AND status='pending'").bind(b.id).run();
  }catch(e){console.error('aviation_pending_release_failed',String(e).slice(0,180))}
 }
+
+async function runCompanyWeeklyPayroll(db){
+ const now=new Date();
+ if(now.getUTCDay()!==1)return 0;
+ const thisMonday=new Date(Date.UTC(now.getUTCFullYear(),now.getUTCMonth(),now.getUTCDate()));
+ const previousMonday=new Date(thisMonday.getTime()-7*86400000);
+ const period=previousMonday.toISOString().slice(0,10),week=Math.floor(previousMonday.getTime()/604800000);
+ const employees=(await db.prepare("SELECT e.id,e.salary,e.accepted_at,c.owner_id,c.payroll_weeks FROM company_employees e JOIN commerce_companies c ON c.id=e.company_id WHERE e.status='active' AND c.status='approved' AND e.accepted_at<=? AND NOT EXISTS(SELECT 1 FROM company_salary_payments p WHERE p.employment_id=e.id AND p.period=?) ORDER BY e.id LIMIT 50").bind(period,period).all()).results;
+ let paid=0;
+ for(const e of employees){
+  const weeks=Number(e.payroll_weeks)===2?2:1,amount=Number(e.salary)*weeks;
+  if(weeks===2&&week%2!==0||!Number.isSafeInteger(amount)||amount>1000000)continue;
+  try{const r=await db.prepare("INSERT OR IGNORE INTO company_salary_payments(id,employment_id,period,amount,actor_id) VALUES(?,?,?,?,?)").bind('corp-human-'+e.id+'-'+period,e.id,period,amount,e.owner_id).run();paid+=Number(r.meta.changes)||0}catch(error){console.error('corporate_human_payroll_failed',String(error).slice(0,150))}
+ }
+ const bots=(await db.prepare("SELECT h.id,h.weekly_salary,h.hired_at,c.payroll_weeks FROM company_bot_hires h JOIN commerce_companies c ON c.id=h.company_id WHERE h.status='active' AND c.status='approved' AND h.hired_at<=? AND NOT EXISTS(SELECT 1 FROM company_bot_salary_payments p WHERE p.hire_id=h.id AND p.period_start=?) ORDER BY h.id LIMIT 50").bind(period,period).all()).results;
+ for(const h of bots){
+  const weeks=Number(h.payroll_weeks)===2?2:1,amount=Number(h.weekly_salary)*weeks;
+  if(weeks===2&&week%2!==0||!Number.isSafeInteger(amount)||amount>1000000)continue;
+  try{const r=await db.prepare("INSERT OR IGNORE INTO company_bot_salary_payments(id,hire_id,period_start,amount) VALUES(?,?,?,?)").bind('corp-bot-'+h.id+'-'+period,h.id,period,amount).run();paid+=Number(r.meta.changes)||0}catch(error){console.error('corporate_bot_payroll_failed',String(error).slice(0,150))}
+ }
+ return paid;
+}
+
 async function airportReadiness(db,aviationDb){
  if(!aviationDb)return {ready:false,reason:'قاعدة الطيران غير متصلة',checks:[]};
  const [setting,staff,flights,bookings,boarding,completedFlights,activeAirlines]=await Promise.all([
@@ -846,6 +869,7 @@ const LIVE_AIRPORT_HTML_SOURCE="<!doctype html><html lang=\"ar\" dir=\"rtl\"><he
 
 export default {
  async scheduled(event,env,ctx){
+  try{await runCompanyWeeklyPayroll(env.DB)}catch(error){console.error('corporate_payroll_cycle_failed',String(error).slice(0,220))}
   // Royal authorization: resume conservatively, once every four hours.
   const hour=Math.floor(event.scheduledTime/3600000);
   if(hour%4!==0||new Date(event.scheduledTime).getUTCMinutes()!==0){try{await runSimEmployeeServices(env.DB)}catch(error){console.error('sim_staff_cycle_failed',String(error).slice(0,220))}try{await reconcileEmployeeResignations(env.DB)}catch(error){console.error('resignation_cycle_failed',String(error).slice(0,220))}try{await reconcileCompanyResignations(env.DB)}catch(error){console.error('company_resignation_cycle_failed',String(error).slice(0,220))}try{await reconcileAviationPayments(env.DB,env.AVIATION_DB)}catch(error){console.error('aviation_payment_cycle_failed',String(error).slice(0,220))}try{await reconcileAviationCancelledFlights(env.DB,env.AVIATION_DB)}catch(error){console.error('aviation_cancellation_cycle_failed',String(error).slice(0,220))}try{await runSharedCompanySalaryPayments(env.DB)}catch(error){console.error('shared_company_payroll_cycle_failed',String(error).slice(0,220))}return;}
@@ -1977,7 +2001,7 @@ if(path.startsWith('/api/company/operations/')){
  }
  if(!user)return json({error:'يلزم تسجيل الدخول'},401);
  if(method==='GET'&&suffix==='manage'){
-  const companies=await db.prepare("SELECT c.id,c.name,c.activity,c.region,t.balance FROM commerce_companies c LEFT JOIN company_treasuries t ON t.company_id=c.id WHERE c.owner_id=? AND c.status='approved' ORDER BY c.name").bind(user.id).all();
+  const companies=await db.prepare("SELECT c.id,c.name,c.activity,c.region,c.payroll_weeks,t.balance FROM commerce_companies c LEFT JOIN company_treasuries t ON t.company_id=c.id WHERE c.owner_id=? AND c.status='approved' ORDER BY c.name").bind(user.id).all();
   const branches=await db.prepare("SELECT b.id,b.company_id,b.name,b.region,b.address,b.status FROM commerce_branches b JOIN commerce_companies c ON c.id=b.company_id WHERE c.owner_id=? ORDER BY b.created_at DESC LIMIT 150").bind(user.id).all();
   const catalog=await db.prepare("SELECT p.* FROM company_catalog p JOIN commerce_companies c ON c.id=p.company_id WHERE c.owner_id=? ORDER BY p.created_at DESC LIMIT 150").bind(user.id).all();
   const bots=await db.prepare("SELECT h.*,b.name bot_name FROM company_bot_hires h JOIN saliyah_sim_citizens b ON b.id=h.bot_id JOIN commerce_companies c ON c.id=h.company_id WHERE c.owner_id=? ORDER BY h.hired_at DESC LIMIT 150").bind(user.id).all();
@@ -1985,8 +2009,9 @@ if(path.startsWith('/api/company/operations/')){
   const vacancies=await db.prepare("SELECT v.* FROM company_vacancies v JOIN commerce_companies c ON c.id=v.company_id WHERE c.owner_id=? ORDER BY v.created_at DESC LIMIT 120").bind(user.id).all();
   const applications=await db.prepare("SELECT a.*,v.company_id,v.title,u.username applicant FROM company_vacancy_applications a JOIN company_vacancies v ON v.id=a.vacancy_id JOIN commerce_companies c ON c.id=v.company_id JOIN users u ON u.id=a.applicant_id WHERE c.owner_id=? OR a.applicant_id=? ORDER BY a.created_at DESC LIMIT 160").bind(user.id,user.id).all();
   const orders=await db.prepare("SELECT o.id,o.catalog_id,o.buyer_id,o.quantity,o.unit_price,o.total,o.status,o.created_at,p.title,p.company_id,c.name company_name,u.username buyer FROM company_catalog_orders o JOIN company_catalog p ON p.id=o.catalog_id JOIN commerce_companies c ON c.id=p.company_id JOIN users u ON u.id=o.buyer_id WHERE c.owner_id=? OR o.buyer_id=? ORDER BY o.created_at DESC LIMIT 160").bind(user.id,user.id).all();
+  const botPayments=await db.prepare("SELECT p.id,p.period_start,p.amount,h.company_id,b.name bot_name FROM company_bot_salary_payments p JOIN company_bot_hires h ON h.id=p.hire_id JOIN saliyah_sim_citizens b ON b.id=h.bot_id JOIN commerce_companies c ON c.id=h.company_id WHERE c.owner_id=? ORDER BY p.created_at DESC LIMIT 100").bind(user.id).all();
   const accounts=await db.prepare("SELECT id,bank,balance FROM bank_accounts WHERE user_id=? ORDER BY bank").bind(user.id).all();
-  return json({companies:companies.results,branches:branches.results,catalog:catalog.results,bots:bots.results,candidates:candidates.results,vacancies:vacancies.results,applications:applications.results,orders:orders.results,accounts:accounts.results});
+  return json({companies:companies.results,branches:branches.results,catalog:catalog.results,bots:bots.results,candidates:candidates.results,vacancies:vacancies.results,applications:applications.results,orders:orders.results,bot_payments:botPayments.results,accounts:accounts.results});
  }
  if(method!=='POST')return json({error:'طريقة غير مسموحة'},405);
  const b=await input(req);if(!b)return json({error:'طلب غير صالح'},400);
@@ -2022,6 +2047,13 @@ if(path.startsWith('/api/company/operations/')){
   const r=await db.prepare("UPDATE company_catalog_orders SET status='fulfilled',fulfilled_at=CURRENT_TIMESTAMP WHERE id=? AND status='paid' AND EXISTS(SELECT 1 FROM company_catalog p JOIN commerce_companies c ON c.id=p.company_id WHERE p.id=company_catalog_orders.catalog_id AND c.owner_id=?)").bind(b.id,user.id).run();
   if(!r.meta.changes)return json({error:'الطلب غير متاح أو تمت معالجته'},409);
   await audit(db,user.id,'company_order_fulfill','company_catalog_order',b.id,{});return json({ok:true});
+ }
+ if(suffix==='payroll/update'){
+  if(!validText(b.company_id,10,80)||![1,2].includes(Number(b.weeks)))return json({error:'الفترة غير صالحة'},400);
+  const r=await db.prepare("UPDATE commerce_companies SET payroll_weeks=? WHERE id=? AND owner_id=? AND status='approved'").bind(Number(b.weeks),b.company_id,user.id).run();
+  if(!r.meta.changes)return json({error:'الشركة غير معتمدة أو ليست ملكك'},403);
+  await audit(db,user.id,'company_payroll_schedule','commerce_company',b.company_id,{weeks:Number(b.weeks)});
+  return json({ok:true});
  }
  if(suffix==='bot/hire'){
   const weekly=Number(b.weekly_salary);if(!validText(b.company_id,10,80)||!validText(b.bot_id,10,80)||!validText(b.position,3,120)||!Number.isSafeInteger(weekly)||weekly<1||weekly>1000000)return json({error:'بيانات التوظيف غير صالحة'},400);
@@ -2136,11 +2168,11 @@ if(path.startsWith('/api/company/staff')){
   await audit(db,user.id,'company_employment_end','employment',b.id,{reason:b.reason.trim()});return json({ok:true});
  }
  if(method==='POST'&&path==='/api/company/staff/pay'){
-  const b=await input(req);if(!b||!validText(b.id,10,80)||typeof b.period!=='string'||!/^\d{4}-(0[1-9]|1[0-2])$/.test(b.period))return json({error:'الفترة أو العقد غير صالح'},400);
-  const e=await db.prepare("SELECT e.salary FROM company_employees e JOIN commerce_companies c ON c.id=e.company_id WHERE e.id=? AND c.owner_id=? AND e.status='active'").bind(b.id,user.id).first();
+  const b=await input(req);if(!b||!validText(b.id,10,80)||typeof b.period!=='string'||!/^\d{4}-\d{2}-\d{2}$/.test(b.period)||Number.isNaN(Date.parse(b.period+'T00:00:00Z'))||new Date(b.period+'T00:00:00Z').getUTCDay()!==1||b.period>new Date().toISOString().slice(0,10))return json({error:'الفترة أو العقد غير صالح'},400);
+  const e=await db.prepare("SELECT e.salary,c.payroll_weeks FROM company_employees e JOIN commerce_companies c ON c.id=e.company_id WHERE e.id=? AND c.owner_id=? AND e.status='active'").bind(b.id,user.id).first();
   if(!e)return json({error:'العقد غير نشط أو غير مخول'},403);
-  const id=random();try{await db.prepare('INSERT INTO company_salary_payments(id,employment_id,period,amount,actor_id) VALUES(?,?,?,?,?)').bind(id,b.id,b.period,e.salary,user.id).run()}catch{return json({error:'تعذر صرف الراتب: قد يكون مصروفًا أو الرصيد غير كافٍ أو الموظف بلا حساب بنكي'},409)}
-  await audit(db,user.id,'company_salary_paid','employment',b.id,{period:b.period,amount:e.salary});return json({ok:true,id});
+  const id=random();try{await db.prepare('INSERT INTO company_salary_payments(id,employment_id,period,amount,actor_id) VALUES(?,?,?,?,?)').bind(id,b.id,b.period,e.salary*e.payroll_weeks,user.id).run()}catch{return json({error:'تعذر صرف الراتب: قد يكون مصروفًا أو الرصيد غير كافٍ أو الموظف بلا حساب بنكي'},409)}
+  await audit(db,user.id,'company_salary_paid','employment',b.id,{period:b.period,amount:e.salary*e.payroll_weeks});return json({ok:true,id});
  }
 }
 
