@@ -696,7 +696,7 @@ async function runSharedCompanySalaryPayments(db){
   if(!Number.isSafeInteger(amount)||amount<1)continue;
   for(let lag=3;lag>=1;lag--){
    const start=new Date(monday.getTime()-lag*7*86400000),period=start.toISOString().slice(0,10);
-   if(Date.parse(item.hired_at+'Z')>start.getTime())continue;
+   if(Date.parse(String(item.hired_at).replace(' ','T')+'Z')>start.getTime())continue;
    if(weeks===2&&Math.floor(start.getTime()/604800000)%2!==0)continue;
    const leave=await db.prepare("SELECT 1 FROM employment_leave_requests WHERE contract_id=? AND kind='unpaid' AND status='approved' AND start_date<=date(?,'+'||?||' days') AND end_date>=? LIMIT 1").bind(item.contract_id,period,weeks*7-1,period).first();
    if(leave)continue;
@@ -1093,6 +1093,13 @@ if(path.startsWith('/api/aviation/')){
   try{await aviationDb.prepare("INSERT INTO aviation_flights(id,airline_id,number,origin_code,destination_code,departure_at,arrival_at,price_economy,seats_economy,seats_business,status) VALUES(?,?,?,'SJD',?,?,?,?,?,?,'draft')").bind(id,b.airline_id,b.number.trim().toUpperCase(),b.destination_code,new Date(b.departure_at).toISOString().replace('T',' ').slice(0,19),new Date(b.arrival_at).toISOString().replace('T',' ').slice(0,19),b.price_economy,b.seats_economy,b.seats_business).run()}catch(e){return json({error:'تعذر إضافة الرحلة أو رقمها مكرر'},409)}
   await audit(db,user.id,'aviation_flight_draft','aviation_flights',id,{});return json({id,status:'draft'},201);
  }
+ if(method==='POST'&&path==='/api/aviation/admin/validation'){
+  if(!user||user.role!=='king')return json({error:'للملك فقط'},403);
+  const readiness=await airportReadiness(db,aviationDb);
+  if(!readiness.construction_complete||!readiness.staff_complete||!readiness.airlines_ready||readiness.scheduled_flights<1)return json({error:'لم تكتمل شروط التشغيل لا يمكن اجتياز فحص العمليات',readiness},409);
+  // An operational smoke test must explicitly verify live booking/payment/check-in and staff readiness.
+  return json({error:'اعتماد فحوصات الدفع والإلغاء والصعود الفعلية غير مكتمل بعد؛ لا يمكن تجاوزها'},409);
+ }
  if(method==='POST'&&path==='/api/aviation/admin/flight/status'){
   if(!user||user.role!=='king')return json({error:'للملك فقط'},403);
   const b=await input(req);if(!b||!validText(b.id,10,80)||!['draft','scheduled','cancelled'].includes(b.status))return json({error:'طلب غير صالح'},400);
@@ -1209,10 +1216,11 @@ if(path.startsWith('/api/aviation/')){
   if(b.authorized){
    const current=await airportReadiness(db,aviationDb);
    if(!current.airlines_ready)return json({error:'لا يمكن اعتماد مطار بدون شركات طيران مسجلة',readiness:current},409);
+   // Preapproval is a recorded sovereign decision, never a bypass of operating checks.
   }
   await aviationDb.prepare("UPDATE aviation_settings SET value=? WHERE key='opening_authorized'").bind(b.authorized?'1':'0').run();
   await audit(db,user.id,'airport_authorization','aviation_settings','opening_authorized',{authorized:b.authorized});
-  return json({ok:true,authorized:b.authorized});
+  return json({ok:true,authorized:b.authorized,scope:'royal_preapproval_only',airport_open:(await airportReadiness(db,aviationDb)).ready});
  }
  return json({error:'مسار الطيران غير موجود'},404);
 }
